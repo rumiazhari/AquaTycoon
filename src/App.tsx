@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import * as THREE from 'three';
 import { SceneManager } from './graphics/SceneManager';
 import { GameManager, GameState } from './gameplay/GameManager';
 import { ToolMode } from './types/graphics';
@@ -54,6 +55,7 @@ export const App: React.FC = () => {
 
   const [pipeSourceId, setPipeSourceId]             = useState<string | null>(null);
   const pipeSourcePortRef = useRef<string | null>(null);
+  const pipeSourcePosRef = useRef<[number, number, number] | null>(null);
   const pipeSourceRef = useRef<string | null>(null);
   pipeSourceRef.current = pipeSourceId;
 
@@ -123,7 +125,9 @@ export const App: React.FC = () => {
   const cancelPipeSelection = useCallback((silent: boolean = false) => {
     setPipeSourceId(null);
     pipeSourcePortRef.current = null;
+    pipeSourcePosRef.current = null;
     sceneRef.current?.setPipeSourceHighlight(null, gsRef.current.units);
+    sceneRef.current?.setPipePreview(null, null);
     if (!silent) setToast('Pipe selection cancelled.');
   }, []);
 
@@ -190,6 +194,20 @@ export const App: React.FC = () => {
       } else {
         // ── Hover ghost preview ─────────────────────────────────────────────
         const tile = sm.getGridTileFromScreen(e.clientX, e.clientY);
+
+        // Live pipe-connection preview while a source is armed
+        if (toolModeRef.current === 'connect_pipe' && pipeSourceRef.current && pipeSourcePosRef.current) {
+          const hit = sm.getGroundPointFromScreen(e.clientX, e.clientY);
+          if (hit) {
+            sm.setPipePreview(
+              new THREE.Vector3(...pipeSourcePosRef.current),
+              hit
+            );
+          }
+        } else if (toolModeRef.current === 'connect_pipe') {
+          sm.setPipePreview(null, null);
+        }
+
         if (!tile) {
           sm.terrainGrid.setHoverTile(0, 0, false);
           sm.terrainGrid.setGhostPreview(0, 0, 1, 1, true, false);
@@ -274,6 +292,16 @@ export const App: React.FC = () => {
   // CLICK ACTION (using gsRef for 100% fresh state)
   // ─────────────────────────────────────────────────────────────────────────────
   const handleCanvasClick = (clientX: number, clientY: number) => {
+    try {
+      handleCanvasClickInner(clientX, clientY);
+    } catch (err) {
+      // Never let a click die silently — surface it so nothing feels "broken"
+      console.error('Canvas click error:', err);
+      setToast('Something went wrong handling that click — please try again.');
+    }
+  };
+
+  const handleCanvasClickInner = (clientX: number, clientY: number) => {
     const sm = sceneRef.current;
     if (!sm) return;
 
@@ -285,6 +313,18 @@ export const App: React.FC = () => {
 
     const tile        = sm.getGridTileFromScreen(clientX, clientY);
     const clickedUnit = sm.getUnitAtScreen(clientX, clientY, gs.units);
+
+    // Piping guidance: never leave a click in Pipes mode as a silent no-op
+    if (mode === 'connect_pipe') {
+      if (!clickedUnit && !srcId) {
+        setToast('Pipes: click directly ON a unit to choose it as the pipe source (a cyan ring marks it).');
+        return;
+      }
+      if (!clickedUnit && srcId) {
+        cancelPipeSelection();
+        return;
+      }
+    }
 
     if (mode === 'select') {
       if (clickedUnit) {
@@ -340,6 +380,7 @@ export const App: React.FC = () => {
         }
         setPipeSourceId(clickedUnit.instanceId);
         pipeSourcePortRef.current = fp.id;
+        pipeSourcePosRef.current = getPortWorldPosition(clickedUnit, fp.id);
         sm.setPipeSourceHighlight(clickedUnit.instanceId, gs.units);
         SoundManager.playClick();
         setToast(`Piping FROM ${UNIT_DEFINITIONS[clickedUnit.typeId]?.name} [${fp.name}]. Click another unit to connect — click the SAME unit to switch its output port.`);
@@ -369,7 +410,9 @@ export const App: React.FC = () => {
             setToast(`Pipe removed: ${fd.name} [${fp.name}] ➔ ${td.name}. Re-route as needed. (Ctrl+Z to undo)`);
             setPipeSourceId(null);
             pipeSourcePortRef.current = null;
+            pipeSourcePosRef.current = null;
             sm.setPipeSourceHighlight(null, gs.units);
+            sm.setPipePreview(null, null);
           } else {
             const path = generatePipePath(getPortWorldPosition(fromUnit, fp.id), getPortWorldPosition(toUnit, tp.id));
             const newPipe: PipeConnection = {
@@ -390,7 +433,9 @@ export const App: React.FC = () => {
             // Fresh selection for the next connection — no surprising chaining
             setPipeSourceId(null);
             pipeSourcePortRef.current = null;
+            pipeSourcePosRef.current = null;
             sm.setPipeSourceHighlight(null, gs.units);
+            sm.setPipePreview(null, null);
           }
         }
       } else {
@@ -403,9 +448,6 @@ export const App: React.FC = () => {
         }
       }
 
-    } else if (mode === 'connect_pipe' && !clickedUnit && srcId) {
-      // Clicking empty ground also cancels the pending selection
-      cancelPipeSelection();
     } else if (mode === 'demolish' && clickedUnit) {
       if (clickedUnit.typeId === 'influent_inlet' || clickedUnit.typeId === 'effluent_outfall') {
         SoundManager.playWarning();

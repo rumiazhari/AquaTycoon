@@ -180,7 +180,7 @@ export class TerrainGrid {
         const v = (bz - zMin) / span; // downstream parameter
         const phase = v * 14 - elapsed * 1.9; // waves travel +Z (downstream)
         arr[i + 1] =
-          Math.sin(phase) * 0.05 +
+          Math.sin(phase) * 0.07 +
           Math.sin(bx * 0.55 + elapsed * 1.4) * 0.04 +
           Math.sin((bx + bz) * 0.3 - elapsed * 0.8) * 0.03;
       }
@@ -192,7 +192,7 @@ export class TerrainGrid {
       this.riverNormalMap.offset.x = Math.sin(elapsed * 0.35) * 0.06;
     }
     if (this.riverFlowTex) {
-      this.riverFlowTex.offset.y -= dt * 1.15; // unmistakable flowing motion
+      this.riverFlowTex.offset.y -= dt * 1.6; // unmistakable flowing motion
     }
     // Foam flecks ride the current
     if (this.flowParticles && this.flowData.length > 0) {
@@ -208,7 +208,7 @@ export class TerrainGrid {
         if (f.t > 1) f.t -= 1;
         const z = zMin + f.t * span;
         const meander = this.riverCenterX(z);
-        pos.set(meander + f.u, -0.55, z);
+        pos.set(meander + f.u, -1.0, z);
         scl.set(f.scale, f.scale, f.scale);
         m.compose(pos, q, scl);
         this.flowParticles.setMatrixAt(i, m);
@@ -301,9 +301,27 @@ export class TerrainGrid {
       h *= 1 - sstep(6.5, 3.5, Math.abs(x - this.W / 2));
     }
 
+    // ── Properly DUG river channel ──
+    // Hills alone could rise above a flat water plane and bury the river, so
+    // the channel is sculpted explicitly: flat bed → curved slopes → bank top,
+    // then blended into the surrounding terrain.
     const dr = Math.abs(x - this.riverCenterX(z));
-    const t = dr / (this.riverHW * 1.25);
-    h -= 1.7 * Math.exp(-t * t);
+    const bankY = 0.25;
+    const bedY = bankY - 2.0;
+    const flatHalf = this.riverHW;        // flat bed half-width
+    const slopeEnd = this.riverHW * 2.3;  // where slopes meet bank top
+    let cy: number;
+    if (dr <= flatHalf) {
+      cy = bedY;
+    } else if (dr <= slopeEnd) {
+      const k = (dr - flatHalf) / (slopeEnd - flatHalf);
+      const s = k * k * (3 - 2 * k); // smoothstep slope
+      cy = bedY + (bankY - bedY) * s;
+    } else {
+      cy = bankY;
+    }
+    const blend = 1 - sstep(slopeEnd, slopeEnd + 3.5, dr);
+    h = h * (1 - blend) + cy * blend;
 
     return h;
   }
@@ -502,8 +520,8 @@ export class TerrainGrid {
       const v = i / steps;
       const z = zMin + ((zMax - zMin) * i) / steps;
       const cx = this.riverCenterX(z);
-      positions.push(cx - this.riverHW, -0.62, z);
-      positions.push(cx + this.riverHW, -0.62, z);
+      positions.push(cx - this.riverHW * 0.94, -1.05, z);
+      positions.push(cx + this.riverHW * 0.94, -1.05, z);
       uvs.push(0, v, 1, v);
       if (i < steps) {
         const a = i * 2;
@@ -556,9 +574,9 @@ export class TerrainGrid {
       for (let i = 0; i < 46; i++) {
         const y = rngF() * 128;
         const x = rngF() * 128;
-        const wdt = 10 + rngF() * 34;
-        const hgt = 2.5 + rngF() * 4;
-        fctx.fillStyle = rngF() > 0.45 ? 'rgba(255,255,255,0.75)' : 'rgba(190,235,255,0.85)';
+        const wdt = 14 + rngF() * 40;
+        const hgt = 3.5 + rngF() * 5;
+        fctx.fillStyle = rngF() > 0.4 ? 'rgba(255,255,255,0.95)' : 'rgba(170,228,255,1)';
         fctx.beginPath();
         fctx.roundRect(x, y, wdt, hgt, hgt / 2);
         fctx.fill();
@@ -571,7 +589,7 @@ export class TerrainGrid {
     this.riverFlowTex = flowTex;
 
     const mat = new THREE.MeshStandardMaterial({
-      color: 0x2fa8e8,
+      color: 0x2cb5f5,
       map: flowTex,
       roughness: 0.14,
       metalness: 0.25,
@@ -597,7 +615,7 @@ export class TerrainGrid {
     const pos = new THREE.Vector3();
     for (let i = 0; i < N_FLECKS; i++) {
       this.flowData.push({ t: rngFleck(), u: (rngFleck() - 0.5) * 1.55, speed: 0.75 + rngFleck() * 0.5, scale: 0.7 + rngFleck() * 0.8 });
-      pos.set(this.riverCenterX(this.flowData[i].t * (zMax - zMin) + zMin), -0.56, 0);
+      pos.set(this.riverCenterX(this.flowData[i].t * (zMax - zMin) + zMin), -1.0, 0);
       m.compose(pos, q, one);
       this.flowParticles.setMatrixAt(i, m);
     }

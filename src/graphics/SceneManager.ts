@@ -82,6 +82,10 @@ export class SceneManager {
   private raycaster: THREE.Raycaster;
   private groundPlane: THREE.Plane;
 
+  // Live pipe-connection preview (source port → cursor)
+  private pipePreviewLine!: THREE.Line;
+  private pipePreviewCursor!: THREE.Mesh;
+
   // Sky / celestial bodies
   private skyDome!: THREE.Mesh;
   private skyMatDay!: THREE.ShaderMaterial;
@@ -179,6 +183,29 @@ export class SceneManager {
     // Raycaster on Y=0 ground plane
     this.raycaster = new THREE.Raycaster();
     this.groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+
+    // Pipe connection preview: bright dashed-style line + cursor ring
+    const previewGeo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(0, 0, 0),
+      new THREE.Vector3(0, 0, 0),
+    ]);
+    this.pipePreviewLine = new THREE.Line(
+      previewGeo,
+      new THREE.LineBasicMaterial({ color: 0x34e0ff, transparent: true, opacity: 0.95, depthTest: false })
+    );
+    this.pipePreviewLine.renderOrder = 999;
+    this.pipePreviewLine.visible = false;
+    this.pipePreviewLine.frustumCulled = false;
+    this.scene.add(this.pipePreviewLine);
+
+    this.pipePreviewCursor = new THREE.Mesh(
+      new THREE.TorusGeometry(0.45, 0.07, 8, 24),
+      new THREE.MeshBasicMaterial({ color: 0x34e0ff, transparent: true, opacity: 0.9, depthTest: false })
+    );
+    this.pipePreviewCursor.rotation.x = Math.PI / 2;
+    this.pipePreviewCursor.renderOrder = 999;
+    this.pipePreviewCursor.visible = false;
+    this.scene.add(this.pipePreviewCursor);
 
     this._startLoop();
   }
@@ -452,9 +479,62 @@ export class SceneManager {
     return { x: Math.floor(hit.x), y: Math.floor(hit.z) };
   }
 
+  /** Raw ground-plane hit point (not snapped to the grid) */
+  public getGroundPointFromScreen(clientX: number, clientY: number): THREE.Vector3 | null {
+    const canvas = this.renderer.domElement;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    const ndcX =  ((clientX - rect.left) / rect.width)  * 2 - 1;
+    const ndcY = -((clientY - rect.top)  / rect.height) * 2 + 1;
+    this.raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), this.cameraController.camera);
+    const hit = new THREE.Vector3();
+    return this.raycaster.ray.intersectPlane(this.groundPlane, hit) ? hit : null;
+  }
+
+  /** Shows the live connection preview from the chosen source port to the cursor */
+  public setPipePreview(from: THREE.Vector3 | null, to: THREE.Vector3 | null) {
+    if (!from || !to) {
+      this.pipePreviewLine.visible = false;
+      this.pipePreviewCursor.visible = false;
+      return;
+    }
+    const posAttr = this.pipePreviewLine.geometry.getAttribute('position') as THREE.BufferAttribute;
+    posAttr.setXYZ(0, from.x, from.y, from.z);
+    posAttr.setXYZ(1, to.x, to.y + 0.15, to.z);
+    posAttr.needsUpdate = true;
+    this.pipePreviewLine.geometry.computeBoundingSphere();
+    this.pipePreviewLine.visible = true;
+    this.pipePreviewCursor.position.set(to.x, 0.12, to.z);
+    this.pipePreviewCursor.visible = true;
+  }
+
   public getUnitAtScreen(clientX: number, clientY: number, units: PlacedUnit[]): PlacedUnit | null {
-    const tile = this.getGridTileFromScreen(clientX, clientY);
-    if (!tile) return null;
+    const canvas = this.renderer.domElement;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+
+    const ndcX =  ((clientX - rect.left) / rect.width)  * 2 - 1;
+    const ndcY = -((clientY - rect.top)  / rect.height) * 2 + 1;
+    this.raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), this.cameraController.camera);
+
+    // 1) TRUE MESH PICKING FIRST — tall units (digesters, turbines, tanks) must
+    //    be clickable on their whole body, not just their ground footprint.
+    const hits = this.raycaster.intersectObjects(this.unitGroup.children, true);
+    for (const h of hits) {
+      let o: THREE.Object3D | null = h.object;
+      while (o) {
+        if (o.name) {
+          const u = units.find(uu => uu.instanceId === o!.name);
+          if (u) return u;
+        }
+        o = o.parent;
+      }
+    }
+
+    // 2) Ground-tile fallback (clicking the pad / ground inside the footprint)
+    const hit = new THREE.Vector3();
+    if (!this.raycaster.ray.intersectPlane(this.groundPlane, hit)) return null;
+    const tile = { x: Math.floor(hit.x), y: Math.floor(hit.z) };
     return units.find(u => {
       const def = UNIT_DEFINITIONS[u.typeId];
       if (!def) return false;
