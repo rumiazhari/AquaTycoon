@@ -99,14 +99,16 @@ export class SimulationEngine {
     }
 
     // 3. Find Outfall Units & Calculate Final Effluent
+    //    Uses the outfall's OUTLET quality so cascade re-aeration is included.
     const outfallUnits = units.filter(u => u.typeId === 'effluent_outfall');
     let finalEffluent = emptyWater();
 
     if (outfallUnits.length > 0) {
-      const outfallStreams = outfallUnits.map(o => ({
-        quality: unitMap.get(o.instanceId)!.lastInletQuality || emptyWater(),
-        flow: unitMap.get(o.instanceId)!.lastInletQuality?.flowRate || 0
-      }));
+      const outfallStreams = outfallUnits.map(o => {
+        const u = unitMap.get(o.instanceId)!;
+        const q = u.lastOutletQuality || u.lastInletQuality || emptyWater();
+        return { quality: q, flow: q.flowRate || 0 };
+      });
       finalEffluent = mixWaterStreams(outfallStreams);
     }
 

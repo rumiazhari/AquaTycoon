@@ -327,7 +327,7 @@ export class GameManager {
         if (obj.id === 'obj_eq' && state.units.some(u => u.typeId === 'equalization_basin')) achieved = true;
         if (obj.id === 'obj_mbr' && state.units.some(u => u.typeId === 'mbr_membrane')) achieved = true;
         if (obj.id === 'obj_ro' && state.units.some(u => u.typeId === 'reverse_osmosis')) achieved = true;
-        if (obj.id === 'obj_aeration' && state.units.some(u => (u.typeId === 'activated_sludge_cas' || u.typeId === 'a2o_bardenpho') && eff.do >= 2.0)) achieved = true;
+        if (obj.id === 'obj_aeration' && state.units.some(u => (u.typeId === 'activated_sludge_cas' || u.typeId === 'a2o_bardenpho') && (u.dissolvedOxygenActual ?? 0) >= 2.0)) achieved = true;
 
         if (obj.id === 'obj_bod' && eff.bod <= (obj.targetValue || 30)) achieved = true;
         if (obj.id === 'obj_cod' && eff.cod <= (obj.targetValue || 100)) achieved = true;

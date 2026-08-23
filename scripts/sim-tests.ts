@@ -76,5 +76,100 @@ function emptyW(): any {
     `Clarifier passes forward flow: eff=${r.effluent.flowRate.toFixed(0)} (target ~10000), RAS=${r.sludge!.flowRate.toFixed(0)}`);
 }
 
+// ── Test 4: Level 1 canonical train passes ALL standards at DEFAULT params ──
+{
+  const gs = GameManager.createInitialState(0, false);
+  const add = (id: string, t: string, x: number, y: number, st: any) => st.units.push(mkUnit(id, t, x, y));
+  add('scr', 'bar_screen', 5, 10, gs);
+  add('grt', 'grit_chamber', 8, 10, gs);
+  add('pri', 'primary_clarifier_circular', 11, 9, gs);
+  add('cas', 'activated_sludge_cas', 15, 9, gs);
+  add('clr2', 'secondary_clarifier', 17, 13, gs);
+  add('uv', 'uv_disinfection', 20, 10, gs);
+
+  const P: any[] = [
+    ['inlet_0', 'outlet', 'scr', 'inlet'],
+    ['scr', 'outlet', 'grt', 'inlet'],
+    ['grt', 'outlet', 'pri', 'inlet'],
+    ['pri', 'outlet', 'cas', 'inlet'],
+    ['cas', 'outlet', 'clr2', 'inlet'],
+    ['clr2', 'outlet', 'uv', 'inlet'],
+    ['uv', 'outlet', 'outfall_0', 'inlet'],
+  ].map(([f, fp, t, tp], i) => ({ id: `tp${i}`, fromUnitId: f, fromPortId: fp, toUnitId: t, toPortId: tp, pathPoints: [], flowRate: 0, quality: emptyW(), pipeType: 'liquid' }));
+  gs.pipes.push(...P);
+
+  let state = gs;
+  for (let i = 0; i < 25; i++) state = GameManager.tick(state, 0.5);
+
+  const eff = state.finalEffluent;
+  const std = state.currentLevel.standards;
+  const fails: string[] = [];
+  if (eff.bod > std.maxBod) fails.push(`BOD ${eff.bod.toFixed(1)}>${std.maxBod}`);
+  if (eff.cod > std.maxCod) fails.push(`COD ${eff.cod.toFixed(1)}>${std.maxCod}`);
+  if (eff.tss > std.maxTss) fails.push(`TSS ${eff.tss.toFixed(1)}>${std.maxTss}`);
+  if (eff.tn > std.maxTn) fails.push(`TN ${eff.tn.toFixed(1)}>${std.maxTn}`);
+  if (eff.nh4 > std.maxNh4) fails.push(`NH4 ${eff.nh4.toFixed(1)}>${std.maxNh4}`);
+  if (eff.tp > std.maxTp) fails.push(`TP ${eff.tp.toFixed(2)}>${std.maxTp}`);
+  if (eff.pathogens > Math.max(1, std.maxPathogens)) fails.push(`P ${eff.pathogens.toExponential(1)}>${std.maxPathogens}`);
+  if (eff.do < std.minDo) fails.push(`DO ${eff.do.toFixed(1)}<${std.minDo}`);
+  assert(fails.length === 0,
+    fails.length === 0
+      ? `Level 1 fully compliant at defaults (compliance ${state.overallStats.complianceScore}%)`
+      : `Level 1 STILL FAILING: ${fails.join(', ')}`);
+}
+
+// ── Test 5: DO must never be structurally impossible (outfall reaeration) ───
+{
+  const mod = require('../src/sim/UnitProcessModels');
+  const outfall = mkUnit('o', 'effluent_outfall', 0, 0);
+  const r = mod.calculateUnitProcess(outfall, { ...emptyW(), flowRate: 3500, do: 1.8 }, 3500);
+  assert(r.effluent.do >= 4.0, `Cascade re-aeration lifts DO 1.8 → ${r.effluent.do.toFixed(1)} mg/L`);
+}
+
+// ── Test 6: Operator Console advisor proposes fixes that actually work ──────
+{
+  const { generateAdvisories } = require('../src/sim/AdvisoryEngine');
+
+  // Broken plant: no pipes at all
+  const broken = GameManager.createInitialState(0, false);
+  broken.units.push(mkUnit('scr', 'bar_screen', 5, 10));
+  const advNoFlow = generateAdvisories(broken as any);
+  assert(advNoFlow.length > 0 && advNoFlow[0].fixes.some(f => f.kind === 'auto_pipe'),
+    'Advisor: no-pipe plant → suggests Auto-connect pipes');
+
+  // Under-performing plant: full train but DO setpoint at minimum → violations exist,
+  // and the top param fix must measurably reduce the violation score.
+  const under = GameManager.createInitialState(0, false);
+  const addU = (id: string, t: string, x: number, y: number) => {
+    const u = mkUnit(id, t, x, y);
+    if (t === 'activated_sludge_cas') u.customParams.doSetpoint = 0.5;
+    under.units.push(u);
+  };
+  addU('scr', 'bar_screen', 5, 10); addU('grt', 'grit_chamber', 8, 10);
+  addU('pri', 'primary_clarifier_circular', 11, 9);
+  addU('cas', 'activated_sludge_cas', 15, 9);
+  addU('clr2', 'secondary_clarifier', 17, 13);
+  addU('uv', 'uv_disinfection', 20, 10);
+  const P: any[] = [
+    ['inlet_0', 'outlet', 'scr', 'inlet'], ['scr', 'outlet', 'grt', 'inlet'],
+    ['grt', 'outlet', 'pri', 'inlet'], ['pri', 'outlet', 'cas', 'inlet'],
+    ['cas', 'outlet', 'clr2', 'inlet'], ['clr2', 'outlet', 'uv', 'inlet'],
+    ['uv', 'outlet', 'outfall_0', 'inlet'],
+  ].map(([f, fp, t, tp], i) => ({ id: `up${i}`, fromUnitId: f, fromPortId: fp, toUnitId: t, toPortId: tp, pathPoints: [], flowRate: 0, quality: emptyW(), pipeType: 'liquid' }));
+  under.pipes.push(...P);
+  let st: any = under;
+  for (let i = 0; i < 25; i++) st = GameManager.tick(st, 0.5);
+
+  assert(st.finalEffluent.flowRate > 10 && st.overallStats.complianceScore < 100,
+    `Under-tuned plant violates (${st.overallStats.complianceScore}% compliance) — advisor has something to fix`);
+
+  const advs = generateAdvisories(st);
+  assert(advs.length > 0, `Advisor generated ${advs.length} advisory card(s)`);
+
+  const paramFixes = advs.flatMap(a => a.fixes).filter(f => f.kind === 'adjust_param' && f.prediction && f.prediction.includes('✓'));
+  assert(paramFixes.length > 0,
+    `Advisor found ${paramFixes.length} simulated fix(es) that flip parameters to PASS (e.g. "${paramFixes[0]?.label}")`);
+}
+
 console.log(failures === 0 ? '\nALL TESTS PASSED' : `\n${failures} TEST(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);

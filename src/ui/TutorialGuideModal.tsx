@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, BookOpen, Filter, Activity, Sparkles, Recycle } from 'lucide-react';
+import { X, BookOpen, Filter, Activity, Sparkles, Recycle, Wrench } from 'lucide-react';
 import { SoundManager } from '../audio/SoundManager';
 
 interface TutorialGuideModalProps {
@@ -88,6 +88,33 @@ const GUIDE_SECTIONS = [
         </p>
         <p>
           Methanogens convert volatile solids into <strong>Methane Biogas (CH₄)</strong>, which is burned in Combined Heat & Power (CHP) engines to generate green electricity—offsetting plant operating bills and earning green energy credits!
+        </p>
+      </div>
+    )
+  },
+  {
+    id: 'troubleshooting',
+    title: '6. Fixing Water Quality Violations',
+    icon: <Wrench size={16} />,
+    content: (
+      <div className="flex flex-col gap-2.5 text-xs text-slate-300">
+        <p>
+          Watch the <strong className="text-cyan-300">Water Quality chip</strong> at the top of the screen. Click it any time to open the
+          <strong> Operator Console</strong> — it shows exactly which limits are exceeded and offers tested fixes.
+        </p>
+        <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 flex flex-col gap-1.5 font-mono text-[11px]">
+          <span className="text-amber-400 font-bold">SYMPTOM → CURE cheat-sheet:</span>
+          <span>🔴 BOD / COD high → raise Aeration DO setpoint; add a second bio stage; sand filter or ozone for stubborn COD</span>
+          <span>🔴 TSS high → clarifier overloaded — add a Sand Filter or a second Clarifier</span>
+          <span>🔴 Ammonia high → nitrifiers need oxygen: push DO above 2 mg/L</span>
+          <span>🔴 Nitrogen high → needs an anoxic zone: build A2O, then raise Internal Recycle + Carbon dose</span>
+          <span>🔴 Phosphorus high → build Chemical P-Removal and tune the coagulant dose</span>
+          <span>🔴 Pathogens high → raise UV dose (clear water first!) or chlorinate</span>
+          <span>🔵 Oxygen low → the outfall cascade adds ~2.5 mg/L; keep reactor DO ≥ 3 for strict rivers</span>
+        </div>
+        <p>
+          Every fix button in the console is <strong>simulated first</strong>: you see the predicted result before spending money.
+          Manual engineers can tune every parameter with the Inspect tool on each tank.
         </p>
       </div>
     )

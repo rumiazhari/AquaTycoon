@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { SceneManager } from './graphics/SceneManager';
 import { GameManager, GameState } from './gameplay/GameManager';
 import { ToolMode } from './types/graphics';
@@ -19,6 +19,8 @@ import { SandboxControls } from './ui/SandboxControls';
 import { TutorialGuideModal } from './ui/TutorialGuideModal';
 import { VictoryModal } from './ui/VictoryModal';
 import { NextStepGuide } from './ui/NextStepGuide';
+import { OperatorConsole } from './ui/OperatorConsole';
+import { FixAction, findFreeSpot, collectViolations } from './sim/AdvisoryEngine';
 
 import {
   ZoomIn, ZoomOut, RotateCcw, RotateCw,
@@ -62,6 +64,7 @@ export const App: React.FC = () => {
   const [pfdModal, setPfdModal]               = useState(false);
   const [guideModal, setGuideModal]           = useState(false);
   const [sandboxModal, setSandboxModal]       = useState(false);
+  const [operatorOpen, setOperatorOpen]       = useState(false);
 
   // ── Pointer tracking ─────────────────────────────────────────────────────────
   const pointerDown    = useRef(false);
@@ -425,6 +428,60 @@ export const App: React.FC = () => {
   };
 
   // ─────────────────────────────────────────────────────────────────────────────
+  // OPERATOR CONSOLE — APPLY FIX (the systematic tuning loop)
+  // ─────────────────────────────────────────────────────────────────────────────
+  const handleApplyFix = useCallback((fix: FixAction) => {
+    const gs = gsRef.current;
+
+    if (fix.kind === 'auto_pipe') {
+      handleAutoPipe();
+      return;
+    }
+
+    if (fix.kind === 'adjust_param' && fix.instanceId && fix.paramKey) {
+      const unit = gs.units.find(u => u.instanceId === fix.instanceId);
+      if (!unit) return;
+      const def = UNIT_DEFINITIONS[unit.typeId];
+      const pd = def.paramDefinitions.find(p => p.key === fix.paramKey);
+      if (!pd) return;
+      const cur = unit.customParams[fix.paramKey] ?? pd.defaultValue;
+      const next = Math.min(pd.max, Math.max(pd.min, cur + (fix.delta ?? 0)));
+      setGameState(prev => ({
+        ...prev,
+        units: prev.units.map(u =>
+          u.instanceId === unit.instanceId ? { ...u, customParams: { ...u.customParams, [fix.paramKey as string]: next } } : u
+        ),
+        selectedUnitId: null,
+      }));
+      SoundManager.playPlace();
+      setToast(`Adjusted ${pd.label} → ${next} ${pd.unit}. Watch the water quality chip update!`);
+      return;
+    }
+
+    if (fix.kind === 'build_unit' && fix.unitTypeId) {
+      const typeId = fix.unitTypeId;
+      const def = UNIT_DEFINITIONS[typeId];
+      const spot = findFreeSpot(gs.units, gs.currentLevel.mapSize, def.footprint);
+      if (spot && (gs.gameMode === 'sandbox' || gs.financials.cash >= def.capex)) {
+        const result = GameManager.placeUnit(gs, typeId, spot.x, spot.y, 0);
+        if (result.success) {
+          setGameState(result.newState);
+          sceneRef.current?.syncUnits(result.newState.units);
+          sceneRef.current?.cameraController.focusOn(spot.x + def.footprint[0] / 2, spot.y + def.footprint[1] / 2);
+          SoundManager.playPlace();
+          setToast(`${def.name} built for $${def.capex.toLocaleString()}! Now press Auto-Pipe or connect it manually.`);
+          return;
+        }
+      }
+      // Fallback: hand placement mode
+      setSelectedUnitTypeId(typeId);
+      setToolMode('place_unit');
+      setOperatorOpen(false);
+      setToast(`${def.name} selected ($${def.capex.toLocaleString()}) — click a free spot on the grid.`);
+    }
+  }, [handleAutoPipe]);
+
+  // ─────────────────────────────────────────────────────────────────────────────
   // LEVEL CHANGE
   // ─────────────────────────────────────────────────────────────────────────────
   const handleSelectLevel = useCallback((levelIndex: number, isSandbox: boolean) => {
@@ -454,6 +511,14 @@ export const App: React.FC = () => {
 
   const selectedUnit = gameState.units.find(u => u.instanceId === gameState.selectedUnitId) ?? null;
 
+  // Cheap live violation labels for the guide teaser (no simulation needed)
+  const issueLabels = useMemo(
+    () => gameState.finalEffluent.flowRate > 10
+      ? collectViolations(gameState.finalEffluent, gameState.currentLevel.standards).map(v => v.label)
+      : [],
+    [gameState.finalEffluent, gameState.currentLevel.standards]
+  );
+
   // ─────────────────────────────────────────────────────────────────────────────
   // RENDER
   // ─────────────────────────────────────────────────────────────────────────────
@@ -474,6 +539,8 @@ export const App: React.FC = () => {
         onAutoPipe={handleAutoPipe}
         unitsCount={gameState.units.length}
         pipesCount={gameState.pipes.length}
+        issuesSummary={issueLabels}
+        onOpenOperator={() => setOperatorOpen(true)}
       />
 
       {/* ── Toast Banner ──────────────────────────────────────────────────── */}
@@ -560,6 +627,7 @@ export const App: React.FC = () => {
         onOpenPFD={() => setPfdModal(true)}
         onOpenGuide={() => setGuideModal(true)}
         onOpenSandboxControls={() => setSandboxModal(true)}
+        onOpenOperator={() => setOperatorOpen(true)}
         onToggleTopDown={handleToggleTopDown}
         isTopDown={isTopDown}
       />
@@ -645,6 +713,13 @@ export const App: React.FC = () => {
         />
       )}
       {guideModal && <TutorialGuideModal onClose={() => setGuideModal(false)} />}
+      {operatorOpen && (
+        <OperatorConsole
+          gameState={gameState}
+          onClose={() => setOperatorOpen(false)}
+          onApplyFix={handleApplyFix}
+        />
+      )}
       {gameState.levelVictoryModalOpen && (
         <VictoryModal
           level={gameState.currentLevel}

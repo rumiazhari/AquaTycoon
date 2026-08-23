@@ -804,20 +804,29 @@ export function calculateUnitProcess(
       const doTarget = p.doSetpoint || 2.0;
       dissolvedOxygen = doTarget;
       // Monod kinetics: μ = μ_max * S / (Ks + S) * DO / (K_DO + DO)
-      const doFactor = doTarget / (0.5 + doTarget);
+      // K_DO ≈ 0.3 mg/L for heterotrophic bacteria (Metcalf & Eddy)
+      const doFactor = doTarget / (0.3 + doTarget);
       const toxicPenalty = Math.max(0.2, 1 - (inlet.toxicIndex / 100) * 0.8);
-      const baseBodRemoval = 0.92;
+      const baseBodRemoval = 0.93;
       const actualBodRemoval = Math.min(0.98, baseBodRemoval * doFactor * toxicPenalty);
 
       const removedBod = eff.bod * actualBodRemoval;
       eff.bod -= removedBod;
       eff.cod = Math.max(15, eff.cod - removedBod * 1.6);
-      
-      // Nitrification: NH4 -> NO3 (requires DO > 1.5 mg/L)
-      let nitrifRate = (doTarget > 1.2) ? Math.min(0.85, 0.5 * (doTarget - 1.0) * toxicPenalty) : 0.05;
+
+      // Nitrification: autotrophs convert NH4 -> NO3 (need DO > ~1 mg/L)
+      const nitrifRate = doTarget > 1.0 ? Math.min(0.85, 0.55 * (doTarget - 0.5)) : 0.05;
       const nitrifiedNh4 = eff.nh4 * nitrifRate;
       eff.nh4 -= nitrifiedNh4;
-      eff.no3 += nitrifiedNh4 * 0.95;
+
+      // Conventional CAS still removes nitrogen: simultaneous denitrification
+      // inside the flocs plus N assimilated into waste biomass (~20%).
+      const orgN = Math.max(1.0, (inlet.tn - inlet.nh4 - inlet.no3) * 0.25);
+      eff.no3 = (eff.no3 + nitrifiedNh4) * 0.50;
+      eff.tn = eff.nh4 + eff.no3 + orgN;
+
+      // Biomass assimilation strips ~25% of phosphorus into the waste sludge
+      eff.tp *= 0.75;
 
       eff.do = doTarget;
       // NOTE: reactors pass their FULL mixed-liquor flow (feed + RAS return).
@@ -908,19 +917,27 @@ export function calculateUnitProcess(
 
     // -----------------------------------------------------
     case 'secondary_clarifier': {
-      // Gravity biomass separation
-      const sor = inlet.flowRate / 144; // standard 12x12m footprint
-      let clarifierTssRemoval = (sor < 25) ? 0.96 : (sor < 35 ? 0.90 : 0.70);
+      // Gravity biomass separation. SOR uses the NET forward (overflow) flow —
+      // the RAS underflow recirculates and does not load the clarifier surface.
+      const forward = (forwardInflow !== undefined && forwardInflow > 0.01) ? forwardInflow : inlet.flowRate;
+      const sor = forward / 144; // standard 12x12m footprint
+      const clarifierTssRemoval = sor < 20 ? 0.96 : sor < 30 ? 0.93 : sor < 40 ? 0.88 : 0.75;
 
-      eff.tss *= (1 - clarifierTssRemoval);
-      eff.turbidity = Math.max(1.5, eff.tss * 0.8);
-      eff.bod = Math.max(3, eff.bod * 0.85); // residual soluble BOD
+      const removedTss = eff.tss * clarifierTssRemoval;
+      eff.tss -= removedTss;
+      eff.turbidity = Math.max(1.2, eff.tss * 0.8);
+      eff.bod = Math.max(3, eff.bod * (1 - clarifierTssRemoval * 0.28));
+
+      // Particulate-associated pollutants settle out with the solids
+      // (particulate COD ≈ 1.45 mg COD per mg VSS, plus flocculated N & P)
+      eff.cod = Math.max(10, eff.cod - removedTss * 1.45);
+      eff.tn = Math.max(eff.nh4 + eff.no3 * 0.9, eff.tn - removedTss * 0.06);
+      eff.tp = Math.max(0.05, eff.tp - removedTss * 0.02);
 
       // BUG FIX: mass-conserving RAS split. The underflow is bounded by the main-line
       // forward flow, so the recycle loop converges instead of compounding ~4x.
       // Clarified effluent keeps the net throughput; RAS recirculates biomass.
       const rasFrac = (p.rasRecycleRatioPercent || 75) / 100;
-      const forward = (forwardInflow !== undefined && forwardInflow > 0) ? forwardInflow : inlet.flowRate * 0.55;
       const rasFlow = Math.min(rasFrac * forward, inlet.flowRate * 0.85);
       eff.flowRate = Math.max(0, inlet.flowRate - rasFlow);
 
@@ -929,7 +946,7 @@ export function calculateUnitProcess(
         flowRate: rasFlow,
         tss: 6000 // 6,000 mg/L RAS
       };
-      sludgeBlanketHeight = (sor > 35) ? 0.7 : 0.3;
+      sludgeBlanketHeight = (sor > 40) ? 0.75 : 0.3;
       efficiency = Math.round(clarifierTssRemoval * 100);
       break;
     }
@@ -960,6 +977,7 @@ export function calculateUnitProcess(
       eff.tss = Math.max(0.5, eff.tss * 0.15);
       eff.turbidity = Math.max(0.3, eff.turbidity * 0.12);
       eff.bod = Math.max(1.5, eff.bod * 0.75);
+      eff.cod = Math.max(2, eff.cod * 0.85); // filters fine floc particles
       eff.pathogens *= 0.2; // 80% physical filtration
       efficiency = 96;
       break;
@@ -1109,6 +1127,24 @@ export function calculateUnitProcess(
         pathogens: 0
       };
       efficiency = 98;
+      break;
+    }
+
+    // -----------------------------------------------------
+    case 'effluent_outfall': {
+      // Cascade / weir re-aeration at the discharge point: falling water
+      // entrains oxygen, recovering dissolved oxygen toward saturation (~9 mg/L).
+      eff.do = Math.min(9.5, eff.do + 2.5);
+      efficiency = 100;
+      break;
+    }
+
+    // -----------------------------------------------------
+    case 'influent_inlet':
+    case 'pump_station':
+    case 'pipe_junction': {
+      // Pure hydraulic nodes — no quality transformation
+      efficiency = 100;
       break;
     }
 

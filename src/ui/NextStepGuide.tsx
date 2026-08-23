@@ -1,5 +1,5 @@
 import React from 'react';
-import { Sparkles, Wand2, CheckCircle2, ChevronRight } from 'lucide-react';
+import { Sparkles, Wand2, CheckCircle2, ChevronRight, AlertTriangle, Wrench } from 'lucide-react';
 import { NextStepSuggestion } from '../gameplay/GameManager';
 import { UNIT_DEFINITIONS } from '../sim/UnitProcessModels';
 import { SoundManager } from '../audio/SoundManager';
@@ -11,6 +11,8 @@ interface NextStepGuideProps {
   onAutoPipe: () => void;
   unitsCount: number;
   pipesCount: number;
+  issuesSummary?: string[];
+  onOpenOperator?: () => void;
 }
 
 export const NextStepGuide: React.FC<NextStepGuideProps> = ({
@@ -18,9 +20,32 @@ export const NextStepGuide: React.FC<NextStepGuideProps> = ({
   onSelectSuggestion,
   onAutoPipe,
   unitsCount,
-  pipesCount
+  pipesCount,
+  issuesSummary = [],
+  onOpenOperator
 }) => {
   if (!suggestion) {
+    // Operations phase: surface water-quality issues with a direct path to the fix
+    if (issuesSummary.length > 0 && onOpenOperator) {
+      return (
+        <div className="absolute top-20 left-4 z-20 pointer-events-auto bg-slate-900/95 backdrop-blur-md border border-amber-500/50 rounded-2xl p-3 shadow-2xl max-w-xs animate-in fade-in slide-in-from-left-2 duration-200">
+          <div className="flex items-center gap-2 text-amber-400 font-bold text-xs">
+            <AlertTriangle size={15} />
+            <span>Water Quality Needs Attention</span>
+          </div>
+          <p className="text-[11px] text-slate-300 mt-1 font-mono">
+            Exceeding: {issuesSummary.slice(0, 4).join(', ')}{issuesSummary.length > 4 ? ` +${issuesSummary.length - 4} more` : ''}
+          </p>
+          <button
+            onClick={() => { SoundManager.playClick(); onOpenOperator(); }}
+            className="mt-2 w-full py-2 px-3 rounded-xl bg-gradient-to-r from-amber-500/25 to-orange-500/25 hover:from-amber-500/40 hover:to-orange-500/40 border border-amber-500/50 text-[11px] font-mono text-amber-200 font-bold flex items-center justify-center gap-1.5 transition"
+          >
+            <Wrench size={13} />
+            <span>Open Operator Console — Fix It</span>
+          </button>
+        </div>
+      );
+    }
     return (
       <div className="absolute top-20 left-4 z-20 pointer-events-auto bg-slate-900/90 backdrop-blur-md border border-emerald-500/40 rounded-2xl p-3 shadow-2xl max-w-xs animate-in fade-in slide-in-from-left-2 duration-200">
         <div className="flex items-center gap-2 text-emerald-400 font-bold text-xs">
@@ -28,9 +53,9 @@ export const NextStepGuide: React.FC<NextStepGuideProps> = ({
           <span>Core Treatment Train Complete!</span>
         </div>
         <p className="text-[11px] text-slate-300 mt-1">
-          {pipesCount === 0 
+          {pipesCount === 0
             ? 'Connect pipes between your units and to the Outfall to start treating wastewater!'
-            : 'All major units placed. Monitor effluent water quality to meet EPA regulatory standards.'}
+            : 'All water quality targets met. Keep monitoring for shock loads.'}
         </p>
         <button
           onClick={() => {

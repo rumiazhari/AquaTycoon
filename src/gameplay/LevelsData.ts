@@ -95,7 +95,7 @@ export const CAMPAIGN_LEVELS: CampaignLevel[] = [
     }),
     standards: {
       maxBod: 30,
-      maxCod: 120,
+      maxCod: 140, // two-stage bio + sand polishing achievable
       maxTss: 35,
       maxTn: 20,
       maxNh4: 10,
@@ -122,6 +122,7 @@ export const CAMPAIGN_LEVELS: CampaignLevel[] = [
       'primary_clarifier_rect',
       'activated_sludge_cas',
       'secondary_clarifier',
+      'sand_filter',
       'uv_disinfection',
       'chlorination_basin',
       'sludge_thickener',
@@ -308,7 +309,7 @@ export const CAMPAIGN_LEVELS: CampaignLevel[] = [
       maxNh4: 0.5,
       maxTp: 0.05,
       maxPathogens: 0, // 0 CFU Pathogen absolute barrier
-      minDo: 6.5,
+      minDo: 5.5, // reclaimed-water oxygenation (potable reuse)
       minPh: 7.0,
       maxPh: 8.0,
       maxTurbidity: 0.2 // Crystal clear
