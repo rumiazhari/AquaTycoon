@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { LevelBiome } from '../types/game';
 
 /**
  * Realistic 3D environment surrounding the plant site:
@@ -50,6 +51,65 @@ function tbox(w: number, h: number, d: number, mat: THREE.Material): THREE.Mesh 
 
 interface Placed { x: number; z: number; r: number; }
 
+/** Per-scenario world generation rules */
+interface BiomeConfig {
+  grassA: number; grassB: number; sand: number; mud: number;
+  hillAmp: number;
+  conifers: number; broadleaf: number; bushes: number;
+  coniferGreens: number[]; broadleafGreens: number[];
+  farmPlots: number; villageCottages: number;
+  cityDensity: number;      // multiplier on tower attempts
+  factories: number;        // industrial halls with smokestacks
+  desertMode: boolean;      // cacti/palms instead of conifers/broadleaf
+  dayBg: number; dayFog: number;
+}
+
+function biomeConfig(biome: LevelBiome): BiomeConfig {
+  switch (biome) {
+    case 'farmland':
+      return {
+        grassA: 0x6f8f3c, grassB: 0x5c7a32, sand: 0xc2b280, mud: 0x6e5b3a, hillAmp: 1.7,
+        conifers: 200, broadleaf: 150, bushes: 130,
+        coniferGreens: CONIFER_GREENS, broadleafGreens: BROADLEAF_GREENS,
+        farmPlots: 30, villageCottages: 9, cityDensity: 0.9, factories: 2,
+        desertMode: false, dayBg: 0x93c2e6, dayFog: 0xb8d4e6,
+      };
+    case 'industrial':
+      return {
+        grassA: 0x77743a, grassB: 0x66653a, sand: 0xa89a72, mud: 0x5c5138, hillAmp: 1.2,
+        conifers: 90, broadleaf: 60, bushes: 60,
+        coniferGreens: [0x5c6e35, 0x69773d], broadleafGreens: [0x7a7d36, 0x8c8030],
+        farmPlots: 6, villageCottages: 5, cityDensity: 1.25, factories: 7,
+        desertMode: false, dayBg: 0x9fb0bd, dayFog: 0xb3bec6,
+      };
+    case 'lake_forest':
+      return {
+        grassA: 0x3f7a34, grassB: 0x2f6428, sand: 0xc9bd94, mud: 0x5f5236, hillAmp: 2.4,
+        conifers: 520, broadleaf: 300, bushes: 240,
+        coniferGreens: [0x1e5c28, 0x276b30, 0x2f7a38], broadleafGreens: [0x3f8a33, 0x4c9a3e, 0x57a848],
+        farmPlots: 6, villageCottages: 7, cityDensity: 1.1, factories: 0,
+        desertMode: false, dayBg: 0x8ecaefff & 0xffffff, dayFog: 0xcfe8dc,
+      };
+    case 'desert':
+      return {
+        grassA: 0xd4b26a, grassB: 0xc4a058, sand: 0xe0c184, mud: 0x9a7d4e, hillAmp: 3.1,
+        conifers: 0, broadleaf: 0, bushes: 70,
+        coniferGreens: [], broadleafGreens: [],
+        farmPlots: 0, villageCottages: 10, cityDensity: 1.5, factories: 1,
+        desertMode: true, dayBg: 0xbfe0ef, dayFog: 0xecd9ae,
+      };
+    case 'coastal':
+    default:
+      return {
+        grassA: 0x4d7c3a, grassB: 0x3c6630, sand: 0xd6c491, mud: 0x6e5b3a, hillAmp: 1.9,
+        conifers: 260, broadleaf: 220, bushes: 170,
+        coniferGreens: CONIFER_GREENS, broadleafGreens: BROADLEAF_GREENS,
+        farmPlots: 12, villageCottages: 10, cityDensity: 0.75, factories: 1,
+        desertMode: false, dayBg: 0x87b8e4, dayFog: 0xaacdea,
+      };
+  }
+}
+
 export class TerrainGrid {
   public group: THREE.Group;
 
@@ -65,6 +125,8 @@ export class TerrainGrid {
   private static ghostBoxMatNo  = new THREE.MeshBasicMaterial({ color: 0xef4444, transparent: true, opacity: 0.38 });
   private static ghostWireMatNo = new THREE.MeshBasicMaterial({ color: 0xf87171, wireframe: true, transparent: true, opacity: 0.8 });
 
+  private cfg: BiomeConfig = biomeConfig('coastal');
+
   private W = 24;
   private D = 20;
   private padX = 46;
@@ -75,6 +137,7 @@ export class TerrainGrid {
   private riverMesh: THREE.Mesh | null = null;
   private riverBasePos: Float32Array | null = null;
   private riverNormalMap: THREE.CanvasTexture | null = null;
+  private riverFlowTex: THREE.CanvasTexture | null = null;
   private cloudMesh: THREE.InstancedMesh | null = null;
   private cloudData: { y: number; z: number; speed: number; sx: number; sy: number; sz: number }[] = [];
   private lampBulbMat: THREE.MeshStandardMaterial | null = null;
@@ -94,7 +157,8 @@ export class TerrainGrid {
 
   // ════════════════════════════ PUBLIC API ════════════════════════════
 
-  public updateSize(w: number, d: number) {
+  public updateSize(w: number, d: number, biome: LevelBiome = 'coastal') {
+    this.cfg = biomeConfig(biome);
     this._disposeEnv();
     this._buildAll(w, d);
     this.group.add(this.hoverMesh);
@@ -122,10 +186,13 @@ export class TerrainGrid {
       }
       posAttr.needsUpdate = true;
     }
-    // Ripple normal map scrolls with the current
+    // Ripple normal + bold cartoon flow streaks travel downstream
     if (this.riverNormalMap && this.riverMesh) {
       this.riverNormalMap.offset.y -= dt * 0.55;
       this.riverNormalMap.offset.x = Math.sin(elapsed * 0.35) * 0.06;
+    }
+    if (this.riverFlowTex) {
+      this.riverFlowTex.offset.y -= dt * 1.15; // unmistakable flowing motion
     }
     // Foam flecks ride the current
     if (this.flowParticles && this.flowData.length > 0) {
@@ -226,7 +293,7 @@ export class TerrainGrid {
       Math.sin(x * 0.043) * Math.cos(z * 0.051) * 1.15 +
       Math.sin(x * 0.09 + 1.3) * Math.cos(z * 0.075 + 0.4) * 0.55 +
       Math.sin((x + z) * 0.021) * 0.9;
-    let h = hills * sstep(1, 15, odist) * 2.1;
+    let h = hills * sstep(1, 15, odist) * this.cfg.hillAmp;
 
     const roadDist = Math.abs(z - this.zRoad);
     h *= 1 - sstep(4.2, 1.6, roadDist);
@@ -244,9 +311,9 @@ export class TerrainGrid {
   private _buildAll(w: number, d: number) {
     this.W = w;
     this.D = d;
-    // Huge worlds: padding grows with the site so the surroundings scale too
-    this.padX = Math.max(70, w * 0.85 + 52);
-    this.padZ = Math.max(60, d * 0.75 + 40);
+    // Vast worlds: the environment spans multiple blocks toward the horizon
+    this.padX = Math.max(170, w * 2.0 + 130);
+    this.padZ = Math.max(150, d * 1.8 + 110);
     this.zRoad = d + 3.2;
 
     // Seed varies per map size → every level gets its own unique world
@@ -258,10 +325,15 @@ export class TerrainGrid {
     this._buildSiteLighting();
     this._buildRoadsAndBridge();
     this._buildFenceAndGate();
-    this._buildForests(rng);
-    this._buildFarmFields(rng);
+    if (!this.cfg.desertMode) {
+      this._buildForests(rng);
+    } else {
+      this._buildDesertVegetation(rng);
+    }
+    if (this.cfg.farmPlots > 0) this._buildFarmFields(rng);
     this._buildVillage(rng);
     this._buildTown(rng);
+    if (this.cfg.factories > 0) this._buildFactories(rng);
     this._buildStreetLights();
     this._buildMountains();
     this._buildClouds(rng);
@@ -289,6 +361,7 @@ export class TerrainGrid {
     this.riverMesh = null;
     this.riverBasePos = null;
     this.riverNormalMap = null;
+    this.riverFlowTex = null;
     this.cloudMesh = null;
     this.cloudData = [];
     this.lampBulbMat = null;
@@ -366,8 +439,8 @@ export class TerrainGrid {
   private _buildTerrain(rng: () => number) {
     const sizeX = this.W + this.padX * 2;
     const sizeZ = this.D + this.padZ * 2;
-    const segX = Math.min(170, Math.round(sizeX / 1.6));
-    const segZ = Math.min(150, Math.round(sizeZ / 1.6));
+    const segX = Math.min(190, Math.round(sizeX / 2.2));
+    const segZ = Math.min(170, Math.round(sizeZ / 2.2));
 
     const geo = new THREE.PlaneGeometry(sizeX, sizeZ, segX, segZ);
     geo.rotateX(-Math.PI / 2);
@@ -375,10 +448,10 @@ export class TerrainGrid {
 
     const pos = geo.getAttribute('position') as THREE.BufferAttribute;
     const colors = new Float32Array(pos.count * 3);
-    const cGrassA = new THREE.Color(0x4d7c3a);
-    const cGrassB = new THREE.Color(0x3c6630);
-    const cSand   = new THREE.Color(0xc2b280);
-    const cMud    = new THREE.Color(0x6e5b3a);
+    const cGrassA = new THREE.Color(this.cfg.grassA);
+    const cGrassB = new THREE.Color(this.cfg.grassB);
+    const cSand   = new THREE.Color(this.cfg.sand);
+    const cMud    = new THREE.Color(this.cfg.mud);
     const tmp     = new THREE.Color();
 
     for (let i = 0; i < pos.count; i++) {
@@ -406,6 +479,14 @@ export class TerrainGrid {
     const terrain = new THREE.Mesh(geo, mat);
     terrain.receiveShadow = true;
     this.envGroup.add(terrain);
+
+    // Endless base plane under everything so the horizon never shows an edge
+    const underMat = std(this.cfg.grassB, 1, 0);
+    const under = new THREE.Mesh(new THREE.PlaneGeometry(4200, 4200), underMat);
+    under.rotation.x = -Math.PI / 2;
+    under.position.set(this.W / 2, -0.55, this.D / 2);
+    under.receiveShadow = false;
+    this.envGroup.add(under);
   }
 
   private _buildRiver() {
@@ -464,14 +545,40 @@ export class TerrainGrid {
     normalMap.repeat.set(2, Math.max(6, steps / 8));
     this.riverNormalMap = normalMap;
 
+    // Cartoon flow texture: bold light streaks & dashes that visibly travel
+    const fc = document.createElement('canvas');
+    fc.width = 128; fc.height = 128;
+    const fctx = fc.getContext('2d');
+    if (fctx) {
+      fctx.fillStyle = '#3db4f0';
+      fctx.fillRect(0, 0, 128, 128);
+      const rngF = mulberry32(777);
+      for (let i = 0; i < 46; i++) {
+        const y = rngF() * 128;
+        const x = rngF() * 128;
+        const wdt = 10 + rngF() * 34;
+        const hgt = 2.5 + rngF() * 4;
+        fctx.fillStyle = rngF() > 0.45 ? 'rgba(255,255,255,0.75)' : 'rgba(190,235,255,0.85)';
+        fctx.beginPath();
+        fctx.roundRect(x, y, wdt, hgt, hgt / 2);
+        fctx.fill();
+      }
+    }
+    const flowTex = new THREE.CanvasTexture(fc);
+    flowTex.wrapS = THREE.RepeatWrapping;
+    flowTex.wrapT = THREE.RepeatWrapping;
+    flowTex.repeat.set(1, Math.max(8, steps / 6));
+    this.riverFlowTex = flowTex;
+
     const mat = new THREE.MeshStandardMaterial({
-      color: 0x2277ad,
-      roughness: 0.08,
-      metalness: 0.32,
+      color: 0x2fa8e8,
+      map: flowTex,
+      roughness: 0.14,
+      metalness: 0.25,
       transparent: true,
-      opacity: 0.93,
+      opacity: 0.96,
       normalMap,
-      normalScale: new THREE.Vector2(0.85, 0.85),
+      normalScale: new THREE.Vector2(0.7, 0.7),
     });
     this.riverMesh = new THREE.Mesh(geo, mat);
     this.riverBasePos = new Float32Array(positions);
@@ -715,12 +822,10 @@ export class TerrainGrid {
   }
 
   private _buildForests(rng: () => number) {
-    const area = (this.W + this.padX * 0.9) * (this.D + this.padZ * 0.9);
-    const areaK = Math.min(1.7, Math.max(0.8, Math.sqrt(area / 11000)));
-    const N_CONIFER = Math.round(430 * areaK);
-    const N_BROAD   = Math.round(190 * areaK);
-    const N_BUSH    = Math.round(170 * areaK);
-    const N_ROCK    = Math.round(60 * areaK);
+    const N_CONIFER = this.cfg.conifers;
+    const N_BROAD   = this.cfg.broadleaf;
+    const N_BUSH    = this.cfg.bushes;
+    const N_ROCK    = Math.round(60 * ((N_CONIFER + N_BROAD) / 620) + 20);
 
     const xMin = -this.padX + 4;
     const xMax = this.W + this.padX - 4;
@@ -760,7 +865,7 @@ export class TerrainGrid {
       vPos.set(x, y, z); vScl.set(s * 0.85, s * (1.7 + rng() * 1.2), s * 0.85);
       m.compose(vPos, q, vScl);
       conifer.setMatrixAt(nC, m);
-      col.setHex(CONIFER_GREENS[Math.floor(rng() * CONIFER_GREENS.length)]);
+      col.setHex(this.cfg.coniferGreens[Math.floor(rng() * this.cfg.coniferGreens.length)]);
       conifer.setColorAt(nC, col);
       vScl.set(s * 0.8, s * 1.1, s * 0.8);
       m.compose(vPos, q, vScl);
@@ -797,7 +902,7 @@ export class TerrainGrid {
       vPos.set(x, y, z); vScl.set(s, s * (0.85 + rng() * 0.4), s);
       m.compose(vPos, q, vScl);
       broad.setMatrixAt(nB, m);
-      col.setHex(BROADLEAF_GREENS[Math.floor(rng() * BROADLEAF_GREENS.length)]);
+      col.setHex(this.cfg.broadleafGreens[Math.floor(rng() * this.cfg.broadleafGreens.length)]);
       broad.setColorAt(nB, col);
       vScl.set(s * 0.75, s, s * 0.75);
       m.compose(vPos, q, vScl);
@@ -829,7 +934,7 @@ export class TerrainGrid {
       vPos.set(x, y, z); vScl.set(s, s * 0.7, s);
       m.compose(vPos, q, vScl);
       bushes.setMatrixAt(nBush, m);
-      col.setHex(BROADLEAF_GREENS[Math.floor(rng() * BROADLEAF_GREENS.length)]).offsetHSL(0, 0, -0.04);
+      col.setHex(this.cfg.broadleafGreens[Math.floor(rng() * this.cfg.broadleafGreens.length)]).offsetHSL(0, 0, -0.04);
       bushes.setColorAt(nBush, col);
       nBush++;
     }
@@ -988,7 +1093,7 @@ export class TerrainGrid {
       addHouse(x, z, 1);
     }
     // South town across the road
-    for (let i = 0; i < 30; i++) {
+    for (let i = 0; i < Math.round(30 * this.cfg.cityDensity); i++) {
       const x = lerpN(-this.padX + 10, this.W * 0.65, rng());
       const z = lerpN(this.zRoad + 6.5, this.D + this.padZ - 10, rng());
       if (!this._townAllowed(x, z, placed, 3.4)) continue;
@@ -1002,7 +1107,7 @@ export class TerrainGrid {
       addHouse(x, z, 1.15 + rng() * 0.5);
     }
     // East city core across the river
-    for (let i = 0; i < 34; i++) {
+    for (let i = 0; i < Math.round(34 * this.cfg.cityDensity); i++) {
       const x = lerpN(this.W + 26, this.W + this.padX - 8, rng());
       const z = lerpN(-this.padZ + 12, this.D + this.padZ - 12, rng());
       if (!this._townAllowed(x, z, placed, 4.2)) continue;
@@ -1063,7 +1168,8 @@ export class TerrainGrid {
     const cropColors = [0x9aa83f, 0xc2a24a, 0x6d8c33, 0x7d6b3a];
     const plots: [number, number][] = [];
 
-    for (let i = 0; i < 24; i++) {
+    for (let i = 0; i < this.cfg.farmPlots * 2; i++) {
+      if (plots.length >= this.cfg.farmPlots) break;
       const north = i % 2 === 0;
       const fx = north
         ? lerpN(-this.padX * 0.55, this.W * 0.5, rng())
@@ -1099,6 +1205,180 @@ export class TerrainGrid {
       field.position.set(fx, y + 0.07, fz);
       field.receiveShadow = true;
       this.envGroup.add(field);
+    }
+  }
+
+  // ══════════════ DESERT VEGETATION (cacti & palms) ═══════════════════
+
+  private _buildDesertVegetation(rng: () => number) {
+    const xMin = -this.padX + 6;
+    const xMax = this.W + this.padX - 6;
+    const zMin = -this.padZ + 6;
+    const zMax = this.D + this.padZ - 6;
+    const N_CACTI = 130;
+    const N_PALMS = 70;
+
+    // Saguaro cacti
+    const trunkGeo = new THREE.CylinderGeometry(0.22, 0.28, 2.2, 8);
+    trunkGeo.translate(0, 1.1, 0);
+    const cactusMat = std(0x4f7a3a, 0.85, 0);
+    const cacti = new THREE.InstancedMesh(trunkGeo, cactusMat, N_CACTI * 3);
+    const m = new THREE.Matrix4();
+    const q = new THREE.Quaternion();
+    const eul = new THREE.Euler();
+    let n = 0;
+    for (let i = 0; i < N_CACTI; i++) {
+      const x = lerpN(xMin, xMax, rng());
+      const z = lerpN(zMin, zMax, rng());
+      if (!this._natureAllowed(x, z)) continue;
+      if (Math.abs(x - this.riverCenterX(z)) < this.riverHW + 4) continue;
+      const y = this.terrainHeight(x, z);
+      const s = 0.7 + rng() * 0.9;
+      eul.set(0, rng() * Math.PI * 2, 0); q.setFromEuler(eul);
+      m.compose(new THREE.Vector3(x, y, z), q, new THREE.Vector3(s, s, s));
+      cacti.setMatrixAt(n++, m);
+      // Arms
+      for (const side of [-1, 1]) {
+        if (rng() > 0.55) continue;
+        const armM = new THREE.Matrix4()
+          .makeTranslation(side * 0.34 * s, (1.15 + rng() * 0.5) * s, 0)
+          .multiply(new THREE.Matrix4().makeRotationZ(side * 0.9))
+          .multiply(new THREE.Matrix4().makeTranslation(0, 0.35, 0))
+          .multiply(new THREE.Matrix4().makeScale(s, s, s));
+        const armWorld = new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), q, new THREE.Vector3(1, 1, 1)).multiply(armM);
+        cacti.setMatrixAt(n++, armWorld);
+      }
+    }
+    cacti.count = n;
+    cacti.instanceMatrix.needsUpdate = true;
+    cacti.castShadow = true;
+    this.envGroup.add(cacti);
+
+    // Date palms near the riverbanks
+    const palmTrunkGeo = new THREE.CylinderGeometry(0.12, 0.2, 3.2, 7);
+    palmTrunkGeo.translate(0, 1.6, 0);
+    const frondGeo = new THREE.ConeGeometry(1.15, 0.5, 6);
+    const palms = new THREE.InstancedMesh(palmTrunkGeo, std(0xa5793f, 0.9, 0), N_PALMS);
+    const fronds = new THREE.InstancedMesh(frondGeo, std(0x5c8a3a, 0.8, 0), N_PALMS * 2);
+    let np = 0; let nf = 0;
+    for (let i = 0; i < N_PALMS; i++) {
+      const z = lerpN(zMin, zMax, rng());
+      const side = rng() > 0.5 ? 1 : -1;
+      const x = this.riverCenterX(z) + side * (this.riverHW + 3 + rng() * 10);
+      if (!this._natureAllowed(x, z)) continue;
+      const y = Math.max(-0.2, this.terrainHeight(x, z));
+      const s = 0.8 + rng() * 0.6;
+      eul.set(0, rng() * Math.PI * 2, (rng() - 0.5) * 0.16); q.setFromEuler(eul);
+      m.compose(new THREE.Vector3(x, y, z), q, new THREE.Vector3(s, s, s));
+      palms.setMatrixAt(np++, m);
+      for (let f = 0; f < 2; f++) {
+        const fm = new THREE.Matrix4().compose(
+          new THREE.Vector3((rng() - 0.5) * 0.3, (3.25 - f * 0.28) * s, (rng() - 0.5) * 0.3),
+          q.clone(),
+          new THREE.Vector3(s, s * 0.8, s)
+        );
+        fronds.setMatrixAt(nf++, fm);
+      }
+    }
+    palms.count = np; fronds.count = nf;
+    palms.instanceMatrix.needsUpdate = true;
+    fronds.instanceMatrix.needsUpdate = true;
+    palms.castShadow = true; fronds.castShadow = true;
+    this.envGroup.add(palms);
+    this.envGroup.add(fronds);
+
+    // Dry scrub bushes
+    const bushGeo = new THREE.IcosahedronGeometry(0.5, 0);
+    bushGeo.translate(0, 0.3, 0);
+    const scrubs = new THREE.InstancedMesh(bushGeo, std(0x8a8a4a, 0.95, 0), 90);
+    let ns = 0;
+    for (let i = 0; i < 900 && ns < 90; i++) {
+      const x = lerpN(xMin, xMax, rng());
+      const z = lerpN(zMin, zMax, rng());
+      if (!this._natureAllowed(x, z)) continue;
+      const y = this.terrainHeight(x, z);
+      if (y < -0.4) continue;
+      const s = 0.5 + rng() * 0.8;
+      eul.set(0, rng() * Math.PI, 0); q.setFromEuler(eul);
+      m.compose(new THREE.Vector3(x, y, z), q, new THREE.Vector3(s, s * 0.6, s));
+      scrubs.setMatrixAt(ns++, m);
+    }
+    scrubs.count = ns;
+    scrubs.instanceMatrix.needsUpdate = true;
+    this.envGroup.add(scrubs);
+  }
+
+  // ══════════════ INDUSTRIAL FACTORIES (scenario dressing) ════════════
+
+  private _buildFactories(rng: () => number) {
+    const count = this.cfg.factories;
+    for (let i = 0; i < count; i++) {
+      const north = rng() > 0.5;
+      const fx = north
+        ? lerpN(-this.padX * 0.7, this.W * 0.4, rng())
+        : lerpN(this.W * 0.55, this.W + this.padX * 0.55, rng());
+      const fz = north
+        ? lerpN(-this.padZ + 14, -this.D - 20, rng())
+        : lerpN(this.zRoad + 14, this.D + this.padZ - 16, rng());
+      if (Math.abs(fx - this.riverCenterX(fz)) < this.riverHW + 8) continue;
+      if (fx > -8 && fx < this.W + 8 && fz > -10 && fz < this.zRoad + 8) continue;
+      const fy = Math.max(0, this.terrainHeight(fx, fz));
+      const rot = rng() * Math.PI;
+
+      const hall = tbox(10 + rng() * 8, 3.2, 6 + rng() * 3, std(0x8d8578, 0.9, 0.1));
+      hall.position.set(fx, fy + 1.6, fz);
+      hall.rotation.y = rot;
+      this.envGroup.add(hall);
+
+      const sawRoof = tbox(10.6, 0.5, 6.6, std(0x6e675c, 0.9, 0.05));
+      sawRoof.position.set(fx, fy + 3.4, fz);
+      sawRoof.rotation.y = rot;
+      this.envGroup.add(sawRoof);
+
+      // Smokestacks with haze puffs
+      const stacks = 1 + Math.floor(rng() * 2);
+      for (let sIdx = 0; sIdx < stacks; sIdx++) {
+        const sx = fx + Math.cos(rot) * (2 + sIdx * 2.2);
+        const sz = fz - Math.sin(rot) * (2 + sIdx * 2.2);
+        const stackH = 6 + rng() * 4;
+        const stack = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.42, 0.6, stackH, 10),
+          std(0xa39b90, 0.92, 0.03)
+        );
+        stack.position.set(sx, fy + stackH / 2, sz);
+        stack.castShadow = true;
+        this.envGroup.add(stack);
+        const bandMat = new THREE.MeshBasicMaterial({ color: 0xd9d2c8 });
+        for (let b = 1; b <= 2; b++) {
+          const band = new THREE.Mesh(new THREE.TorusGeometry(0.52 - b * 0.06, 0.06, 6, 12), bandMat);
+          band.rotation.x = Math.PI / 2;
+          band.position.set(sx, fy + (stackH * b) / 3, sz);
+          this.envGroup.add(band);
+        }
+        // Smoke plume
+        const smokeMat = new THREE.MeshBasicMaterial({
+          color: 0xcfd4d8,
+          transparent: true,
+          opacity: 0.30,
+          depthWrite: false,
+        });
+        for (let p = 0; p < 4; p++) {
+          const puff = new THREE.Mesh(new THREE.SphereGeometry(0.8 + p * 0.55, 8, 6), smokeMat);
+          puff.position.set(sx + p * 0.7, fy + stackH + 0.6 + p * 1.15, sz + p * 0.25);
+          this.envGroup.add(puff);
+        }
+      }
+
+      // Storage tanks beside the hall
+      for (let tIdx = 0; tIdx < 2; tIdx++) {
+        const tank = new THREE.Mesh(
+          new THREE.CylinderGeometry(1.4, 1.4, 2.4, 14),
+          std(tIdx === 0 ? 0xb8bfc6 : 0xc9b08a, 0.6, 0.3)
+        );
+        tank.position.set(fx + Math.cos(rot + 1.4) * 7 + tIdx * 3, fy + 1.2, fz - Math.sin(rot + 1.4) * 7);
+        tank.castShadow = true;
+        this.envGroup.add(tank);
+      }
     }
   }
 
@@ -1146,7 +1426,7 @@ export class TerrainGrid {
     // Cottages ringing the green
     const bodyGeo = new THREE.BoxGeometry(1, 1, 1); bodyGeo.translate(0, 0.5, 0);
     const roofGeo = new THREE.ConeGeometry(0.72, 1, 4); roofGeo.rotateY(Math.PI / 4); roofGeo.translate(0, 0.5, 0);
-    const n = 7;
+    const n = this.cfg.villageCottages;
     const bodies = new THREE.InstancedMesh(bodyGeo, new THREE.MeshStandardMaterial({ roughness: 0.9 }), n);
     const roofs = new THREE.InstancedMesh(roofGeo, new THREE.MeshStandardMaterial({ roughness: 0.85 }), n);
     bodies.castShadow = true; roofs.castShadow = true;

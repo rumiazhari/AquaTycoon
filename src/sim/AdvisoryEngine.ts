@@ -11,7 +11,7 @@ import { PlacedUnit, TreatmentStandard, UnitTypeId, WaterQuality } from '../type
  */
 
 export interface FixAction {
-  kind: 'adjust_param' | 'build_unit' | 'auto_pipe';
+  kind: 'adjust_param' | 'build_unit' | 'start_piping';
   label: string;
   detail: string;
   /** predicted parameter outcome for adjust_param actions */
@@ -205,15 +205,87 @@ export function generateAdvisories(gs: GameState): Advisory[] {
       id: 'no_flow',
       severity: 'critical',
       title: 'No treated water is reaching the river',
-      cause: 'Your units are not connected with pipes yet. Water only flows through piped connections.',
+      cause: 'Water only flows through pipes YOU lay. Open the Pipes tool, click a unit to pick its output port, then click the destination. Connection order matters — each unit expects a certain feed quality.',
       fixes: [{
-        kind: 'auto_pipe',
-        label: 'Auto-connect all pipes',
-        detail: 'Links every placed unit into one treatment line automatically.',
+        kind: 'start_piping',
+        label: 'Open the Pipes tool',
+        detail: 'Manual piping: source unit → destination. Click the same unit to cycle output ports (main / sludge / gas).',
         affordable: true,
       }],
     });
     return adv;
+  }
+
+  // ── Piping-mistake detection: bad routing has real consequences ──────
+  for (const u of gs.units) {
+    const inlet = u.lastInletQuality;
+    if (!inlet || inlet.flowRate <= 1) continue;
+    const name = UNIT_DEFINITIONS[u.typeId].name;
+
+    if (u.typeId === 'uv_disinfection' && (inlet.tss > 40 || inlet.turbidity > 25)) {
+      adv.push({
+        id: `uv_shadow_${u.instanceId}`,
+        severity: 'critical',
+        title: `${name} is blinded by solids`,
+        cause: `UV light cannot penetrate water this murky (TSS ${inlet.tss.toFixed(0)} mg/L, turbidity ${inlet.turbidity.toFixed(0)} NTU) — particles shadow pathogens from the lamp, so disinfection collapses. Route UV AFTER clarifiers/filters, not straight from raw sewage.`,
+        fixes: [{ kind: 'start_piping', label: 'Re-route with the Pipes tool', detail: 'In the Pipes tool, reconnecting the same two units removes that pipe � then re-route in the correct order.', affordable: true }],
+      });
+    }
+    if (u.typeId === 'reverse_osmosis' && (inlet.tss > 2 || inlet.turbidity > 3)) {
+      adv.push({
+        id: `ro_foul_${u.instanceId}`,
+        severity: 'critical',
+        title: `${name} membranes are fouling`,
+        cause: `RO spirals demand feed water of near-zero solids (SDI < 3). Piping unfiltered water in scales and fouls the membranes — rejection drops and recovery tanks. Always pre-filter (sand filter/MBR) before RO.`,
+        fixes: [{ kind: 'start_piping', label: 'Re-route with the Pipes tool', detail: 'Reconnect the same units to remove the bad pipe, then route through a sand filter first.', affordable: true }],
+      });
+    }
+    if (u.typeId === 'mbr_membrane' && inlet.tss > 500) {
+      adv.push({
+        id: `mbr_foul_${u.instanceId}`,
+        severity: 'critical',
+        title: `${name} cassettes are clogging`,
+        cause: `MBRs are designed for biological mixed liquor (~8,000-12,000 mg/L MLSS from its own bioreactor), but raw sludge or screenings at ${inlet.tss.toFixed(0)} mg/L blind the hollow fibers instantly. Feed it bioreactor liquor, not raw waste.`,
+        fixes: [{ kind: 'start_piping', label: 'Re-route with the Pipes tool', detail: 'Remove the bad pipe (reconnect same units), then feed the MBR from a bioreactor outlet.', affordable: true }],
+      });
+    }
+    if (u.typeId === 'pump_station' && inlet.tss > 350) {
+      adv.push({
+        id: `pump_clog_${u.instanceId}`,
+        severity: 'warning',
+        title: `${name} is at risk of clogging`,
+        cause: `Unscreened sewage (TSS ${inlet.tss.toFixed(0)} mg/L) carries rags and debris that jam impellers — expect higher power draw and maintenance costs. Place a bar screen upstream of any pump.`,
+        fixes: buildFix(gs, 'bar_screen', 'A mechanical bar screen catches rags before they reach the pump.') ? [buildFix(gs, 'bar_screen', 'A mechanical bar screen catches rags before they reach the pump.')!] : [],
+      });
+    }
+    if (u.typeId === 'chlorination_basin' && inlet.nh4 > 10) {
+      adv.push({
+        id: `cl_demand_${u.instanceId}`,
+        severity: 'warning',
+        title: `${name} losing disinfection power`,
+        cause: `Chlorine reacts with ammonia (${inlet.nh4.toFixed(1)} mg/L N) to form chloramines — that consumed dose can't kill pathogens (chlorine demand). Nitrify first in an aerated bioreactor, or raise the chlorine dose.`,
+        fixes: [{ kind: 'adjust_param', label: 'Raise chlorine dose', detail: 'Compensates for chlorine demand, at a cost.', instanceId: u.instanceId, paramKey: 'chlorineDoseMgL', delta: +2, affordable: true }],
+      });
+    }
+    if (u.typeId === 'sand_filter' && inlet.tss > 220) {
+      adv.push({
+        id: `sf_blind_${u.instanceId}`,
+        severity: 'warning',
+        title: `${name} bed is blinding fast`,
+        cause: `A rapid sand filter is a POLISHING step — feeding it raw-level solids (${inlet.tss.toFixed(0)} mg/L) clogs the media within hours and forces constant backwashing. Put clarification upstream.`,
+        fixes: [{ kind: 'start_piping', label: 'Re-route with the Pipes tool', detail: 'Remove the bad pipe, then route clarification upstream of the filter.', affordable: true }],
+      });
+    }
+    if ((u.typeId === 'activated_sludge_cas' || u.typeId === 'a2o_bardenpho') && inlet.toxicIndex > 40) {
+      const eqFix = buildFix(gs, 'equalization_basin', 'An equalization basin dampens toxic shock loads protecting your biomass.');
+      adv.push({
+        id: `bio_toxic_${u.instanceId}`,
+        severity: 'critical',
+        title: `${name} biomass is dying off`,
+        cause: `Toxic industrial load (index ${inlet.toxicIndex.toFixed(0)}) kills the aerobic bacteria — biology needs equalization or chemical/oxidative pretreatment upstream, otherwise BOD removal crashes.`,
+        fixes: eqFix ? [eqFix] : [],
+      });
+    }
   }
 
   const violations = collectViolations(eff, std);

@@ -134,8 +134,8 @@ function emptyW(): any {
   const broken = GameManager.createInitialState(0, false);
   broken.units.push(mkUnit('scr', 'bar_screen', 5, 10));
   const advNoFlow = generateAdvisories(broken as any);
-  assert(advNoFlow.length > 0 && advNoFlow[0].fixes.some(f => f.kind === 'auto_pipe'),
-    'Advisor: no-pipe plant → suggests Auto-connect pipes');
+  assert(advNoFlow.length > 0 && advNoFlow[0].fixes.some(f => f.kind === 'start_piping'),
+    'Advisor: no-pipe plant → directs the player to the manual Pipes tool');
 
   // Under-performing plant: full train but DO setpoint at minimum → violations exist,
   // and the top param fix must measurably reduce the violation score.
@@ -204,6 +204,54 @@ function emptyW(): any {
   );
   assert(res.overallStats.totalGreenGenerationKw >= 127,
     `Solar+wind feed the grid: ${res.overallStats.totalGreenGenerationKw.toFixed(0)} kW green generation`);
+}
+
+// ── Test 9: PIPING CONSEQUENCE — UV blinded by raw sewage (bad routing) ─────
+{
+  const mod = require('../src/sim/UnitProcessModels');
+  const uv = mkUnit('uv', 'uv_disinfection', 0, 0);
+  const dirty = { ...emptyW(), flowRate: 3500, pathogens: 5e5, tss: 250, turbidity: 180 };
+  const clean  = { ...emptyW(), flowRate: 3500, pathogens: 5e5, tss: 3, turbidity: 2 };
+  const rDirty = mod.calculateUnitProcess(uv, dirty);
+  const rClean = mod.calculateUnitProcess(uv, clean);
+  assert(rDirty.effluent.pathogens > 5e4 && rClean.effluent.pathogens < 200,
+    `UV consequence: raw feed survives as ${rDirty.effluent.pathogens.toExponential(1)} CFU, polished feed drops to ${rClean.effluent.pathogens.toFixed(0)} CFU`);
+}
+
+// ── Test 10: CHLORINE DEMAND — ammonia starves disinfection ─────────────────
+{
+  const mod = require('../src/sim/UnitProcessModels');
+  const cl = mkUnit('cl', 'chlorination_basin', 0, 0);
+  const septic = { ...emptyW(), flowRate: 3500, pathogens: 1e6, nh4: 40 };
+  const nitrified = { ...emptyW(), flowRate: 3500, pathogens: 1e6, nh4: 1.5 };
+  const rSeptic = mod.calculateUnitProcess(cl, septic);
+  const rNitrif = mod.calculateUnitProcess(cl, nitrified);
+  assert(rSeptic.effluent.pathogens > rNitrif.effluent.pathogens * 100,
+    `Chlorine demand: septic feed leaves ${rSeptic.effluent.pathogens.toExponential(1)} vs ${rNitrif.effluent.pathogens.toExponential(1)} CFU after nitrification`);
+}
+
+// ── Test 11: RO FOULING — unpolished feed collapses rejection ───────────────
+{
+  const mod = require('../src/sim/UnitProcessModels');
+  const ro = mkUnit('ro', 'reverse_osmosis', 0, 0);
+  const unfiltered = { ...emptyW(), flowRate: 10000, bod: 30, tss: 25, turbidity: 40, pathogens: 1e4 };
+  const polished   = { ...emptyW(), flowRate: 10000, bod: 5, tss: 0.2, turbidity: 0.4, pathogens: 100 };
+  const rBad = mod.calculateUnitProcess(ro, unfiltered);
+  const rGood = mod.calculateUnitProcess(ro, polished);
+  assert(rBad.effluent.bod > rGood.effluent.bod * 5 && rBad.effluent.pathogens > rGood.effluent.pathogens,
+    `RO consequence: fouled permeate BOD ${rBad.effluent.bod.toFixed(1)} vs clean ${rGood.effluent.bod.toFixed(1)}`);
+}
+
+// ── Test 12: PUMP CLOGGING on unscreened sewage ─────────────────────────────
+{
+  const mod = require('../src/sim/UnitProcessModels');
+  const pump = mkUnit('ps', 'pump_station', 0, 0);
+  const raw = { ...emptyW(), flowRate: 3500, tss: 420 };
+  const screened = { ...emptyW(), flowRate: 3500, tss: 120 };
+  const rRaw = mod.calculateUnitProcess(pump, raw);
+  const rScr = mod.calculateUnitProcess(pump, screened);
+  assert(rRaw.opexDay > rScr.opexDay * 2 && rRaw.powerKw > rScr.powerKw,
+    `Pump consequence: unscreened opex $${rRaw.opexDay.toFixed(0)}/d & ${rRaw.powerKw.toFixed(1)} kW vs screened $${rScr.opexDay.toFixed(0)}/d`);
 }
 
 console.log(failures === 0 ? '\nALL TESTS PASSED' : `\n${failures} TEST(S) FAILED`);

@@ -961,14 +961,29 @@ export function calculateUnitProcess(
 
     // -----------------------------------------------------
     case 'mbr_membrane': {
-      // Membrane absolute barrier: TSS = 0, Turbidity < 0.2 NTU, 4-log pathogen rejection!
-      eff.tss = Math.max(0, eff.tss * 0.005);
-      eff.turbidity = Math.min(0.2, eff.turbidity * 0.02);
-      eff.bod = Math.max(2, eff.bod * 0.03);
-      eff.cod = Math.max(12, eff.cod * 0.06);
-      eff.pathogens = Math.max(0, eff.pathogens * 0.0001); // 4-log kill
-      eff.tp *= 0.6; // High particulate P retention
-      eff.do = 2.5;
+      // MEMBRANE FOULING (piping consequence): MBR cassettes are engineered
+      // for biological mixed liquor from its own bioreactor. Piping raw
+      // sludge or screenings straight in blinds the hollow fibers.
+      const fouled = inlet.tss > 500 && inlet.tss < 4000 && inlet.bod > 300;
+      if (fouled) {
+        eff.tss = Math.max(1, eff.tss * 0.3);
+        eff.turbidity = Math.min(6, eff.turbidity * 0.5);
+        eff.bod = Math.max(8, eff.bod * 0.35);
+        eff.cod = Math.max(30, eff.cod * 0.5);
+        eff.pathogens = Math.max(0, eff.pathogens * 0.05);
+        powerKw = def.powerConsumptionKw * 1.7; // suction strain
+        opexDay = def.baseOpexPerDay * 1.8;     // chemical cleans
+        efficiency = 58;
+      } else {
+        // Membrane absolute barrier: TSS = 0, Turbidity < 0.2 NTU, 4-log pathogen rejection!
+        eff.tss = Math.max(0, eff.tss * 0.005);
+        eff.turbidity = Math.min(0.2, eff.turbidity * 0.02);
+        eff.bod = Math.max(2, eff.bod * 0.03);
+        eff.cod = Math.max(12, eff.cod * 0.06);
+        eff.pathogens = Math.max(0, eff.pathogens * 0.0001); // 4-log kill
+        eff.tp *= 0.6; // High particulate P retention
+        eff.do = 2.5;
+      }
 
       const wasFlow = Math.max(10, inlet.flowRate * 0.02);
       sludge = {
@@ -977,7 +992,7 @@ export function calculateUnitProcess(
         tss: 10000 // 10,000 mg/L MBR sludge
       };
       eff.flowRate = Math.max(0, inlet.flowRate - wasFlow); // mass-conserving WAS draw
-      efficiency = 99;
+      if (!fouled) efficiency = 99;
       break;
     }
 
@@ -1039,13 +1054,26 @@ export function calculateUnitProcess(
 
     // -----------------------------------------------------
     case 'sand_filter': {
-      // Sand media depth filtration
-      eff.tss = Math.max(0.5, eff.tss * 0.15);
-      eff.turbidity = Math.max(0.3, eff.turbidity * 0.12);
-      eff.bod = Math.max(1.5, eff.bod * 0.75);
-      eff.cod = Math.max(2, eff.cod * 0.85); // filters fine floc particles
-      eff.pathogens *= 0.2; // 80% physical filtration
-      efficiency = 96;
+      // MEDIA BLINDING (piping consequence): a rapid sand filter is a
+      // polishing step. Feeding it raw-level solids clogs the bed — removal
+      // degrades and backwash costs spike until clarification is upstream.
+      const blinding = inlet.tss > 220;
+      if (blinding) {
+        eff.tss = Math.max(2, eff.tss * 0.55);
+        eff.turbidity = Math.max(1.5, eff.turbidity * 0.6);
+        eff.bod = Math.max(3, eff.bod * 0.9);
+        eff.cod = Math.max(4, eff.cod * 0.96);
+        eff.pathogens *= 0.75;
+        opexDay = def.baseOpexPerDay * 2.4; // constant backwashing
+        efficiency = 62;
+      } else {
+        eff.tss = Math.max(0.5, eff.tss * 0.15);
+        eff.turbidity = Math.max(0.3, eff.turbidity * 0.12);
+        eff.bod = Math.max(1.5, eff.bod * 0.75);
+        eff.cod = Math.max(2, eff.cod * 0.85); // filters fine floc particles
+        eff.pathogens *= 0.2; // 80% physical filtration
+        efficiency = 96;
+      }
       break;
     }
 
@@ -1065,51 +1093,87 @@ export function calculateUnitProcess(
     // -----------------------------------------------------
     case 'uv_disinfection': {
       const dose = p.uvFluenceMJCm2 || 35;
-      // UV transmittance affected by turbidity and TSS
-      const uvTransmittance = Math.max(0.3, 1 - (eff.turbidity / 30) - (eff.tss / 40));
+      // UV SHADOWING (piping consequence): suspended particles absorb and
+      // scatter germicidal light. Feeding raw/unsettled water into UV makes
+      // disinfection collapse. Calibrated so polished feed (TSS<10) still
+      // achieves a full ~4-log kill, while raw feed gets almost nothing.
+      const uvTransmittance = Math.max(0.04, 1 - (eff.turbidity / 40) - (eff.tss / 45));
       const effectiveDose = dose * uvTransmittance;
       // Log inactivation: Log10(N0/N) = k * Dose
       const logKill = Math.min(5.5, (effectiveDose / 35.0) * 4.0);
       eff.pathogens = Math.max(0, eff.pathogens * Math.pow(10, -logKill));
       powerKw = def.powerConsumptionKw * (dose / 35.0);
-      efficiency = (effectiveDose > 25) ? 99 : 75;
+      efficiency = (effectiveDose > 25) ? 99 : Math.round(uvTransmittance * 60);
       break;
     }
 
     // -----------------------------------------------------
     case 'chlorination_basin': {
       const dose = p.chlorineDoseMgL || 5.0;
-      const logKill = Math.min(4.5, dose * 0.8);
+      // CHLORINE DEMAND (piping consequence): ammonia consumes free chlorine
+      // to form chloramines. Feeding high-NH4 water into the contact tank
+      // starves disinfection — nitrify upstream or pay for more chemicals.
+      const chlorineDemand = inlet.nh4 * 0.12;
+      const freeChlorine = Math.max(0, dose - chlorineDemand);
+      const logKill = Math.min(4.5, freeChlorine * 0.85);
       eff.pathogens = Math.max(0, eff.pathogens * Math.pow(10, -logKill));
       opexDay = def.baseOpexPerDay + (dose * inlet.flowRate * 0.001 * 0.5);
-      efficiency = 98;
+      efficiency = freeChlorine > 3 ? 98 : Math.round(50 + (freeChlorine / 3) * 48);
       break;
     }
 
     // -----------------------------------------------------
     case 'reverse_osmosis': {
       const recovery = (p.recoveryPercent || 75) / 100;
-      // High-grade water reuse: 99.5% removal of everything!
-      eff.flowRate = inlet.flowRate * recovery;
-      eff.bod = 0.2;
-      eff.cod = 1.0;
-      eff.tss = 0;
-      eff.turbidity = 0.05;
-      eff.tn = 0.5;
-      eff.nh4 = 0.1;
-      eff.no3 = 0.4;
-      eff.tp = 0.01;
-      eff.pathogens = 0;
-      eff.toxicIndex = 0;
+      // MEMBRANE SCALING/FOULING (piping consequence): RO spirals require
+      // filtered, low-solids feed (SDI < 3). Piping unpolished water in
+      // scales the membranes — rejection and recovery collapse.
+      const fouled = inlet.tss > 2 || inlet.turbidity > 3;
+      if (fouled) {
+        const effRecovery = Math.max(0.35, recovery * 0.6);
+        eff.flowRate = inlet.flowRate * effRecovery;
+        eff.bod = Math.max(3, inlet.bod * 0.35);      // partial rejection only
+        eff.cod = Math.max(10, inlet.cod * 0.4);
+        eff.tss = Math.max(0.5, inlet.tss * 0.3);
+        eff.turbidity = Math.max(1, inlet.turbidity * 0.4);
+        eff.tn = Math.max(2, inlet.tn * 0.45);
+        eff.nh4 = Math.max(0.8, inlet.nh4 * 0.45);
+        eff.no3 = Math.max(1.2, inlet.no3 * 0.45);
+        eff.tp = Math.max(0.15, inlet.tp * 0.4);
+        eff.pathogens = inlet.pathogens * 0.01;       // only 2-log
+        eff.toxicIndex = inlet.toxicIndex * 0.5;
+        opexDay = def.baseOpexPerDay * 1.6;           // clean-in-place chemicals
+        powerKw = def.powerConsumptionKw * 1.25;      // higher pressure drop
+        sludge = {
+          ...cloneWater(inlet),
+          flowRate: inlet.flowRate * (1 - effRecovery),
+          tss: inlet.tss * 3,
+          tp: inlet.tp * 2.5
+        };
+        efficiency = 45;
+      } else {
+        // High-grade water reuse: 99.5% removal of everything!
+        eff.flowRate = inlet.flowRate * recovery;
+        eff.bod = 0.2;
+        eff.cod = 1.0;
+        eff.tss = 0;
+        eff.turbidity = 0.05;
+        eff.tn = 0.5;
+        eff.nh4 = 0.1;
+        eff.no3 = 0.4;
+        eff.tp = 0.01;
+        eff.pathogens = 0;
+        eff.toxicIndex = 0;
 
-      // Brine reject stream
-      sludge = {
-        ...cloneWater(inlet),
-        flowRate: inlet.flowRate * (1 - recovery),
-        tss: eff.tss * 4,
-        tp: eff.tp * 4
-      };
-      efficiency = 100;
+        // Brine reject stream
+        sludge = {
+          ...cloneWater(inlet),
+          flowRate: inlet.flowRate * (1 - recovery),
+          tss: eff.tss * 4,
+          tp: eff.tp * 4
+        };
+        efficiency = 100;
+      }
       break;
     }
 
@@ -1193,6 +1257,17 @@ export function calculateUnitProcess(
         pathogens: 0
       };
       efficiency = 98;
+      break;
+    }
+
+    case 'pump_station': {
+      // PUMP CLOGGING (piping consequence): pumps handling unscreened sewage
+      // suffer rag jamming & impeller wear — more power, more maintenance.
+      if (inlet.tss > 350) {
+        powerKw = def.powerConsumptionKw * 1.35;
+        opexDay = def.baseOpexPerDay * 2.2;
+        efficiency = 70;
+      }
       break;
     }
 

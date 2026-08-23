@@ -5,6 +5,7 @@ import { UnitMeshBuilder } from './UnitMeshes';
 import { PipeRenderer } from './PipeRenderer';
 import { PipeConnection, PlacedUnit, UnitTypeId } from '../types/simulation';
 import { UNIT_DEFINITIONS } from '../sim/UnitProcessModels';
+import type { LevelBiome } from '../types/game';
 
 const lerpN = (a: number, b: number, t: number) => a + (b - a) * t;
 
@@ -21,20 +22,34 @@ interface DayNightPalette {
   sunY: number;
 }
 
-const DAY: DayNightPalette = {
-  bg: new THREE.Color(0x87b8e4),
-  fog: new THREE.Color(0x9fc3e0),
-  dirColor: new THREE.Color(0xfff2d8),
-  dirIntensity: 2.1,
-  ambientIntensity: 0.55,
-  hemiSky: new THREE.Color(0x9ec8ef),
-  hemiGround: new THREE.Color(0x51683a),
-  sunEmissive: 0xffdf8a,
-  starOpacity: 0,
-  sunY: 120,
-};
+function makeDay(biome?: LevelBiome): DayNightPalette {
+  const p: DayNightPalette = {
+    bg: new THREE.Color(0x87b8e4),
+    fog: new THREE.Color(0x9fc3e0),
+    dirColor: new THREE.Color(0xfff2d8),
+    dirIntensity: 2.1,
+    ambientIntensity: 0.55,
+    hemiSky: new THREE.Color(0x9ec8ef),
+    hemiGround: new THREE.Color(0x51683a),
+    sunEmissive: 0xffdf8a,
+    starOpacity: 0,
+    sunY: 120,
+  };
+  if (biome === 'industrial') {
+    p.bg.setHex(0x9fb0bd); p.fog.setHex(0xb3bec6);
+    p.hemiSky.setHex(0xb4c2cc); p.hemiGround.setHex(0x5a5b46);
+  } else if (biome === 'desert') {
+    p.bg.setHex(0xbfe0ef); p.fog.setHex(0xecd9ae);
+    p.dirColor.setHex(0xfff0c2); p.hemiSky.setHex(0xd8ecf5); p.hemiGround.setHex(0x8a6f42);
+    p.dirIntensity = 2.5;
+  } else if (biome === 'lake_forest') {
+    p.bg.setHex(0x8ed0f0); p.fog.setHex(0xcfe8dc);
+    p.hemiSky.setHex(0xaadff2); p.hemiGround.setHex(0x3d6a30);
+  }
+  return p;
+}
 
-const NIGHT: DayNightPalette = {
+const NIGHT_BASE = (): DayNightPalette => ({
   bg: new THREE.Color(0x060d1c),
   fog: new THREE.Color(0x0a1526),
   dirColor: new THREE.Color(0x5f7fd8),
@@ -45,7 +60,7 @@ const NIGHT: DayNightPalette = {
   sunEmissive: 0xdfe7ff,
   starOpacity: 0.9,
   sunY: -40,
-};
+});
 
 export class SceneManager {
   public scene: THREE.Scene;
@@ -74,7 +89,9 @@ export class SceneManager {
   private stars!: THREE.Points;
   private starsMat!: THREE.PointsMaterial;
 
-  // Smooth day/night blending
+  // Smooth day/night blending (instance palettes so biomes can tint them)
+  private dayPal: DayNightPalette = makeDay();
+  private nightPal: DayNightPalette = NIGHT_BASE();
   private nightTarget = 0;
   private nightFactor = 0;
 
@@ -87,8 +104,8 @@ export class SceneManager {
     this.clock = new THREE.Clock();
 
     this.scene = new THREE.Scene();
-    this.scene.background = DAY.bg.clone();
-    this.scene.fog = new THREE.FogExp2(DAY.fog.getHex(), 0.0045);
+    this.scene.background = this.dayPal.bg.clone();
+    this.scene.fog = new THREE.FogExp2(this.dayPal.fog.getHex(), 0.0045);
 
     const w = container.clientWidth || window.innerWidth;
     const h = container.clientHeight || window.innerHeight;
@@ -117,14 +134,14 @@ export class SceneManager {
     container.appendChild(canvas);
 
     // Lighting
-    this.ambientLight = new THREE.AmbientLight(0xffffff, DAY.ambientIntensity);
+    this.ambientLight = new THREE.AmbientLight(0xffffff, this.dayPal.ambientIntensity);
     this.scene.add(this.ambientLight);
 
-    this.hemiLight = new THREE.HemisphereLight(DAY.hemiSky.getHex(), DAY.hemiGround.getHex(), 0.55);
+    this.hemiLight = new THREE.HemisphereLight(this.dayPal.hemiSky.getHex(), this.dayPal.hemiGround.getHex(), 0.55);
     this.scene.add(this.hemiLight);
 
-    this.dirLight = new THREE.DirectionalLight(DAY.dirColor.getHex(), DAY.dirIntensity);
-    this.dirLight.position.set(45, DAY.sunY, 30);
+    this.dirLight = new THREE.DirectionalLight(this.dayPal.dirColor.getHex(), this.dayPal.dirIntensity);
+    this.dirLight.position.set(45, this.dayPal.sunY, 30);
     this.dirLight.castShadow = true;
     this.dirLight.shadow.mapSize.width = 2048;
     this.dirLight.shadow.mapSize.height = 2048;
@@ -210,9 +227,9 @@ export class SceneManager {
     // Sun disc
     this.sunMesh = new THREE.Mesh(
       new THREE.SphereGeometry(14, 16, 12),
-      new THREE.MeshBasicMaterial({ color: DAY.sunEmissive, fog: false })
+      new THREE.MeshBasicMaterial({ color: this.dayPal.sunEmissive, fog: false })
     );
-    this.sunMesh.position.set(180, DAY.sunY, 90);
+    this.sunMesh.position.set(180, this.dayPal.sunY, 90);
     this.scene.add(this.sunMesh);
 
     // Stars (visible at night)
@@ -254,19 +271,19 @@ export class SceneManager {
       this.nightFactor += (this.nightTarget - this.nightFactor) * Math.min(1, dt * 1.6);
       const nf = this.nightFactor;
       if (Math.abs(this.nightTarget - this.nightFactor) > 0.001 || this.nightTarget === 1) {
-        const bg = DAY.bg.clone().lerp(NIGHT.bg, nf);
-        const fg = DAY.fog.clone().lerp(NIGHT.fog, nf);
+        const bg = this.dayPal.bg.clone().lerp(this.nightPal.bg, nf);
+        const fg = this.dayPal.fog.clone().lerp(this.nightPal.fog, nf);
         this.scene.background = bg;
         (this.scene.fog as THREE.FogExp2).color.copy(fg);
-        this.dirLight.color.copy(DAY.dirColor).lerp(NIGHT.dirColor, nf);
-        this.dirLight.intensity = lerpN(DAY.dirIntensity, NIGHT.dirIntensity, nf);
-        this.ambientLight.intensity = lerpN(DAY.ambientIntensity, NIGHT.ambientIntensity, nf);
-        this.hemiLight.color.copy(DAY.hemiSky).lerp(NIGHT.hemiSky, nf);
-        this.hemiLight.groundColor.copy(DAY.hemiGround).lerp(NIGHT.hemiGround, nf);
+        this.dirLight.color.copy(this.dayPal.dirColor).lerp(this.nightPal.dirColor, nf);
+        this.dirLight.intensity = lerpN(this.dayPal.dirIntensity, this.nightPal.dirIntensity, nf);
+        this.ambientLight.intensity = lerpN(this.dayPal.ambientIntensity, this.nightPal.ambientIntensity, nf);
+        this.hemiLight.color.copy(this.dayPal.hemiSky).lerp(this.nightPal.hemiSky, nf);
+        this.hemiLight.groundColor.copy(this.dayPal.hemiGround).lerp(this.nightPal.hemiGround, nf);
         this.skyMatDay.uniforms.nightFactor.value = nf;
-        (this.sunMesh.material as THREE.MeshBasicMaterial).color.setHex(nf > 0.5 ? NIGHT.sunEmissive : DAY.sunEmissive);
-        this.starsMat.opacity = lerpN(DAY.starOpacity, NIGHT.starOpacity, nf);
-        this.sunMesh.position.y = lerpN(DAY.sunY, NIGHT.sunY, nf);
+        (this.sunMesh.material as THREE.MeshBasicMaterial).color.setHex(nf > 0.5 ? this.nightPal.sunEmissive : this.dayPal.sunEmissive);
+        this.starsMat.opacity = lerpN(this.dayPal.starOpacity, this.nightPal.starOpacity, nf);
+        this.sunMesh.position.y = lerpN(this.dayPal.sunY, this.nightPal.sunY, nf);
         this.sunMesh.visible = this.sunMesh.position.y > -25 || nf < 0.5;
       }
 
@@ -463,13 +480,31 @@ export class SceneManager {
     this.dirLight.shadow.camera.bottom = -sd;
     this.dirLight.shadow.camera.far = sd * 6 + 200;
     this.dirLight.shadow.camera.updateProjectionMatrix();
-    this.dirLight.position.set(mapWidth / 2 + 45, DAY.sunY, mapDepth / 2 + 30);
+    this.dirLight.position.set(mapWidth / 2 + 45, this.dayPal.sunY, mapDepth / 2 + 30);
     this.dirLight.target.position.set(mapWidth / 2, 0, mapDepth / 2);
     this.dirLight.target.updateMatrixWorld();
     this.skyDome.position.set(mapWidth / 2, 0, mapDepth / 2);
     this.sunMesh.position.x = mapWidth / 2 + 180;
     this.sunMesh.position.z = mapDepth / 2 + 90;
     this.stars.position.set(mapWidth / 2, 0, mapDepth / 2);
+  }
+
+  /** Tints the whole sky/fog/light rig to match the level's scenario biome */
+  public setEnvironment(biome: LevelBiome) {
+    this.dayPal = makeDay(biome);
+    this.nightPal = NIGHT_BASE();
+    if (biome === 'industrial') {
+      this.nightPal.fog.setHex(0x11161c);
+      this.nightPal.hemiSky.setHex(0x1a2030);
+    } else if (biome === 'desert') {
+      this.nightPal.fog.setHex(0x1a1610);
+      this.nightPal.hemiGround.setHex(0x241d12);
+    } else if (biome === 'lake_forest') {
+      this.nightPal.fog.setHex(0x0a1a16);
+    }
+    // Apply immediately for a snappy level transition
+    this.scene.background = this.dayPal.bg.clone();
+    (this.scene.fog as THREE.FogExp2).color.copy(this.dayPal.fog);
   }
 
   public dispose() {

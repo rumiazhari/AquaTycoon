@@ -1,7 +1,6 @@
 import React, { useMemo } from 'react';
 import {
-  X, Activity, Wrench, Hammer, CheckCircle2, AlertTriangle,
-  Sparkles, Droplets, ArrowRight
+  X, Activity, Wrench, Hammer, CheckCircle2, AlertTriangle, Droplets, ArrowRight
 } from 'lucide-react';
 import { GameState } from '../gameplay/GameManager';
 import { Advisory, FixAction, generateAdvisories, getInfluent } from '../sim/AdvisoryEngine';
@@ -205,13 +204,13 @@ const AdvisoryCard: React.FC<{
                 ? 'opacity-40 cursor-not-allowed bg-slate-900 border-slate-700 text-slate-500'
                 : f.kind === 'build_unit'
                 ? 'bg-purple-500/15 hover:bg-purple-500/30 border-purple-500/40 text-purple-200'
-                : f.kind === 'auto_pipe'
+                : f.kind === 'start_piping'
                 ? 'bg-cyan-500/15 hover:bg-cyan-500/30 border-cyan-500/40 text-cyan-200'
                 : 'bg-sky-500/15 hover:bg-sky-500/30 border-sky-500/40 text-sky-200'
             }`}
             title={f.detail}
           >
-            {f.kind === 'build_unit' ? <Hammer size={12} /> : f.kind === 'auto_pipe' ? <Sparkles size={12} /> : <Activity size={12} />}
+            {f.kind === 'build_unit' ? <Hammer size={12} /> : f.kind === 'start_piping' ? <Wrench size={12} /> : <Activity size={12} />}
             <span>{f.label}</span>
             {f.prediction && (
               <span className="font-mono text-[10px] opacity-80 group-hover:opacity-100 flex items-center gap-0.5">

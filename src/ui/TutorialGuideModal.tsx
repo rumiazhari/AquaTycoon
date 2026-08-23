@@ -103,6 +103,20 @@ const GUIDE_SECTIONS = [
           <strong> Operator Console</strong> — it shows exactly which limits are exceeded and offers tested fixes.
         </p>
         <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 flex flex-col gap-1.5 font-mono text-[11px]">
+          <span className="text-cyan-400 font-bold">PIPING — your responsibility:</span>
+          <span>• Pipes mode: click a unit (picks its output port) → click the destination unit.</span>
+          <span>• Click the SAME unit to cycle output ports: main outlet / sludge underflow / biogas line.</span>
+          <span>• Reconnecting the same two ports REMOVES that pipe — full control to fix mistakes.</span>
+          <span>• Arrows inside pipes show flow direction; speed = flow rate. No flow = wrong routing!</span>
+          <span className="text-amber-400 font-bold mt-1">BAD ROUTING HAS CONSEQUENCES:</span>
+          <span>🔴 Raw sewage → UV: solids shadow the lamp, disinfection collapses. UV goes AFTER clarifiers/filters.</span>
+          <span>🔴 Unpolished water → RO: membranes scale & foul — recovery tanks. Always pre-filter.</span>
+          <span>🔴 Raw sludge → MBR: fibers clog instantly. Feed MBRs from bioreactor liquor.</span>
+          <span>🔴 Unscreened sewage → Pumps: rags jam impellers — power & maintenance costs spike.</span>
+          <span>🔴 High ammonia → Chlorine: chlorine gets consumed forming chloramines — nitrify first!</span>
+          <span>🔴 Raw solids → Sand filter: media blinds in hours, constant backwashing.</span>
+        </div>
+        <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 flex flex-col gap-1.5 font-mono text-[11px]">
           <span className="text-amber-400 font-bold">SYMPTOM → CURE cheat-sheet:</span>
           <span>🔴 BOD / COD high → raise Aeration DO setpoint; add a second bio stage; sand filter or ozone for stubborn COD</span>
           <span>🔴 TSS high → clarifier overloaded — add a Sand Filter or a second Clarifier</span>

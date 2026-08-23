@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { SceneManager } from './graphics/SceneManager';
 import { GameManager, GameState } from './gameplay/GameManager';
 import { ToolMode } from './types/graphics';
-import { PipeConnection, UnitTypeId } from './types/simulation';
+import { PipeConnection, PlacedUnit, UnitTypeId } from './types/simulation';
 import { UNIT_DEFINITIONS } from './sim/UnitProcessModels';
 import { generatePipePath, getPortWorldPosition, isConnectionExisting } from './sim/PipeNetwork';
 import { SoundManager } from './audio/SoundManager';
@@ -24,7 +24,7 @@ import { FixAction, findFreeSpot, collectViolations } from './sim/AdvisoryEngine
 
 import {
   ZoomIn, ZoomOut, RotateCcw, RotateCw,
-  ChevronUp, ChevronDown, Compass, Wand2, Info
+  ChevronUp, ChevronDown, Compass, Info
 } from 'lucide-react';
 
 export const App: React.FC = () => {
@@ -53,6 +53,7 @@ export const App: React.FC = () => {
   rotationRef.current = currentRotation;
 
   const [pipeSourceId, setPipeSourceId]             = useState<string | null>(null);
+  const pipeSourcePortRef = useRef<string | null>(null);
   const pipeSourceRef = useRef<string | null>(null);
   pipeSourceRef.current = pipeSourceId;
 
@@ -87,6 +88,7 @@ export const App: React.FC = () => {
     const [mapW, mapD] = initState.currentLevel.mapSize;
     const sm = new SceneManager(container, mapW, mapD);
     sceneRef.current = sm;
+    sm.setEnvironment(initState.currentLevel.biome);
 
     sm.cameraController.setCanvasSize(container.clientWidth, container.clientHeight);
     sm.syncUnits(initState.units);
@@ -253,25 +255,60 @@ export const App: React.FC = () => {
       }
 
     } else if (mode === 'connect_pipe' && clickedUnit) {
+      const OUT_TYPES = ['outlet', 'sludge_outlet', 'gas_outlet', 'recycle_outlet'];
+
+      // Helper: cycle through a unit's output ports (real plants have several:
+      // main outlet, sludge underflow, gas line, recycle…)
+      const pickOutPort = (unit: PlacedUnit, preferId?: string | null) => {
+        const fd = UNIT_DEFINITIONS[unit.typeId];
+        const outs = fd.ports.filter(p => OUT_TYPES.includes(p.type));
+        if (outs.length === 0) return null;
+        if (preferId) {
+          const idx = outs.findIndex(p => p.id === preferId);
+          if (idx >= 0 && idx < outs.length - 1) return outs[idx + 1]; // cycle forward
+        }
+        return outs[0];
+      };
+
       if (!srcId) {
+        const fp = pickOutPort(clickedUnit);
+        if (!fp) {
+          SoundManager.playWarning();
+          setToast(`${UNIT_DEFINITIONS[clickedUnit.typeId]?.name ?? clickedUnit.typeId} has no output port — it cannot feed other units.`);
+          return;
+        }
         setPipeSourceId(clickedUnit.instanceId);
+        pipeSourcePortRef.current = fp.id;
         sm.setPipeSourceHighlight(clickedUnit.instanceId, gs.units);
         SoundManager.playClick();
-        setToast(`Selected ${UNIT_DEFINITIONS[clickedUnit.typeId]?.name}. Now click the target unit to link.`);
+        setToast(`Piping FROM ${UNIT_DEFINITIONS[clickedUnit.typeId]?.name} [${fp.name}]. Click another unit to connect — click the SAME unit to switch its output port.`);
       } else if (srcId !== clickedUnit.instanceId) {
         const fromUnit = gs.units.find(u => u.instanceId === srcId);
         const toUnit   = clickedUnit;
         if (fromUnit && toUnit) {
           const fd = UNIT_DEFINITIONS[fromUnit.typeId];
           const td = UNIT_DEFINITIONS[toUnit.typeId];
-          // BUG FIX: only source from genuine OUT ports — never fall back to an
-          // inlet port (e.g. anaerobic digester has no plain outlet).
-          const fp = fd.ports.find(p => p.type === 'outlet' || p.type === 'sludge_outlet' || p.type === 'gas_outlet' || p.type === 'recycle_outlet');
-          const tp = td.ports.find(p => p.type === 'inlet'  || p.type === 'ras_inlet')  ?? td.ports[0];
+          const fp = fd.ports.find(p => p.id === (pipeSourcePortRef.current ?? '')) ?? pickOutPort(fromUnit);
+          // Target port: sludge lines look for any inlet; RAS prefers ras_inlet
+          const tp = td.ports.find(p => p.type === 'inlet' || p.type === 'ras_inlet');
           if (!fp || !tp) {
             SoundManager.playWarning();
-            setToast(`${fd.name} has no output port to pipe from.`);
-          } else if (!isConnectionExisting(gs.pipes, fromUnit.instanceId, fp.id, toUnit.instanceId, tp.id)) {
+            setToast(!fp ? `${fd.name} has no output port to pipe from.` : `${td.name} has no inlet port.`);
+          } else if (isConnectionExisting(gs.pipes, fromUnit.instanceId, fp.id, toUnit.instanceId, tp.id)) {
+            // TOGGLE: reconnecting the exact same ports removes the pipe —
+            // the player's full manual control over routing mistakes.
+            const remaining = gs.pipes.filter(p =>
+              !(p.fromUnitId === fromUnit.instanceId && p.fromPortId === fp.id &&
+                p.toUnitId === toUnit.instanceId && p.toPortId === tp.id)
+            );
+            SoundManager.playDemolish();
+            setGameState(prev => ({ ...prev, pipes: remaining }));
+            sm.syncPipes(remaining);
+            setToast(`Pipe removed: ${fd.name} [${fp.name}] ➔ ${td.name}. Re-route as needed.`);
+            setPipeSourceId(null);
+            pipeSourcePortRef.current = null;
+            sm.setPipeSourceHighlight(null, gs.units);
+          } else {
             const path = generatePipePath(getPortWorldPosition(fromUnit, fp.id), getPortWorldPosition(toUnit, tp.id));
             const newPipe: PipeConnection = {
               id: `pipe_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
@@ -286,20 +323,26 @@ export const App: React.FC = () => {
             const updatedPipes = [...gs.pipes, newPipe];
             setGameState(prev => ({ ...prev, pipes: updatedPipes }));
             sm.syncPipes(updatedPipes);
-            setToast(`Connected: ${fd.name} ➔ ${td.name}`);
+            setToast(`Connected: ${fd.name} [${fp.name}] ➔ ${td.name}. The player owns every routing decision — choose order wisely!`);
+            // Keep source selected for chaining multiple connections
+            const nextFp = pickOutPort(fromUnit, fp.id);
+            pipeSourcePortRef.current = nextFp ? nextFp.id : fp.id;
           }
         }
-        setPipeSourceId(null);
-        sm.setPipeSourceHighlight(null, gs.units);
       } else {
-        // Deselect if clicked same unit
-        setPipeSourceId(null);
-        sm.setPipeSourceHighlight(null, gs.units);
+        // Same unit clicked → cycle its output port
+        const fp = pickOutPort(clickedUnit, pipeSourcePortRef.current);
+        if (fp) {
+          pipeSourcePortRef.current = fp.id;
+          SoundManager.playClick();
+          setToast(`Output switched to [${fp.name}]. Click a target unit to connect.`);
+        }
       }
 
     } else if (mode === 'connect_pipe' && !clickedUnit && srcId) {
-      // UX FIX: clicking empty ground cancels the pending pipe source selection
+      // Clicking empty ground cancels the pending pipe source selection
       setPipeSourceId(null);
+      pipeSourcePortRef.current = null;
       sm.setPipeSourceHighlight(null, gs.units);
       setToast('Pipe link cancelled.');
     } else if (mode === 'demolish' && clickedUnit) {
@@ -375,50 +418,15 @@ export const App: React.FC = () => {
   }, []);
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // AUTO-PIPING HELPER
-  // ─────────────────────────────────────────────────────────────────────────────
-  const handleAutoPipe = useCallback(() => {
-    const gs = gsRef.current;
-    if (gs.units.length < 2) return;
-    const sorted = [...gs.units].sort((a, b) => a.gridX - b.gridX || a.gridY - b.gridY);
-    const newPipes = [...gs.pipes];
-    let count = 0;
-
-    for (let i = 0; i < sorted.length - 1; i++) {
-      const a = sorted[i], b = sorted[i + 1];
-      const da = UNIT_DEFINITIONS[a.typeId], db = UNIT_DEFINITIONS[b.typeId];
-      // BUG FIX: never auto-pipe FROM an inlet port; skip units without a real out port.
-      const pa = da.ports.find(p => p.type === 'outlet' || p.type === 'sludge_outlet' || p.type === 'gas_outlet' || p.type === 'recycle_outlet');
-      const pb = db.ports.find(p => p.type === 'inlet')  ?? db.ports[0];
-
-      if (pa && pb && !isConnectionExisting(newPipes, a.instanceId, pa.id, b.instanceId, pb.id)) {
-        const path = generatePipePath(getPortWorldPosition(a, pa.id), getPortWorldPosition(b, pb.id));
-        newPipes.push({
-          id: `pipe_auto_${Date.now()}_${i}`,
-          fromUnitId: a.instanceId, fromPortId: pa.id,
-          toUnitId:   b.instanceId, toPortId:   pb.id,
-          pathPoints: path,
-          flowRate: a.lastOutletQuality?.flowRate ?? 0,
-          quality:  a.lastOutletQuality ?? a.lastInletQuality,
-          pipeType: 'liquid',
-        });
-        count++;
-      }
-    }
-
-    if (count > 0) {
-      SoundManager.playConnect();
-      setGameState(prev => ({ ...prev, pipes: newPipes }));
-      sceneRef.current?.syncPipes(newPipes);
-      setToast(`Auto-piping linked ${count} process stages!`);
-    } else {
-      setToast('All sequential treatment units are already piped.');
-    }
-  }, []);
-
-  // ─────────────────────────────────────────────────────────────────────────────
   // SELECT SUGGESTION HANDLER
   // ─────────────────────────────────────────────────────────────────────────────
+  const handleStartPiping = useCallback(() => {
+    setToolMode('connect_pipe');
+    setOperatorOpen(false);
+    SoundManager.playClick();
+    setToast('Pipes mode: click a unit to pick its output port, then click the target. Click the SAME unit to switch ports.');
+  }, []);
+
   const handleSelectSuggestion = (typeId: UnitTypeId, gridX: number, gridY: number) => {
     setSelectedUnitTypeId(typeId);
     setToolMode('place_unit');
@@ -433,8 +441,11 @@ export const App: React.FC = () => {
   const handleApplyFix = useCallback((fix: FixAction) => {
     const gs = gsRef.current;
 
-    if (fix.kind === 'auto_pipe') {
-      handleAutoPipe();
+    if (fix.kind === 'start_piping') {
+      setToolMode('connect_pipe');
+      setOperatorOpen(false);
+      SoundManager.playClick();
+      setToast('Pipes mode: click a unit to choose its output port, then click the target unit. Click the same unit to switch ports.');
       return;
     }
 
@@ -469,7 +480,7 @@ export const App: React.FC = () => {
           sceneRef.current?.syncUnits(result.newState.units);
           sceneRef.current?.cameraController.focusOn(spot.x + def.footprint[0] / 2, spot.y + def.footprint[1] / 2);
           SoundManager.playPlace();
-          setToast(`${def.name} built for $${def.capex.toLocaleString()}! Now press Auto-Pipe or connect it manually.`);
+          setToast(`${def.name} built for $${def.capex.toLocaleString()}! Now pipe it in with the Pipes tool — order matters.`);
           return;
         }
       }
@@ -479,7 +490,7 @@ export const App: React.FC = () => {
       setOperatorOpen(false);
       setToast(`${def.name} selected ($${def.capex.toLocaleString()}) — click a free spot on the grid.`);
     }
-  }, [handleAutoPipe]);
+  }, []);
 
   // ─────────────────────────────────────────────────────────────────────────────
   // LEVEL CHANGE
@@ -489,7 +500,8 @@ export const App: React.FC = () => {
     setGameState(next);
     if (sceneRef.current) {
       const [w, d] = next.currentLevel.mapSize;
-      sceneRef.current.terrainGrid.updateSize(w, d);
+      sceneRef.current.setEnvironment(next.currentLevel.biome);
+      sceneRef.current.terrainGrid.updateSize(w, d, next.currentLevel.biome);
       sceneRef.current.updateShadowBounds(w, d);
       sceneRef.current.cameraController.resetView(w, d);
       sceneRef.current.syncUnits(next.units);
@@ -537,7 +549,7 @@ export const App: React.FC = () => {
       <NextStepGuide
         suggestion={gameState.suggestion}
         onSelectSuggestion={handleSelectSuggestion}
-        onAutoPipe={handleAutoPipe}
+        onStartPiping={handleStartPiping}
         unitsCount={gameState.units.length}
         pipesCount={gameState.pipes.length}
         issuesSummary={issueLabels}
@@ -608,15 +620,6 @@ export const App: React.FC = () => {
             <ZoomOut size={13} />
           </button>
         </div>
-
-        {/* Auto-pipe */}
-        <button onClick={handleAutoPipe}
-          className="w-full mt-0.5 py-1.5 rounded-xl text-[10px] font-mono font-bold
-                     bg-gradient-to-r from-teal-600/20 to-cyan-600/20 hover:from-teal-600/40 hover:to-cyan-600/40
-                     border border-cyan-500/30 text-cyan-300 flex items-center justify-center gap-1 transition-colors">
-          <Wand2 size={11} />
-          Auto-Pipe
-        </button>
       </div>
 
       {/* ── Header HUD ──────────────────────────────────────────────────────── */}

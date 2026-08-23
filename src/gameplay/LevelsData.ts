@@ -7,6 +7,7 @@ export const CAMPAIGN_LEVELS: CampaignLevel[] = [
   // ==========================================
   {
     id: 1,
+    biome: 'coastal',
     code: 'LVL-01',
     title: 'Seaside Haven',
     subtitle: 'Coastal Suburb Domestic Treatment',
@@ -71,6 +72,7 @@ export const CAMPAIGN_LEVELS: CampaignLevel[] = [
   // ==========================================
   {
     id: 2,
+    biome: 'farmland',
     code: 'LVL-02',
     title: 'Hop & Cream District',
     subtitle: 'High Organic Industrial Brewery & Dairy',
@@ -141,6 +143,7 @@ export const CAMPAIGN_LEVELS: CampaignLevel[] = [
   // ==========================================
   {
     id: 3,
+    biome: 'industrial',
     code: 'LVL-03',
     title: 'Synthville Petrochem & Dyes',
     subtitle: 'Toxic Synthetic Organics & Heavy Metals',
@@ -211,6 +214,7 @@ export const CAMPAIGN_LEVELS: CampaignLevel[] = [
   // ==========================================
   {
     id: 4,
+    biome: 'lake_forest',
     code: 'LVL-04',
     title: 'Emerald Lake Eco-City',
     subtitle: 'Biological Nutrient Removal & Net-Zero Energy',
@@ -283,6 +287,7 @@ export const CAMPAIGN_LEVELS: CampaignLevel[] = [
   // ==========================================
   {
     id: 5,
+    biome: 'desert',
     code: 'LVL-05',
     title: 'New Oasis Megapolis',
     subtitle: 'Direct / Indirect Potable Water Reuse (NEWater)',

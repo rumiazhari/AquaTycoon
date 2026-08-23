@@ -1,5 +1,5 @@
 import React from 'react';
-import { Sparkles, Wand2, CheckCircle2, ChevronRight, AlertTriangle, Wrench } from 'lucide-react';
+import { Sparkles, CheckCircle2, ChevronRight, AlertTriangle, Wrench, Cable } from 'lucide-react';
 import { NextStepSuggestion } from '../gameplay/GameManager';
 import { UNIT_DEFINITIONS } from '../sim/UnitProcessModels';
 import { SoundManager } from '../audio/SoundManager';
@@ -8,7 +8,7 @@ import { UnitTypeId } from '../types/simulation';
 interface NextStepGuideProps {
   suggestion: NextStepSuggestion | null;
   onSelectSuggestion: (typeId: UnitTypeId, gridX: number, gridY: number) => void;
-  onAutoPipe: () => void;
+  onStartPiping: () => void;
   unitsCount: number;
   pipesCount: number;
   issuesSummary?: string[];
@@ -18,7 +18,7 @@ interface NextStepGuideProps {
 export const NextStepGuide: React.FC<NextStepGuideProps> = ({
   suggestion,
   onSelectSuggestion,
-  onAutoPipe,
+  onStartPiping,
   unitsCount,
   pipesCount,
   issuesSummary = [],
@@ -54,19 +54,21 @@ export const NextStepGuide: React.FC<NextStepGuideProps> = ({
         </div>
         <p className="text-[11px] text-slate-300 mt-1">
           {pipesCount === 0
-            ? 'Connect pipes between your units and to the Outfall to start treating wastewater!'
-            : 'All water quality targets met. Keep monitoring for shock loads.'}
+            ? `Your units need pipes — water only flows through connections you make. Click Pipes, pick a unit, then its destination.`
+            : `${pipesCount} pipe connection${pipesCount > 1 ? 's' : ''} carrying ${unitsCount} units. Watch arrow speed — that's your flow rate.`}
         </p>
-        <button
-          onClick={() => {
-            SoundManager.playConnect();
-            onAutoPipe();
-          }}
-          className="mt-2 w-full py-1.5 px-3 rounded-xl bg-gradient-to-r from-teal-500/20 to-cyan-500/20 hover:from-teal-500/30 hover:to-cyan-500/30 border border-cyan-500/40 text-[11px] font-mono text-cyan-300 font-bold flex items-center justify-center gap-1.5 transition"
-        >
-          <Wand2 size={13} />
-          <span>Auto-Connect All Pipes</span>
-        </button>
+        {pipesCount === 0 && (
+          <button
+            onClick={() => {
+              SoundManager.playClick();
+              onStartPiping();
+            }}
+            className="mt-2 w-full py-1.5 px-3 rounded-xl bg-gradient-to-r from-teal-500/20 to-cyan-500/20 hover:from-teal-500/30 hover:to-cyan-500/30 border border-cyan-500/40 text-[11px] font-mono text-cyan-300 font-bold flex items-center justify-center gap-1.5 transition"
+          >
+            <Cable size={13} />
+            <span>Start Piping</span>
+          </button>
+        )}
       </div>
     );
   }
@@ -111,17 +113,17 @@ export const NextStepGuide: React.FC<NextStepGuideProps> = ({
         </div>
       )}
 
-      {/* Pipe Assist if units placed */}
+      {/* Pipe assist hint */}
       {unitsCount > 2 && (
         <button
           onClick={() => {
-            SoundManager.playConnect();
-            onAutoPipe();
+            SoundManager.playClick();
+            onStartPiping();
           }}
           className="w-full py-1.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 border border-cyan-500/30 text-[10px] font-mono text-cyan-300 flex items-center justify-center gap-1.5 transition"
         >
-          <Wand2 size={12} />
-          <span>Auto-Route Pipes ({pipesCount} connected)</span>
+          <Cable size={12} />
+          <span>Open Pipes Tool ({pipesCount} connected)</span>
         </button>
       )}
     </div>
