@@ -69,7 +69,7 @@ function biomeConfig(biome: LevelBiome): BiomeConfig {
     case 'farmland':
       return {
         grassA: 0x6f8f3c, grassB: 0x5c7a32, sand: 0xc2b280, mud: 0x6e5b3a, hillAmp: 1.7,
-        conifers: 700, broadleaf: 600, bushes: 400,
+        conifers: 1300, broadleaf: 1100, bushes: 750,
         coniferGreens: CONIFER_GREENS, broadleafGreens: BROADLEAF_GREENS,
         farmPlots: 48, villageCottages: 20, cityDensity: 1.2, factories: 2,
         desertMode: false, dayBg: 0x93c2e6, dayFog: 0xb8d4e6,
@@ -77,7 +77,7 @@ function biomeConfig(biome: LevelBiome): BiomeConfig {
     case 'industrial':
       return {
         grassA: 0x77743a, grassB: 0x66653a, sand: 0xa89a72, mud: 0x5c5138, hillAmp: 1.2,
-        conifers: 320, broadleaf: 240, bushes: 200,
+        conifers: 650, broadleaf: 480, bushes: 400,
         coniferGreens: [0x5c6e35, 0x69773d], broadleafGreens: [0x7a7d36, 0x8c8030],
         farmPlots: 8, villageCottages: 12, cityDensity: 1.9, factories: 8,
         desertMode: false, dayBg: 0x9fb0bd, dayFog: 0xb3bec6,
@@ -85,7 +85,7 @@ function biomeConfig(biome: LevelBiome): BiomeConfig {
     case 'lake_forest':
       return {
         grassA: 0x3f7a34, grassB: 0x2f6428, sand: 0xc9bd94, mud: 0x5f5236, hillAmp: 2.4,
-        conifers: 1400, broadleaf: 900, bushes: 700,
+        conifers: 2400, broadleaf: 1600, bushes: 1200,
         coniferGreens: [0x1e5c28, 0x276b30, 0x2f7a38], broadleafGreens: [0x3f8a33, 0x4c9a3e, 0x57a848],
         farmPlots: 8, villageCottages: 18, cityDensity: 1.6, factories: 0,
         desertMode: false, dayBg: 0x8ecaefff & 0xffffff, dayFog: 0xcfe8dc,
@@ -93,7 +93,7 @@ function biomeConfig(biome: LevelBiome): BiomeConfig {
     case 'desert':
       return {
         grassA: 0xd4b26a, grassB: 0xc4a058, sand: 0xe0c184, mud: 0x9a7d4e, hillAmp: 3.1,
-        conifers: 0, broadleaf: 0, bushes: 70,
+        conifers: 0, broadleaf: 0, bushes: 140,
         coniferGreens: [], broadleafGreens: [],
         farmPlots: 0, villageCottages: 20, cityDensity: 2.2, factories: 1,
         desertMode: true, dayBg: 0xbfe0ef, dayFog: 0xecd9ae,
@@ -102,7 +102,7 @@ function biomeConfig(biome: LevelBiome): BiomeConfig {
     default:
       return {
         grassA: 0x4d7c3a, grassB: 0x3c6630, sand: 0xd6c491, mud: 0x6e5b3a, hillAmp: 1.9,
-        conifers: 900, broadleaf: 800, bushes: 480,
+        conifers: 1800, broadleaf: 1500, bushes: 900,
         coniferGreens: CONIFER_GREENS, broadleafGreens: BROADLEAF_GREENS,
         farmPlots: 20, villageCottages: 24, cityDensity: 1.1, factories: 1,
         desertMode: false, dayBg: 0x87b8e4, dayFog: 0xaacdea,
@@ -579,6 +579,7 @@ export class TerrainGrid {
       }
     }
     const flowTex = new THREE.CanvasTexture(fc);
+    flowTex.colorSpace = THREE.SRGBColorSpace;
     flowTex.wrapS = THREE.RepeatWrapping;
     flowTex.wrapT = THREE.RepeatWrapping;
     flowTex.repeat.set(1, Math.max(8, steps / 6));
@@ -947,6 +948,7 @@ export class TerrainGrid {
       ctx.fillText('AQUATYCOON WWTP', 256, 68);
     }
     const signTex = new THREE.CanvasTexture(signCanvas);
+    signTex.colorSpace = THREE.SRGBColorSpace;
     const signPanel = new THREE.Mesh(
       new THREE.PlaneGeometry(6.4, 1.6),
       new THREE.MeshBasicMaterial({ map: signTex, side: THREE.DoubleSide })
@@ -1086,38 +1088,47 @@ export class TerrainGrid {
     if (bushes.instanceColor) bushes.instanceColor.needsUpdate = true;
     this.envGroup.add(bushes);
 
-    // Riverbank rocks with cartoon white foam rings where they meet the water
+    // River rocks — some sitting IN the water (with cartoon foam rings where
+    // they break the surface), some on the banks (no rings).
     const rockGeo = new THREE.DodecahedronGeometry(0.4, 0);
     const rocks = new THREE.InstancedMesh(rockGeo, new THREE.MeshStandardMaterial({ color: 0x7d7f83, roughness: 0.95 }), N_ROCK);
     rocks.castShadow = true;
     const foamDiscGeo = new THREE.CircleGeometry(0.62, 12);
     const foamDiscs = new THREE.InstancedMesh(
       foamDiscGeo,
-      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85, depthWrite: false }),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, depthWrite: false }),
       N_ROCK
     );
     let nR = 0;
+    let nF = 0;
     for (let tries = 0; tries < N_ROCK * 16 && nR < N_ROCK; tries++) {
       const z = lerpN(zMin, zMax, rng());
+      const inWater = rng() > 0.45;
       const side = rng() > 0.5 ? 1 : -1;
-      const x = this.riverCenterX(z) + side * (this.riverHW + 1.2 + rng() * 1.4);
-      const y = Math.max(-0.35, this.terrainHeight(x, z));
+      const x = inWater
+        ? this.riverCenterX(z) + side * rng() * this.riverHW * 0.75
+        : this.riverCenterX(z) + side * (this.riverHW + 1.2 + rng() * 1.6);
+      const y = this.terrainHeight(x, z);
+      if (y > 0.1) continue; // skip dry high banks
       const s = 0.5 + rng() * 1.1;
       eul.set(rng() * Math.PI, rng() * Math.PI, rng() * 0.4);
       q.setFromEuler(eul);
-      vPos.set(x, y, z); vScl.set(s, s * 0.8, s);
+      const rockY = inWater ? Math.max(y, -1.15) + s * 0.18 : y;
+      vPos.set(x, rockY, z); vScl.set(s, s * 0.8, s);
       m.compose(vPos, q, vScl);
       rocks.setMatrixAt(nR, m);
-      // Foam ring at the stone base
-      eul.set(-Math.PI / 2, 0, rng() * Math.PI);
-      q.setFromEuler(eul);
-      vPos.set(x, y + 0.04, z); vScl.set(s * 1.25, s * 1.1, s * 1.25);
-      m.compose(vPos, q, vScl);
-      foamDiscs.setMatrixAt(nR, m);
+      // Foam ring only where the stone breaks the water surface
+      if (inWater) {
+        eul.set(-Math.PI / 2, 0, rng() * Math.PI);
+        q.setFromEuler(eul);
+        vPos.set(x, -0.99, z); vScl.set(s * 1.45, s * 1.25, s * 1.45);
+        m.compose(vPos, q, vScl);
+        foamDiscs.setMatrixAt(nF++, m);
+      }
       nR++;
     }
     rocks.count = nR;
-    foamDiscs.count = nR;
+    foamDiscs.count = nF;
     rocks.instanceMatrix.needsUpdate = true;
     foamDiscs.instanceMatrix.needsUpdate = true;
     this.envGroup.add(rocks);
@@ -1166,7 +1177,7 @@ export class TerrainGrid {
     const vScl = new THREE.Vector3();
 
     // Shared instanced pools
-    const MAX_HOUSES = Math.round(Math.min(620, Math.max(240, ((this.W + this.padX) * (this.D + this.padZ)) / 32)));
+    const MAX_HOUSES = Math.round(Math.min(950, Math.max(400, ((this.W + this.padX) * (this.D + this.padZ)) / 19)));
     const MAX_ROOFS = MAX_HOUSES;
     const bodyGeo = new THREE.BoxGeometry(1, 1, 1);
     bodyGeo.translate(0, 0.5, 0);
@@ -1192,7 +1203,7 @@ export class TerrainGrid {
     });
     const towerGeo = new THREE.BoxGeometry(1, 1, 1);
     towerGeo.translate(0, 0.5, 0);
-    const MAX_TOWERS = Math.round(Math.min(230, Math.max(90, ((this.W * 0.4 + this.padX) * (this.D + this.padZ)) / 85)));
+    const MAX_TOWERS = Math.round(Math.min(340, Math.max(140, ((this.W * 0.4 + this.padX) * (this.D + this.padZ)) / 52)));
     const towers = new THREE.InstancedMesh(towerGeo, this.windowMat, MAX_TOWERS);
     towers.castShadow = true; towers.receiveShadow = true;
     const roofSlabMat = new THREE.MeshStandardMaterial({ color: 0x39404d, roughness: 0.9 });
@@ -1244,28 +1255,28 @@ export class TerrainGrid {
     };
 
     // West suburb
-    for (let i = 0; i < 80; i++) {
+    for (let i = 0; i < 130; i++) {
       const x = lerpN(-this.padX + 10, -12, rng());
       const z = lerpN(-this.padZ + 10, this.zRoad - 7, rng());
       if (!this._townAllowed(x, z, placed, 3.4)) continue;
       addHouse(x, z, 1);
     }
     // South town across the road
-    for (let i = 0; i < Math.round(85 * this.cfg.cityDensity); i++) {
+    for (let i = 0; i < Math.round(140 * this.cfg.cityDensity); i++) {
       const x = lerpN(-this.padX + 10, this.W * 0.65, rng());
       const z = lerpN(this.zRoad + 6.5, this.D + this.padZ - 10, rng());
       if (!this._townAllowed(x, z, placed, 3.4)) continue;
       addHouse(x, z, 1 + rng() * 0.35);
     }
     // North farms
-    for (let i = 0; i < 48; i++) {
+    for (let i = 0; i < 80; i++) {
       const x = lerpN(-this.padX + 12, this.W - 8, rng());
       const z = lerpN(-this.padZ + 10, -8, rng());
       if (!this._townAllowed(x, z, placed, 4)) continue;
       addHouse(x, z, 1.15 + rng() * 0.5);
     }
     // East city core across the river
-    for (let i = 0; i < Math.round(105 * this.cfg.cityDensity); i++) {
+    for (let i = 0; i < Math.round(170 * this.cfg.cityDensity); i++) {
       const x = lerpN(this.W + 26, this.W + this.padX - 8, rng());
       const z = lerpN(-this.padZ + 12, this.D + this.padZ - 12, rng());
       if (!this._townAllowed(x, z, placed, 4.2)) continue;
@@ -1373,8 +1384,8 @@ export class TerrainGrid {
     const xMax = this.W + this.padX - 6;
     const zMin = -this.padZ + 6;
     const zMax = this.D + this.padZ - 6;
-    const N_CACTI = 280;
-    const N_PALMS = 170;
+    const N_CACTI = 450;
+    const N_PALMS = 260;
 
     // Saguaro cacti
     const trunkGeo = new THREE.CylinderGeometry(0.22, 0.28, 2.2, 8);
@@ -1585,7 +1596,7 @@ export class TerrainGrid {
     // Cottages ringing the green
     const bodyGeo = new THREE.BoxGeometry(1, 1, 1); bodyGeo.translate(0, 0.5, 0);
     const roofGeo = new THREE.ConeGeometry(0.72, 1, 4); roofGeo.rotateY(Math.PI / 4); roofGeo.translate(0, 0.5, 0);
-    const n = this.cfg.villageCottages;
+    const n = Math.round(this.cfg.villageCottages * 1.6);
     const bodies = new THREE.InstancedMesh(bodyGeo, new THREE.MeshStandardMaterial({ roughness: 0.9 }), n);
     const roofs = new THREE.InstancedMesh(roofGeo, new THREE.MeshStandardMaterial({ roughness: 0.85 }), n);
     bodies.castShadow = true; roofs.castShadow = true;
