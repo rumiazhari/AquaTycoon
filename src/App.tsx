@@ -77,6 +77,56 @@ export const App: React.FC = () => {
   // ── Simulation interval ───────────────────────────────────────────────────────
   const simIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // ── Undo / Redo history (pipes, placement, demolition) ───────────────────────
+  const undoStackRef = useRef<GameState[]>([]);
+  const redoStackRef = useRef<GameState[]>([]);
+
+  const pushHistory = useCallback((snapshot: GameState) => {
+    undoStackRef.current.push(structuredClone(snapshot));
+    if (undoStackRef.current.length > 60) undoStackRef.current.shift();
+    redoStackRef.current = [];
+  }, []);
+
+  const applyHistoryState = useCallback((state: GameState) => {
+    setGameState(state);
+    const sm = sceneRef.current;
+    if (sm) {
+      sm.syncUnits(state.units);
+      sm.syncPipes(state.pipes);
+      if (state.suggestion) {
+        sm.showNextStepGhost(state.suggestion.unitTypeId, state.suggestion.gridX, state.suggestion.gridY);
+      } else {
+        sm.showNextStepGhost(null, 0, 0);
+      }
+    }
+  }, []);
+
+  const handleUndo = useCallback(() => {
+    const prev = undoStackRef.current.pop();
+    if (!prev) { setToast('Nothing to undo.'); return; }
+    redoStackRef.current.push(structuredClone(gsRef.current));
+    applyHistoryState(prev);
+    SoundManager.playClick();
+    setToast('Undone.');
+  }, [applyHistoryState]);
+
+  const handleRedo = useCallback(() => {
+    const next = redoStackRef.current.pop();
+    if (!next) { setToast('Nothing to redo.'); return; }
+    undoStackRef.current.push(structuredClone(gsRef.current));
+    applyHistoryState(next);
+    SoundManager.playClick();
+    setToast('Redone.');
+  }, [applyHistoryState]);
+
+  /** Cancels an in-progress pipe source selection */
+  const cancelPipeSelection = useCallback((silent: boolean = false) => {
+    setPipeSourceId(null);
+    pipeSourcePortRef.current = null;
+    sceneRef.current?.setPipeSourceHighlight(null, gsRef.current.units);
+    if (!silent) setToast('Pipe selection cancelled.');
+  }, []);
+
   // ─────────────────────────────────────────────────────────────────────────────
   // INITIALIZE THREE.JS SCENE (once)
   // ─────────────────────────────────────────────────────────────────────────────
@@ -175,10 +225,20 @@ export const App: React.FC = () => {
       }
 
       const wasDrag = pointerDist.current > 6;
+      const button = e.button;
       pointerDown.current = false;
 
-      // Only fire click action if user didn't drag
-      if (!wasDrag) {
+      if (wasDrag) return; // drags orbit/pan — never a click
+
+      if (button === 2) {
+        // RIGHT CLICK: cancel the pending pipe selection (control scheme)
+        if (toolModeRef.current === 'connect_pipe' && pipeSourceRef.current) {
+          cancelPipeSelection();
+        }
+        return;
+      }
+      if (button === 0) {
+        // LEFT CLICK: primary action
         handleCanvasClick(e.clientX, e.clientY);
       }
     };
@@ -241,6 +301,7 @@ export const App: React.FC = () => {
       if (result.success) {
         SoundManager.playPlace();
         setGameState(result.newState);
+        pushHistory(gs);
         sm.syncUnits(result.newState.units);
         if (result.newState.suggestion) {
           sm.showNextStepGhost(result.newState.suggestion.unitTypeId, result.newState.suggestion.gridX, result.newState.suggestion.gridY);
@@ -301,10 +362,11 @@ export const App: React.FC = () => {
               !(p.fromUnitId === fromUnit.instanceId && p.fromPortId === fp.id &&
                 p.toUnitId === toUnit.instanceId && p.toPortId === tp.id)
             );
+            pushHistory(gs);
             SoundManager.playDemolish();
             setGameState(prev => ({ ...prev, pipes: remaining }));
             sm.syncPipes(remaining);
-            setToast(`Pipe removed: ${fd.name} [${fp.name}] ➔ ${td.name}. Re-route as needed.`);
+            setToast(`Pipe removed: ${fd.name} [${fp.name}] ➔ ${td.name}. Re-route as needed. (Ctrl+Z to undo)`);
             setPipeSourceId(null);
             pipeSourcePortRef.current = null;
             sm.setPipeSourceHighlight(null, gs.units);
@@ -319,14 +381,16 @@ export const App: React.FC = () => {
               quality:  fromUnit.lastOutletQuality ?? fromUnit.lastInletQuality,
               pipeType: fp.type === 'sludge_outlet' ? 'sludge' : (fp.type === 'gas_outlet' ? 'gas' : 'liquid'),
             };
+            pushHistory(gs);
             SoundManager.playConnect();
             const updatedPipes = [...gs.pipes, newPipe];
             setGameState(prev => ({ ...prev, pipes: updatedPipes }));
             sm.syncPipes(updatedPipes);
-            setToast(`Connected: ${fd.name} [${fp.name}] ➔ ${td.name}. The player owns every routing decision — choose order wisely!`);
-            // Keep source selected for chaining multiple connections
-            const nextFp = pickOutPort(fromUnit, fp.id);
-            pipeSourcePortRef.current = nextFp ? nextFp.id : fp.id;
+            setToast(`Connected: ${fd.name} [${fp.name}] ➔ ${td.name}.  (Ctrl+Z to undo)`);
+            // Fresh selection for the next connection — no surprising chaining
+            setPipeSourceId(null);
+            pipeSourcePortRef.current = null;
+            sm.setPipeSourceHighlight(null, gs.units);
           }
         }
       } else {
@@ -340,11 +404,8 @@ export const App: React.FC = () => {
       }
 
     } else if (mode === 'connect_pipe' && !clickedUnit && srcId) {
-      // Clicking empty ground cancels the pending pipe source selection
-      setPipeSourceId(null);
-      pipeSourcePortRef.current = null;
-      sm.setPipeSourceHighlight(null, gs.units);
-      setToast('Pipe link cancelled.');
+      // Clicking empty ground also cancels the pending selection
+      cancelPipeSelection();
     } else if (mode === 'demolish' && clickedUnit) {
       if (clickedUnit.typeId === 'influent_inlet' || clickedUnit.typeId === 'effluent_outfall') {
         SoundManager.playWarning();
@@ -352,6 +413,7 @@ export const App: React.FC = () => {
       } else {
         SoundManager.playDemolish();
         const next = GameManager.demolishUnit(gs, clickedUnit.instanceId);
+        pushHistory(gs);
         setGameState(next);
         sm.syncUnits(next.units);
         sm.syncPipes(next.pipes);
@@ -391,19 +453,38 @@ export const App: React.FC = () => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement).tagName === 'INPUT' || (e.target as HTMLElement).tagName === 'TEXTAREA') return;
       const cam = sceneRef.current?.cameraController;
+
+      // ── Undo / Redo (Ctrl+Z, Ctrl+Y, Ctrl+Shift+Z) ──
+      if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+        const k = e.key.toLowerCase();
+        if (k === 'z' && !e.shiftKey) { e.preventDefault(); handleUndo(); return; }
+        if (k === 'y' || (k === 'z' && e.shiftKey)) { e.preventDefault(); handleRedo(); return; }
+      }
+
       switch (e.key) {
+        case 'p': case 'P':
+          setToolMode(m => (m === 'connect_pipe' ? 'select' : 'connect_pipe'));
+          setSelectedUnitTypeId(null);
+          cancelPipeSelection(true);
+          SoundManager.playClick();
+          setToast(toolModeRef.current === 'connect_pipe' ? 'Inspect mode.' : 'Pipes mode: LMB connect • click same unit to switch port • RMB cancel • Ctrl+Z undo.');
+          break;
         case 'r': case 'R':
           setCurrentRotation(r => ((r + 90) % 360) as 0|90|180|270);
           SoundManager.playClick();
           setToast('Rotated placement direction.');
           break;
         case 'Escape':
-          setToolMode('select');
-          setSelectedUnitTypeId(null);
-          setPipeSourceId(null);
-          sceneRef.current?.setPipeSourceHighlight(null, gsRef.current.units);
-          setGameState(prev => ({ ...prev, selectedUnitId: null }));
-          setToast('Select mode — click a unit to inspect.');
+          if (toolModeRef.current === 'connect_pipe' && pipeSourceRef.current) {
+            cancelPipeSelection();
+          } else {
+            setToolMode('select');
+            setSelectedUnitTypeId(null);
+            cancelPipeSelection(true);
+            sceneRef.current?.setPipeSourceHighlight(null, gsRef.current.units);
+            setGameState(prev => ({ ...prev, selectedUnitId: null }));
+            setToast('Select mode — click a unit to inspect.');
+          }
           break;
         case 'w': case 'ArrowUp':    cam?.pan(0, -90);  break;
         case 's': case 'ArrowDown':  cam?.pan(0,  90);  break;
@@ -496,6 +577,8 @@ export const App: React.FC = () => {
   // LEVEL CHANGE
   // ─────────────────────────────────────────────────────────────────────────────
   const handleSelectLevel = useCallback((levelIndex: number, isSandbox: boolean) => {
+    undoStackRef.current = [];
+    redoStackRef.current = [];
     const next = GameManager.createInitialState(levelIndex, isSandbox);
     setGameState(next);
     if (sceneRef.current) {
@@ -571,6 +654,24 @@ export const App: React.FC = () => {
         </div>
       )}
 
+      {/* ── Piping control legend (visible in Pipes mode) ──────────────────── */}
+      {toolMode === 'connect_pipe' && (
+        <div className="absolute bottom-[152px] left-1/2 -translate-x-1/2 z-30 pointer-events-none
+                        px-4 py-1.5 rounded-xl bg-slate-900/95 backdrop-blur border border-cyan-500/40
+                        shadow-2xl flex items-center gap-3 text-[10px] font-mono text-slate-300 whitespace-nowrap">
+          <span className="px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-300 font-bold border border-sky-500/30">PIPES</span>
+          <span><b className="text-slate-100">LMB</b> unit A → unit B: connect</span>
+          <span className="text-slate-600">|</span>
+          <span><b className="text-slate-100">LMB same unit</b>: switch output port</span>
+          <span className="text-slate-600">|</span>
+          <span><b className="text-slate-100">LMB again</b>: remove pipe</span>
+          <span className="text-slate-600">|</span>
+          <span><b className="text-rose-300">RMB</b>: cancel</span>
+          <span className="text-slate-600">|</span>
+          <span><b className="text-slate-100">Ctrl+Z</b> undo · <b className="text-slate-100">Ctrl+Y</b> redo</span>
+        </div>
+      )}
+
       {/* ── Camera Controls Widget (bottom-right) ─────────────────────────── */}
       <div className="absolute bottom-28 right-3 z-30 flex flex-col items-center gap-1
                       bg-slate-900/90 backdrop-blur border border-slate-700 rounded-2xl p-2 shadow-2xl
@@ -642,9 +743,10 @@ export const App: React.FC = () => {
         onSetToolMode={mode => {
           setToolMode(mode);
           setPipeSourceId(null);
+          pipeSourcePortRef.current = null;
           sceneRef.current?.setPipeSourceHighlight(null, gameState.units);
           if (mode === 'select')       setToast('Inspect Mode: Click any tank to configure parameters.');
-          if (mode === 'connect_pipe') setToast('Pipe Mode: Click unit A then unit B to connect pipe.');
+          if (mode === 'connect_pipe') setToast('Pipes: LEFT-CLICK a unit → click the destination. Click the SAME unit to switch its output port. RIGHT-CLICK to cancel. Ctrl+Z undo / Ctrl+Y redo.');
           if (mode === 'demolish')     setToast('Demolish Mode: Click any unit to remove for 70% cash refund.');
           if (mode === 'place_unit')   setToast('Choose a unit type below, then click on the grid to place.');
         }}
@@ -680,6 +782,7 @@ export const App: React.FC = () => {
             }))
           }
           onDemolish={id => {
+            pushHistory(gsRef.current);
             const next = GameManager.demolishUnit(gsRef.current, id);
             setGameState(next);
             sceneRef.current?.syncUnits(next.units);

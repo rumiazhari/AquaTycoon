@@ -122,7 +122,7 @@ export const BuildToolbar: React.FC<BuildToolbarProps> = ({
                   ? 'bg-cyan-400 text-slate-950 shadow-md font-bold'
                   : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
               }`}
-              title="Connect Pipes: Click unit A then unit B"
+              title="Pipes: LMB unit A → unit B connects. LMB same unit switches output port. LMB again removes a pipe. RMB cancels. Ctrl+Z / Ctrl+Y undo/redo."
             >
               <Cable size={14} />
               <span>Pipes</span>
