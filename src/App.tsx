@@ -490,6 +490,7 @@ export const App: React.FC = () => {
     if (sceneRef.current) {
       const [w, d] = next.currentLevel.mapSize;
       sceneRef.current.terrainGrid.updateSize(w, d);
+      sceneRef.current.updateShadowBounds(w, d);
       sceneRef.current.cameraController.resetView(w, d);
       sceneRef.current.syncUnits(next.units);
       sceneRef.current.syncPipes(next.pipes);

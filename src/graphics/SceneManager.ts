@@ -38,10 +38,10 @@ const NIGHT: DayNightPalette = {
   bg: new THREE.Color(0x060d1c),
   fog: new THREE.Color(0x0a1526),
   dirColor: new THREE.Color(0x5f7fd8),
-  dirIntensity: 0.35,
-  ambientIntensity: 0.22,
+  dirIntensity: 0.42,
+  ambientIntensity: 0.34,
   hemiSky: new THREE.Color(0x182347),
-  hemiGround: new THREE.Color(0x0c1410),
+  hemiGround: new THREE.Color(0x141d18),
   sunEmissive: 0xdfe7ff,
   starOpacity: 0.9,
   sunY: -40,
@@ -452,6 +452,24 @@ export class SceneManager {
   public handleResize(width: number, height: number) {
     this.renderer.setSize(width, height);
     this.cameraController.setAspect(width / height);
+  }
+
+  /** Re-fit the sun/shadow frustum and light rig when a bigger level loads */
+  public updateShadowBounds(mapWidth: number, mapDepth: number) {
+    const sd = Math.max(mapWidth, mapDepth) * 0.85 + 22;
+    this.dirLight.shadow.camera.left   = -sd;
+    this.dirLight.shadow.camera.right  =  sd;
+    this.dirLight.shadow.camera.top    =  sd;
+    this.dirLight.shadow.camera.bottom = -sd;
+    this.dirLight.shadow.camera.far = sd * 6 + 200;
+    this.dirLight.shadow.camera.updateProjectionMatrix();
+    this.dirLight.position.set(mapWidth / 2 + 45, DAY.sunY, mapDepth / 2 + 30);
+    this.dirLight.target.position.set(mapWidth / 2, 0, mapDepth / 2);
+    this.dirLight.target.updateMatrixWorld();
+    this.skyDome.position.set(mapWidth / 2, 0, mapDepth / 2);
+    this.sunMesh.position.x = mapWidth / 2 + 180;
+    this.sunMesh.position.z = mapDepth / 2 + 90;
+    this.stars.position.set(mapWidth / 2, 0, mapDepth / 2);
   }
 
   public dispose() {

@@ -665,8 +665,52 @@ export const UNIT_DEFINITIONS: Record<UnitTypeId, UnitDefinition> = {
     ],
     defaultParams: {},
     paramDefinitions: []
+  },
+
+  // ==========================================
+  // POWER & SITE INFRASTRUCTURE
+  // ==========================================
+  solar_array: {
+    id: 'solar_array',
+    name: 'Solar Photovoltaic Array',
+    category: 'power',
+    description: 'Ground-mounted PV panel rows offsetting plant electricity demand during daylight hours.',
+    engineeringInfo: 'Peak output ~42 kW at full sun. Output follows the day/night cycle — zero at night. Typical payback via avoided grid purchases in 6-8 years.',
+    footprint: [4, 3],
+    capex: 65000,
+    baseOpexPerDay: 12,
+    powerConsumptionKw: -42.0, // negative = generation (at peak sun)
+    minHRT_hours: 0,
+    unlockedByDefault: true,
+    ports: [],
+    defaultParams: {},
+    paramDefinitions: []
+  },
+
+  wind_turbine: {
+    id: 'wind_turbine',
+    name: 'Wind Turbine (850 kW class)',
+    category: 'power',
+    description: 'Utility-scale three-blade turbine harvesting site wind resources around the clock.',
+    engineeringInfo: 'Output varies with wind speed cubically; modeled as smooth 15-100% capacity factor waves. Generates day and night.',
+    footprint: [2, 2],
+    capex: 130000,
+    baseOpexPerDay: 18,
+    powerConsumptionKw: -85.0, // negative = generation (at rated wind)
+    minHRT_hours: 0,
+    unlockedByDefault: true,
+    ports: [],
+    defaultParams: {},
+    paramDefinitions: []
   }
 };
+
+export interface EnvironmentFactors {
+  /** 0 (midnight) → 1 (full noon sun) — drives solar output */
+  daylight: number;
+  /** 0.15–1.0 wind resource factor — drives turbine output */
+  wind: number;
+}
 
 /**
  * Executes high-precision environmental engineering mass-balance calculations
@@ -679,8 +723,30 @@ export const UNIT_DEFINITIONS: Record<UnitTypeId, UnitDefinition> = {
 export function calculateUnitProcess(
   unit: PlacedUnit,
   inlet: WaterQuality,
-  forwardInflow?: number
+  forwardInflow?: number,
+  env?: EnvironmentFactors
 ): ProcessResult {
+  // Renewable generators are standalone infrastructure with no water ports —
+  // they produce power regardless of hydraulic flow.
+  if (unit.typeId === 'solar_array') {
+    const daylight = env ? env.daylight : 1;
+    return {
+      effluent: emptyWater(),
+      powerKw: -Math.abs(UNIT_DEFINITIONS.solar_array.powerConsumptionKw) * daylight,
+      opexDay: UNIT_DEFINITIONS.solar_array.baseOpexPerDay,
+      efficiency: Math.round(daylight * 100)
+    };
+  }
+  if (unit.typeId === 'wind_turbine') {
+    const wind = env ? env.wind : 1;
+    return {
+      effluent: emptyWater(),
+      powerKw: -Math.abs(UNIT_DEFINITIONS.wind_turbine.powerConsumptionKw) * wind,
+      opexDay: UNIT_DEFINITIONS.wind_turbine.baseOpexPerDay,
+      efficiency: Math.round(wind * 100)
+    };
+  }
+
   const def = UNIT_DEFINITIONS[unit.typeId];
   if (!def || inlet.flowRate <= 0.01) {
     return {

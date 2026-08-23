@@ -103,7 +103,7 @@ export class GameManager {
       overallTpRemoval: 0,
       overallPathogenLogKill: 0,
       totalPowerDemandKw: 0,
-      totalBiogasGenerationKw: 0,
+      totalGreenGenerationKw: 0,
       energySelfSufficiencyPercent: 0,
       publicApproval: 50,
       activeAlerts: []
@@ -292,6 +292,14 @@ export class GameManager {
     // Influent choice
     const activeInfluent = state.gameMode === 'sandbox' ? state.sandboxCustomInfluent : state.currentLevel.influentSpec;
 
+    // Environmental factors driving renewable generation:
+    // daylight is a bell curve between 06:00 and 19:00; wind meanders slowly.
+    const hourOfDay = (newDays % 1) * 24;
+    const daylight = (hourOfDay >= 6 && hourOfDay < 19)
+      ? Math.max(0, Math.sin(((hourOfDay - 6) / 13) * Math.PI))
+      : 0;
+    const wind = 0.15 + 0.85 * Math.max(0, 0.5 + 0.5 * Math.sin(newDays * 2.9) * Math.sin(newDays * 1.31 + 1.7));
+
     // Solve process engineering mass-balance
     const simResult = SimulationEngine.stepSimulation(
       state.units,
@@ -299,7 +307,10 @@ export class GameManager {
       activeInfluent,
       state.currentLevel.standards,
       state.financials,
-      state.currentLevel.tariffPerM3
+      state.currentLevel.tariffPerM3,
+      0.15,
+      45,
+      { daylight, wind }
     );
 
     // Apply financial cash flow

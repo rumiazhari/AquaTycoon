@@ -14,7 +14,7 @@ export const CAMPAIGN_LEVELS: CampaignLevel[] = [
     difficulty: 'Beginner',
     briefing: 'Construct a primary and secondary treatment line for a growing coastal town. Prevent beach pollution fines by reducing organic loads (BOD) and suspended solids (TSS) before outfall discharge.',
     backgroundStory: 'Tourism is the lifeblood of Seaside Haven. However, raw discharge into the bay is threatening the blue-flag beach status. The mayor has provided an initial municipal grant to construct your first automated WWTP.',
-    mapSize: [28, 22],
+    mapSize: [40, 30],
     startingBudget: 350000,
     tariffPerM3: 0.45,
     bonusReward: 80000,
@@ -59,6 +59,7 @@ export const CAMPAIGN_LEVELS: CampaignLevel[] = [
       'secondary_clarifier',
       'uv_disinfection',
       'sludge_thickener',
+      'solar_array',
       'pump_station',
       'effluent_outfall'
     ],
@@ -77,7 +78,7 @@ export const CAMPAIGN_LEVELS: CampaignLevel[] = [
     difficulty: 'Intermediate',
     briefing: 'Manage massive organic shock loads from local craft breweries and dairy processing plants. High COD and FOG require equalization, DAF, and robust biological aeration to prevent sludge bulking.',
     backgroundStory: 'The craft beer and artisanal cheese boom has overwhelmed local sewers. High sugar and whey cause severe oxygen depletion in the river. You must deploy equalizers and DAF to tackle the extreme BOD (1,200 mg/L).',
-    mapSize: [32, 24],
+    mapSize: [48, 36],
     startingBudget: 550000,
     tariffPerM3: 0.75,
     bonusReward: 140000,
@@ -128,6 +129,7 @@ export const CAMPAIGN_LEVELS: CampaignLevel[] = [
       'sludge_thickener',
       'sludge_dewatering_press',
       'pump_station',
+      'solar_array',
       'pipe_junction',
       'effluent_outfall'
     ],
@@ -146,7 +148,7 @@ export const CAMPAIGN_LEVELS: CampaignLevel[] = [
     difficulty: 'Advanced',
     briefing: 'Industrial wastewater containing synthetic textile azo dyes, petrochemicals, and heavy toxics. Biological bugs will die unless you use resilient MBBR biofilm, chemical coagulation, and Advanced Oxidation (O3/AOP).',
     backgroundStory: 'Discharges from chemical synthesis plants are turning the river neon purple. Strict new environmental laws threaten to shut down the industrial zone unless you achieve 99% toxic degradation.',
-    mapSize: [36, 26],
+    mapSize: [56, 42],
     startingBudget: 850000,
     tariffPerM3: 1.20,
     bonusReward: 220000,
@@ -197,6 +199,7 @@ export const CAMPAIGN_LEVELS: CampaignLevel[] = [
       'anaerobic_digester',
       'sludge_dewatering_press',
       'pump_station',
+      'solar_array',
       'pipe_junction',
       'effluent_outfall'
     ],
@@ -215,7 +218,7 @@ export const CAMPAIGN_LEVELS: CampaignLevel[] = [
     difficulty: 'Master',
     briefing: 'A pristine lake is experiencing eutrophication and toxic cyanobacteria blooms. Deploy 3-Stage A2O Nutrient Removal (TN < 5 mg/L, TP < 0.2 mg/L) and Anaerobic Digestion with Biogas CHP to achieve 50%+ Energy Self-Sufficiency!',
     backgroundStory: 'The UNESCO-listed Emerald Lake is on the brink of ecological collapse. The city council has mandated state-of-the-art biological nutrient removal (BNR) alongside circular energy recovery from sludge digestion.',
-    mapSize: [42, 30],
+    mapSize: [64, 48],
     startingBudget: 1400000,
     tariffPerM3: 0.95,
     bonusReward: 350000,
@@ -267,8 +270,10 @@ export const CAMPAIGN_LEVELS: CampaignLevel[] = [
       'sludge_dewatering_press',
       'solar_drying_bed',
       'pump_station',
+      'solar_array',
       'pipe_junction',
-      'effluent_outfall'
+      'effluent_outfall',
+      'wind_turbine'
     ],
     weather: 'sunny'
   },
@@ -285,7 +290,7 @@ export const CAMPAIGN_LEVELS: CampaignLevel[] = [
     difficulty: 'Extreme',
     briefing: 'Water is liquid gold in the arid desert. Transform raw municipal wastewater into ultra-pure drinking grade reclaimed water using Membrane Bioreactors (MBR), Reverse Osmosis (RO), and UV-AOP disinfection.',
     backgroundStory: 'With zero natural freshwater lakes or rivers, New Oasis relies 100% on high-tech water recycling. You must engineer a closed-loop multi-barrier facility producing zero-turbidity water safe for drinking.',
-    mapSize: [48, 32],
+    mapSize: [72, 54],
     startingBudget: 2800000,
     tariffPerM3: 2.50, // High value reclaimed water!
     bonusReward: 600000,
@@ -338,8 +343,10 @@ export const CAMPAIGN_LEVELS: CampaignLevel[] = [
       'sludge_dewatering_press',
       'solar_drying_bed',
       'pump_station',
+      'solar_array',
       'pipe_junction',
-      'effluent_outfall'
+      'effluent_outfall',
+      'wind_turbine'
     ],
     weather: 'sunny'
   }

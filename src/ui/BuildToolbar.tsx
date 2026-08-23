@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
-import { 
-  MousePointer, Cable, Trash2, RotateCw, Filter, 
+import {
+  MousePointer, Cable, Trash2, RotateCw, Filter,
   Layers, Activity, Sparkles, Recycle, ArrowRightLeft,
-  Info, Star
+  Info, Star, Zap
 } from 'lucide-react';
 import { UnitCategory, UnitDefinition, UnitTypeId } from '../types/simulation';
 import { ToolMode } from '../types/graphics';
@@ -30,7 +30,8 @@ const CATEGORIES: { id: UnitCategory; label: string; icon: React.ReactNode }[] =
   { id: 'secondary', label: '3. Biological', icon: <Activity size={14} /> },
   { id: 'tertiary', label: '4. Tertiary / UV', icon: <Sparkles size={14} /> },
   { id: 'sludge', label: '5. Sludge & Biogas', icon: <Recycle size={14} /> },
-  { id: 'hydraulics', label: '6. Hydraulics', icon: <ArrowRightLeft size={14} /> }
+  { id: 'hydraulics', label: '6. Hydraulics', icon: <ArrowRightLeft size={14} /> },
+  { id: 'power', label: '7. Power & Site', icon: <Zap size={14} /> }
 ];
 
 export const BuildToolbar: React.FC<BuildToolbarProps> = ({

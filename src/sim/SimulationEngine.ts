@@ -1,6 +1,6 @@
 import { GameFinancials, PlantOverallStats } from '../types/game';
 import { PipeConnection, PlacedUnit, TreatmentStandard, WaterQuality } from '../types/simulation';
-import { calculateUnitProcess, ProcessResult } from './UnitProcessModels';
+import { calculateUnitProcess, EnvironmentFactors, ProcessResult } from './UnitProcessModels';
 import { cloneWater, emptyWater, mixWaterStreams } from './WaterStream';
 
 export interface SimulationStepResult {
@@ -23,7 +23,8 @@ export class SimulationEngine {
     currentFinancials: GameFinancials,
     tariffPerM3: number,
     powerCostPerKwh: number = 0.15,
-    sludgeDisposalCostPerTon: number = 45
+    sludgeDisposalCostPerTon: number = 45,
+    env?: EnvironmentFactors
   ): SimulationStepResult {
     const unitMap = new Map<string, PlacedUnit>();
     units.forEach(u => unitMap.set(u.instanceId, { ...u }));
@@ -79,7 +80,7 @@ export class SimulationEngine {
           .reduce((acc, p) => acc + p.flowRate, 0);
 
         // Run unit process calculation
-        const result = calculateUnitProcess(unit, mergedInlet, forwardInflow);
+        const result = calculateUnitProcess(unit, mergedInlet, forwardInflow, env);
         unitResults.set(unit.instanceId, result);
 
         // Update unit state
@@ -128,22 +129,23 @@ export class SimulationEngine {
 
     // Power & Gas aggregation
     let totalPowerDemandKw = 0;
-    let totalBiogasGenerationKw = 0;
+    let totalGreenGenerationKw = 0;
     let totalUnitOpex = 0;
 
     for (const u of unitMap.values()) {
       if (u.lastPowerKwActual > 0) {
         totalPowerDemandKw += u.lastPowerKwActual;
       } else if (u.lastPowerKwActual < 0) {
-        totalBiogasGenerationKw += Math.abs(u.lastPowerKwActual);
+        // All green generation: biogas CHP + solar PV + wind turbines
+        totalGreenGenerationKw += Math.abs(u.lastPowerKwActual);
       }
       totalUnitOpex += (u.lastOpexActual || 0);
     }
 
-    const netPowerKw = Math.max(0, totalPowerDemandKw - totalBiogasGenerationKw);
+    const netPowerKw = Math.max(0, totalPowerDemandKw - totalGreenGenerationKw);
     const energySelfSufficiency = totalPowerDemandKw > 0
-      ? Math.min(100, (totalBiogasGenerationKw / totalPowerDemandKw) * 100)
-      : 0;
+      ? Math.min(100, (totalGreenGenerationKw / totalPowerDemandKw) * 100)
+      : (totalGreenGenerationKw > 0 ? 100 : 0);
 
     // 5. Compliance Check against Environmental Standards
     const violations: string[] = [];
@@ -165,7 +167,7 @@ export class SimulationEngine {
     // 6. Economic Calculations (Per Day)
     const dailyTreatedM3 = eff.flowRate;
     const dailyTariffRevenue = complianceScore >= 80 ? (dailyTreatedM3 * tariffPerM3) : (dailyTreatedM3 * tariffPerM3 * 0.4);
-    const dailyBiogasElectricityRevenue = totalBiogasGenerationKw * 24 * powerCostPerKwh;
+    const dailyBiogasElectricityRevenue = totalGreenGenerationKw * 24 * powerCostPerKwh;
     const dailyPowerCost = netPowerKw * 24 * powerCostPerKwh;
     const dailyChemicalCost = totalUnitOpex * 0.4;
     const dailySludgeCost = (dailyTreatedM3 * 0.001) * sludgeDisposalCostPerTon;
@@ -202,7 +204,7 @@ export class SimulationEngine {
       overallTpRemoval: tpRem,
       overallPathogenLogKill: pathogenLogKill,
       totalPowerDemandKw,
-      totalBiogasGenerationKw,
+      totalGreenGenerationKw,
       energySelfSufficiencyPercent: energySelfSufficiency,
       publicApproval: Math.max(10, Math.min(100, complianceScore + (energySelfSufficiency > 40 ? 10 : 0))),
       activeAlerts

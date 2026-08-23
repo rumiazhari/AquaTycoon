@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import {
-  Play, Pause, FastForward, DollarSign,
+  Play, Pause, FastForward, DollarSign, Zap,
   BookOpen, Map, Volume2, VolumeX,
   CheckCircle2, AlertTriangle, Menu, Gauge, GitBranch, Sliders
 } from 'lucide-react';
@@ -38,7 +38,7 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({
   const [showObjectives, setShowObjectives] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
 
-  const { financials, currentLevel, simSpeed, gameTimeDays, gameMode } = gameState;
+  const { financials, overallStats, currentLevel, simSpeed, gameTimeDays, gameMode } = gameState;
 
   // Headline water-quality status (cheap — no simulation)
   const violations = gameState.finalEffluent.flowRate > 10
@@ -84,6 +84,22 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({
           <div className="hidden lg:block px-2.5 py-1 rounded-lg bg-slate-900/80 border border-slate-700/80 font-mono">
             <div className="text-[11px] font-bold text-sky-300 leading-none">Day {dayNumber}</div>
             <div className="text-[9px] text-slate-400">{gameState.isNight ? '🌙 Night' : '☀️ Day'} {hourNumber.toString().padStart(2, '0')}:00</div>
+          </div>
+
+          {/* Power system readout: demand vs on-site green generation */}
+          <div
+            className="hidden md:flex items-center gap-2 px-2.5 py-1 rounded-lg bg-slate-900/80 border border-slate-700/80"
+            title={`Plant demand ${overallStats.totalPowerDemandKw.toFixed(0)} kW — green generation (biogas CHP + solar + wind) ${overallStats.totalGreenGenerationKw.toFixed(0)} kW — self-sufficiency ${overallStats.energySelfSufficiencyPercent.toFixed(0)}%`}
+          >
+            <Zap size={14} className={overallStats.totalGreenGenerationKw > 0 ? 'text-emerald-400 shrink-0' : 'text-amber-400 shrink-0'} />
+            <div className="leading-none">
+              <div className="text-[11px] font-bold font-mono text-amber-300">
+                {overallStats.totalPowerDemandKw.toFixed(0)} kW
+              </div>
+              <div className={`text-[9px] font-mono ${overallStats.totalGreenGenerationKw > 0 ? 'text-emerald-400' : 'text-slate-500'}`}>
+                🌱 {overallStats.totalGreenGenerationKw.toFixed(0)} kW • {overallStats.energySelfSufficiencyPercent.toFixed(0)}% self
+              </div>
+            </div>
           </div>
         </div>
 

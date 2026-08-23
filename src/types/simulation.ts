@@ -15,13 +15,14 @@ export interface WaterQuality {
   turbidity: number;     // NTU
 }
 
-export type UnitCategory = 
+export type UnitCategory =
   | 'preliminary'
   | 'primary'
   | 'secondary'
   | 'tertiary'
   | 'sludge'
   | 'hydraulics'
+  | 'power'
   | 'decoration';
 
 export type UnitTypeId =
@@ -57,7 +58,10 @@ export type UnitTypeId =
   | 'pump_station'
   | 'pipe_junction'
   | 'effluent_outfall'
-  | 'influent_inlet';
+  | 'influent_inlet'
+  // Power & Site Infrastructure
+  | 'solar_array'
+  | 'wind_turbine';
 
 export interface UnitPort {
   id: string;

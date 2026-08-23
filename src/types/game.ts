@@ -71,7 +71,8 @@ export interface PlantOverallStats {
   overallTpRemoval: number;      // %
   overallPathogenLogKill: number;// log10 reduction
   totalPowerDemandKw: number;
-  totalBiogasGenerationKw: number;
+  /** Total on-site green generation: biogas CHP + solar PV + wind */
+  totalGreenGenerationKw: number;
   energySelfSufficiencyPercent: number;
   publicApproval: number;        // 0 - 100%
   activeAlerts: {

@@ -171,5 +171,40 @@ function emptyW(): any {
     `Advisor found ${paramFixes.length} simulated fix(es) that flip parameters to PASS (e.g. "${paramFixes[0]?.label}")`);
 }
 
+// ── Test 7: Power system — solar follows daylight, wind follows resource ────
+{
+  const mod = require('../src/sim/UnitProcessModels');
+  const solar = mkUnit('pv', 'solar_array', 0, 0);
+  const wind = mkUnit('wt', 'wind_turbine', 0, 0);
+
+  const noon = mod.calculateUnitProcess(solar, emptyW(), undefined, { daylight: 1, wind: 1 });
+  const midnight = mod.calculateUnitProcess(solar, emptyW(), undefined, { daylight: 0, wind: 1 });
+  assert(noon.powerKw === -42 && midnight.powerKw === 0,
+    `Solar: ${noon.powerKw} kW at full sun, ${midnight.powerKw} kW at night`);
+
+  const windy = mod.calculateUnitProcess(wind, emptyW(), undefined, { daylight: 0, wind: 1 });
+  const calm = mod.calculateUnitProcess(wind, emptyW(), undefined, { daylight: 0, wind: 0.2 });
+  assert(windy.powerKw === -85 && Math.abs(calm.powerKw + 17) < 0.01,
+    `Wind: ${windy.powerKw} kW rated, ${calm.powerKw} kW at 20% wind`);
+}
+
+// ── Test 8: Green generation offsets grid demand in plant economics ─────────
+{
+  const gs = GameManager.createInitialState(4, false); // megapolis roster has wind+solar
+  gs.units.push(mkUnit('pv', 'solar_array', 30, 20));
+  gs.units.push(mkUnit('wt', 'wind_turbine', 36, 24));
+  const inf = { ...emptyW(), flowRate: 100 };
+  const res = SimulationEngine.stepSimulation(
+    gs.units, [], inf,
+    {
+      maxBod: 25, maxCod: 90, maxTss: 30, maxTn: 25, maxNh4: 15, maxTp: 4,
+      maxPathogens: 1000, minDo: 4, minPh: 6.5, maxPh: 8.5, maxTurbidity: 15
+    },
+    gs.financials, 1, 0.15, 45, { daylight: 1, wind: 1 }
+  );
+  assert(res.overallStats.totalGreenGenerationKw >= 127,
+    `Solar+wind feed the grid: ${res.overallStats.totalGreenGenerationKw.toFixed(0)} kW green generation`);
+}
+
 console.log(failures === 0 ? '\nALL TESTS PASSED' : `\n${failures} TEST(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);
