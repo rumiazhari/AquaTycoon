@@ -69,25 +69,25 @@ function biomeConfig(biome: LevelBiome): BiomeConfig {
     case 'farmland':
       return {
         grassA: 0x6f8f3c, grassB: 0x5c7a32, sand: 0xc2b280, mud: 0x6e5b3a, hillAmp: 1.7,
-        conifers: 330, broadleaf: 260, bushes: 210,
+        conifers: 700, broadleaf: 600, bushes: 400,
         coniferGreens: CONIFER_GREENS, broadleafGreens: BROADLEAF_GREENS,
-        farmPlots: 42, villageCottages: 14, cityDensity: 1.0, factories: 2,
+        farmPlots: 48, villageCottages: 20, cityDensity: 1.2, factories: 2,
         desertMode: false, dayBg: 0x93c2e6, dayFog: 0xb8d4e6,
       };
     case 'industrial':
       return {
         grassA: 0x77743a, grassB: 0x66653a, sand: 0xa89a72, mud: 0x5c5138, hillAmp: 1.2,
-        conifers: 150, broadleaf: 100, bushes: 100,
+        conifers: 320, broadleaf: 240, bushes: 200,
         coniferGreens: [0x5c6e35, 0x69773d], broadleafGreens: [0x7a7d36, 0x8c8030],
-        farmPlots: 6, villageCottages: 8, cityDensity: 1.5, factories: 7,
+        farmPlots: 8, villageCottages: 12, cityDensity: 1.9, factories: 8,
         desertMode: false, dayBg: 0x9fb0bd, dayFog: 0xb3bec6,
       };
     case 'lake_forest':
       return {
         grassA: 0x3f7a34, grassB: 0x2f6428, sand: 0xc9bd94, mud: 0x5f5236, hillAmp: 2.4,
-        conifers: 820, broadleaf: 500, bushes: 380,
+        conifers: 1400, broadleaf: 900, bushes: 700,
         coniferGreens: [0x1e5c28, 0x276b30, 0x2f7a38], broadleafGreens: [0x3f8a33, 0x4c9a3e, 0x57a848],
-        farmPlots: 6, villageCottages: 12, cityDensity: 1.3, factories: 0,
+        farmPlots: 8, villageCottages: 18, cityDensity: 1.6, factories: 0,
         desertMode: false, dayBg: 0x8ecaefff & 0xffffff, dayFog: 0xcfe8dc,
       };
     case 'desert':
@@ -95,16 +95,16 @@ function biomeConfig(biome: LevelBiome): BiomeConfig {
         grassA: 0xd4b26a, grassB: 0xc4a058, sand: 0xe0c184, mud: 0x9a7d4e, hillAmp: 3.1,
         conifers: 0, broadleaf: 0, bushes: 70,
         coniferGreens: [], broadleafGreens: [],
-        farmPlots: 0, villageCottages: 14, cityDensity: 1.7, factories: 1,
+        farmPlots: 0, villageCottages: 20, cityDensity: 2.2, factories: 1,
         desertMode: true, dayBg: 0xbfe0ef, dayFog: 0xecd9ae,
       };
     case 'coastal':
     default:
       return {
         grassA: 0x4d7c3a, grassB: 0x3c6630, sand: 0xd6c491, mud: 0x6e5b3a, hillAmp: 1.9,
-        conifers: 420, broadleaf: 380, bushes: 260,
+        conifers: 900, broadleaf: 800, bushes: 480,
         coniferGreens: CONIFER_GREENS, broadleafGreens: BROADLEAF_GREENS,
-        farmPlots: 18, villageCottages: 16, cityDensity: 0.9, factories: 1,
+        farmPlots: 20, villageCottages: 24, cityDensity: 1.1, factories: 1,
         desertMode: false, dayBg: 0x87b8e4, dayFog: 0xaacdea,
       };
   }
@@ -138,6 +138,8 @@ export class TerrainGrid {
   private riverBasePos: Float32Array | null = null;
   private riverNormalMap: THREE.CanvasTexture | null = null;
   private riverFlowTex: THREE.CanvasTexture | null = null;
+  private riverFoam: THREE.Mesh | null = null;
+  private baseY: number = -9;
   private cloudMesh: THREE.InstancedMesh | null = null;
   private cloudData: { y: number; z: number; speed: number; sx: number; sy: number; sz: number }[] = [];
   private lampBulbMat: THREE.MeshStandardMaterial | null = null;
@@ -193,6 +195,11 @@ export class TerrainGrid {
     }
     if (this.riverFlowTex) {
       this.riverFlowTex.offset.y -= dt * 1.6; // unmistakable flowing motion
+    }
+    // Shoreline foam gently pulses
+    if (this.riverFoam) {
+      const fm = this.riverFoam.material as THREE.MeshBasicMaterial;
+      fm.opacity = 0.72 + Math.sin(elapsed * 2.2) * 0.16;
     }
     // Foam flecks ride the current
     if (this.flowParticles && this.flowData.length > 0) {
@@ -392,6 +399,7 @@ export class TerrainGrid {
     this.riverBasePos = null;
     this.riverNormalMap = null;
     this.riverFlowTex = null;
+    this.riverFoam = null;
     this.cloudMesh = null;
     this.cloudData = [];
     this.lampBulbMat = null;
@@ -511,12 +519,15 @@ export class TerrainGrid {
     terrain.receiveShadow = true;
     this.envGroup.add(terrain);
 
-    // Endless base plane under everything so the horizon never shows an edge
-    const underMat = std(this.cfg.grassB, 1, 0);
+    // Endless base plane far BELOW all terrain (valleys can dip to
+    // -2.6 × hillAmp) so it only shows at the horizon — never as green
+    // "flooded water" inside valleys.
+    this.baseY = -(2.7 * this.cfg.hillAmp + 2);
+    const underTone = new THREE.Color(this.cfg.grassB).lerp(new THREE.Color(0x8a9aa8), 0.35);
+    const underMat = new THREE.MeshStandardMaterial({ color: underTone, roughness: 1, metalness: 0 });
     const under = new THREE.Mesh(new THREE.PlaneGeometry(4200, 4200), underMat);
     under.rotation.x = -Math.PI / 2;
-    under.position.set(this.W / 2, -0.55, this.D / 2);
-    under.receiveShadow = false;
+    under.position.set(this.W / 2, this.baseY, this.D / 2);
     this.envGroup.add(under);
   }
 
@@ -547,49 +558,21 @@ export class TerrainGrid {
     geo.setIndex(indices);
     geo.computeVertexNormals();
 
-    // Procedural ripple normal map — scrolled along the flow each frame
-    const c = document.createElement('canvas');
-    c.width = 128; c.height = 256;
-    const ctx = c.getContext('2d');
-    if (ctx) {
-      ctx.fillStyle = '#8080ff';
-      ctx.fillRect(0, 0, 128, 256);
-      const rngN = mulberry32(4242);
-      for (let i = 0; i < 260; i++) {
-        const x = rngN() * 128;
-        const y = rngN() * 256;
-        const rr = 3 + rngN() * 7;
-        const g = ctx.createRadialGradient(x - rr * 0.35, y - rr * 0.35, 0, x, y, rr);
-        // Bump facing up-left / down-right → varied normals for shimmer
-        const bright = rngN() > 0.5 ? 'rgba(160,160,255,' : 'rgba(64,64,255,';
-        g.addColorStop(0, bright + '0.9)');
-        g.addColorStop(1, 'rgba(128,128,255,0)');
-        ctx.fillStyle = g;
-        ctx.beginPath();
-        ctx.arc(x, y, rr, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-    const normalMap = new THREE.CanvasTexture(c);
-    normalMap.wrapS = THREE.RepeatWrapping;
-    normalMap.wrapT = THREE.RepeatWrapping;
-    normalMap.repeat.set(2, Math.max(6, steps / 8));
-    this.riverNormalMap = normalMap;
-
     // Cartoon flow texture: bold light streaks & dashes that visibly travel
     const fc = document.createElement('canvas');
     fc.width = 128; fc.height = 128;
     const fctx = fc.getContext('2d');
     if (fctx) {
-      fctx.fillStyle = '#2f8fef';
+      // Flat saturated cartoon blue base, exactly like stylized river art
+      fctx.fillStyle = '#41b6f7';
       fctx.fillRect(0, 0, 128, 128);
       const rngF = mulberry32(777);
-      for (let i = 0; i < 46; i++) {
+      for (let i = 0; i < 50; i++) {
         const y = rngF() * 128;
         const x = rngF() * 128;
         const wdt = 14 + rngF() * 40;
         const hgt = 3.5 + rngF() * 5;
-        fctx.fillStyle = rngF() > 0.4 ? 'rgba(255,255,255,0.95)' : 'rgba(185,230,255,1)';
+        fctx.fillStyle = rngF() > 0.35 ? 'rgba(255,255,255,0.95)' : 'rgba(200,240,255,1)';
         fctx.beginPath();
         fctx.roundRect(x, y, wdt, hgt, hgt / 2);
         fctx.fill();
@@ -601,21 +584,39 @@ export class TerrainGrid {
     flowTex.repeat.set(1, Math.max(8, steps / 6));
     this.riverFlowTex = flowTex;
 
-    // Flat, opaque cartoon blue — no transparency, no metallic reflections,
-    // plus a slight self-glow so it stays vividly blue day AND night.
-    const mat = new THREE.MeshStandardMaterial({
-      color: 0x2f8fef,
+    // FLAT CARTOON WATER: unlit basic material = the same vivid blue in every
+    // lighting condition, with white streaks doing all the animation.
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
       map: flowTex,
-      roughness: 0.4,
-      metalness: 0.0,
-      emissive: 0x0b3e7a,
-      emissiveIntensity: 0.45,
-      normalMap,
-      normalScale: new THREE.Vector2(0.5, 0.5),
     });
     this.riverMesh = new THREE.Mesh(geo, mat);
     this.riverBasePos = new Float32Array(positions);
     this.envGroup.add(this.riverMesh);
+
+    // White shoreline foam outlines where the water meets the banks
+    const foamPositions: number[] = [];
+    const foamIndices: number[] = [];
+    for (const side of [-1, 1]) {
+      const base = foamPositions.length / 3;
+      for (let i = 0; i <= steps; i++) {
+        const z = zMin + ((zMax - zMin) * i) / steps;
+        const cx2 = this.riverCenterX(z);
+        foamPositions.push(cx2 + side * this.riverHW * 0.97, -0.98, z);
+        if (i < steps) {
+          const a = base + i * 2;
+          foamIndices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+        }
+      }
+    }
+    const foamGeo = new THREE.BufferGeometry();
+    foamGeo.setAttribute('position', new THREE.Float32BufferAttribute(foamPositions, 3));
+    foamGeo.setIndex(foamIndices);
+    const foamMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff, transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthWrite: false,
+    });
+    this.riverFoam = new THREE.Mesh(foamGeo, foamMat);
+    this.envGroup.add(this.riverFoam);
 
     // Drifting foam flecks that ride the current downstream (+Z direction)
     const N_FLECKS = Math.round((zMax - zMin) / 9);
@@ -1085,10 +1086,16 @@ export class TerrainGrid {
     if (bushes.instanceColor) bushes.instanceColor.needsUpdate = true;
     this.envGroup.add(bushes);
 
-    // Riverbank rocks
+    // Riverbank rocks with cartoon white foam rings where they meet the water
     const rockGeo = new THREE.DodecahedronGeometry(0.4, 0);
     const rocks = new THREE.InstancedMesh(rockGeo, new THREE.MeshStandardMaterial({ color: 0x7d7f83, roughness: 0.95 }), N_ROCK);
     rocks.castShadow = true;
+    const foamDiscGeo = new THREE.CircleGeometry(0.62, 12);
+    const foamDiscs = new THREE.InstancedMesh(
+      foamDiscGeo,
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85, depthWrite: false }),
+      N_ROCK
+    );
     let nR = 0;
     for (let tries = 0; tries < N_ROCK * 16 && nR < N_ROCK; tries++) {
       const z = lerpN(zMin, zMax, rng());
@@ -1101,11 +1108,20 @@ export class TerrainGrid {
       vPos.set(x, y, z); vScl.set(s, s * 0.8, s);
       m.compose(vPos, q, vScl);
       rocks.setMatrixAt(nR, m);
+      // Foam ring at the stone base
+      eul.set(-Math.PI / 2, 0, rng() * Math.PI);
+      q.setFromEuler(eul);
+      vPos.set(x, y + 0.04, z); vScl.set(s * 1.25, s * 1.1, s * 1.25);
+      m.compose(vPos, q, vScl);
+      foamDiscs.setMatrixAt(nR, m);
       nR++;
     }
     rocks.count = nR;
+    foamDiscs.count = nR;
     rocks.instanceMatrix.needsUpdate = true;
+    foamDiscs.instanceMatrix.needsUpdate = true;
     this.envGroup.add(rocks);
+    this.envGroup.add(foamDiscs);
   }
 
   // ══════════════════ SURROUNDING TOWN & CITY ═════════════════════════
@@ -1150,7 +1166,7 @@ export class TerrainGrid {
     const vScl = new THREE.Vector3();
 
     // Shared instanced pools
-    const MAX_HOUSES = Math.round(Math.min(380, Math.max(140, ((this.W + this.padX) * (this.D + this.padZ)) / 55)));
+    const MAX_HOUSES = Math.round(Math.min(620, Math.max(240, ((this.W + this.padX) * (this.D + this.padZ)) / 32)));
     const MAX_ROOFS = MAX_HOUSES;
     const bodyGeo = new THREE.BoxGeometry(1, 1, 1);
     bodyGeo.translate(0, 0.5, 0);
@@ -1176,7 +1192,7 @@ export class TerrainGrid {
     });
     const towerGeo = new THREE.BoxGeometry(1, 1, 1);
     towerGeo.translate(0, 0.5, 0);
-    const MAX_TOWERS = Math.round(Math.min(140, Math.max(60, ((this.W * 0.4 + this.padX) * (this.D + this.padZ)) / 150)));
+    const MAX_TOWERS = Math.round(Math.min(230, Math.max(90, ((this.W * 0.4 + this.padX) * (this.D + this.padZ)) / 85)));
     const towers = new THREE.InstancedMesh(towerGeo, this.windowMat, MAX_TOWERS);
     towers.castShadow = true; towers.receiveShadow = true;
     const roofSlabMat = new THREE.MeshStandardMaterial({ color: 0x39404d, roughness: 0.9 });
@@ -1186,7 +1202,7 @@ export class TerrainGrid {
 
     const addHouse = (x: number, z: number, s: number) => {
       if (nH >= MAX_HOUSES) return;
-      const y = Math.max(0, this.terrainHeight(x, z));
+      const y = this.terrainHeight(x, z);
       eul.set(0, (rng() - 0.5) * 0.7, 0);
       q.setFromEuler(eul);
       const bw = (1.9 + rng() * 0.9) * s;
@@ -1209,7 +1225,7 @@ export class TerrainGrid {
 
     const addTower = (x: number, z: number) => {
       if (nT >= MAX_TOWERS) return;
-      const y = Math.max(0, this.terrainHeight(x, z));
+      const y = this.terrainHeight(x, z);
       eul.set(0, (rng() - 0.5) * 0.5, 0);
       q.setFromEuler(eul);
       const bw = 2.6 + rng() * 1.6;
@@ -1228,28 +1244,28 @@ export class TerrainGrid {
     };
 
     // West suburb
-    for (let i = 0; i < 42; i++) {
+    for (let i = 0; i < 80; i++) {
       const x = lerpN(-this.padX + 10, -12, rng());
       const z = lerpN(-this.padZ + 10, this.zRoad - 7, rng());
       if (!this._townAllowed(x, z, placed, 3.4)) continue;
       addHouse(x, z, 1);
     }
     // South town across the road
-    for (let i = 0; i < Math.round(48 * this.cfg.cityDensity); i++) {
+    for (let i = 0; i < Math.round(85 * this.cfg.cityDensity); i++) {
       const x = lerpN(-this.padX + 10, this.W * 0.65, rng());
       const z = lerpN(this.zRoad + 6.5, this.D + this.padZ - 10, rng());
       if (!this._townAllowed(x, z, placed, 3.4)) continue;
       addHouse(x, z, 1 + rng() * 0.35);
     }
     // North farms
-    for (let i = 0; i < 26; i++) {
+    for (let i = 0; i < 48; i++) {
       const x = lerpN(-this.padX + 12, this.W - 8, rng());
       const z = lerpN(-this.padZ + 10, -8, rng());
       if (!this._townAllowed(x, z, placed, 4)) continue;
       addHouse(x, z, 1.15 + rng() * 0.5);
     }
     // East city core across the river
-    for (let i = 0; i < Math.round(56 * this.cfg.cityDensity); i++) {
+    for (let i = 0; i < Math.round(105 * this.cfg.cityDensity); i++) {
       const x = lerpN(this.W + 26, this.W + this.padX - 8, rng());
       const z = lerpN(-this.padZ + 12, this.D + this.padZ - 12, rng());
       if (!this._townAllowed(x, z, placed, 4.2)) continue;
@@ -1275,7 +1291,7 @@ export class TerrainGrid {
     for (let i = 0; i < 3; i++) {
       const sx = this.W * 0.18 + i * 3.4;
       const sz = -this.padZ * 0.42;
-      const y = Math.max(0, this.terrainHeight(sx, sz));
+      const y = this.terrainHeight(sx, sz);
       const silo = new THREE.Mesh(new THREE.CylinderGeometry(1.3, 1.3, 5.2, 14), siloMat);
       silo.position.set(sx, y + 2.6, sz);
       silo.castShadow = true;
@@ -1288,7 +1304,7 @@ export class TerrainGrid {
       new THREE.CylinderGeometry(0.45, 0.62, 9, 10),
       new THREE.MeshStandardMaterial({ color: 0x9aa2ab, roughness: 0.8 })
     );
-    stack.position.set(this.W * 0.38, Math.max(0, this.terrainHeight(this.W * 0.38, -this.padZ * 0.4)) + 4.5, -this.padZ * 0.4);
+    stack.position.set(this.W * 0.38, this.terrainHeight(this.W * 0.38, -this.padZ * 0.4) + 4.5, -this.padZ * 0.4);
     stack.castShadow = true;
     this.envGroup.add(stack);
 
@@ -1331,7 +1347,7 @@ export class TerrainGrid {
 
     for (const [fx, fz] of plots) {
       const size = 9 + rng() * 7;
-      const y = Math.max(0.05, this.terrainHeight(fx, fz));
+      const y = this.terrainHeight(fx, fz);
       const tex = new THREE.CanvasTexture(cropCanvas);
       tex.wrapS = THREE.RepeatWrapping;
       tex.wrapT = THREE.RepeatWrapping;
@@ -1357,8 +1373,8 @@ export class TerrainGrid {
     const xMax = this.W + this.padX - 6;
     const zMin = -this.padZ + 6;
     const zMax = this.D + this.padZ - 6;
-    const N_CACTI = 190;
-    const N_PALMS = 110;
+    const N_CACTI = 280;
+    const N_PALMS = 170;
 
     // Saguaro cacti
     const trunkGeo = new THREE.CylinderGeometry(0.22, 0.28, 2.2, 8);
@@ -1464,7 +1480,7 @@ export class TerrainGrid {
         : lerpN(this.zRoad + 14, this.D + this.padZ - 16, rng());
       if (Math.abs(fx - this.riverCenterX(fz)) < this.riverHW + 8) continue;
       if (fx > -8 && fx < this.W + 8 && fz > -10 && fz < this.zRoad + 8) continue;
-      const fy = Math.max(0, this.terrainHeight(fx, fz));
+      const fy = this.terrainHeight(fx, fz);
       const rot = rng() * Math.PI;
 
       const hall = tbox(10 + rng() * 8, 3.2, 6 + rng() * 3, std(0x8d8578, 0.9, 0.1));
@@ -1529,6 +1545,7 @@ export class TerrainGrid {
   private _buildVillage(rng: () => number) {
     const vx = -this.padX * 0.42;
     const vz = this.D * 0.15;
+    const vy = this.terrainHeight(vx, vz);
     const chapelMat = std(0xd8cdb8, 0.85, 0.05);
     const roofMat = std(0x5e4438, 0.85, 0.05);
 
@@ -1542,26 +1559,26 @@ export class TerrainGrid {
     };
 
     // Chapel with bell tower
-    mesh(new THREE.BoxGeometry(2.2, 1.5, 3.4), chapelMat, vx, 0.75, vz);
-    mesh(new THREE.BoxGeometry(1.1, 3.0, 1.1), chapelMat, vx, 1.5, vz - 2.4);
-    const spire = mesh(new THREE.ConeGeometry(0.85, 1.4, 4), roofMat, vx, 3.7, vz - 2.4);
+    mesh(new THREE.BoxGeometry(2.2, 1.5, 3.4), chapelMat, vx, vy + 0.75, vz);
+    mesh(new THREE.BoxGeometry(1.1, 3.0, 1.1), chapelMat, vx, vy + 1.5, vz - 2.4);
+    const spire = mesh(new THREE.ConeGeometry(0.85, 1.4, 4), roofMat, vx, vy + 3.7, vz - 2.4);
     spire.rotation.y = Math.PI / 4;
-    const naveRoof = mesh(new THREE.ConeGeometry(1.9, 1.0, 4), roofMat, vx, 2.25, vz);
+    const naveRoof = mesh(new THREE.ConeGeometry(1.9, 1.0, 4), roofMat, vx, vy + 2.25, vz);
     naveRoof.rotation.y = Math.PI / 4;
     naveRoof.scale.set(1, 1, 1.45);
 
     // Well on the village green
-    mesh(new THREE.CylinderGeometry(0.5, 0.55, 0.5, 10), std(0x8d8478, 0.95, 0), vx + 3, 0.25, vz + 2.5);
-    const wellRoof = mesh(new THREE.ConeGeometry(0.75, 0.5, 8), roofMat, vx + 3, 1.35, vz + 2.5);
+    mesh(new THREE.CylinderGeometry(0.5, 0.55, 0.5, 10), std(0x8d8478, 0.95, 0), vx + 3, vy + 0.25, vz + 2.5);
+    const wellRoof = mesh(new THREE.ConeGeometry(0.75, 0.5, 8), roofMat, vx + 3, vy + 1.35, vz + 2.5);
     wellRoof.rotation.y = rng();
     for (const px of [-0.38, 0.38]) {
-      mesh(new THREE.BoxGeometry(0.06, 1.0, 0.06), roofMat, vx + 3 + px, 0.85, vz + 2.5);
+      mesh(new THREE.BoxGeometry(0.06, 1.0, 0.06), roofMat, vx + 3 + px, vy + 0.85, vz + 2.5);
     }
 
     // Green space tint
     const green = new THREE.Mesh(new THREE.CircleGeometry(7, 20), std(0x55823d, 0.95, 0));
     green.rotation.x = -Math.PI / 2;
-    green.position.set(vx, 0.09, vz);
+    green.position.set(vx, vy + 0.09, vz);
     green.receiveShadow = true;
     this.envGroup.add(green);
 
@@ -1583,7 +1600,7 @@ export class TerrainGrid {
       const hx = vx + Math.cos(ang) * dist;
       const hz = vz + Math.sin(ang) * dist;
       if (Math.abs(hx - this.riverCenterX(hz)) < this.riverHW + 3) continue;
-      const hy = Math.max(0, this.terrainHeight(hx, hz));
+      const hy = this.terrainHeight(hx, hz);
       const s = 0.85 + rng() * 0.4;
       eul.set(0, -ang + Math.PI / 2 + (rng() - 0.5) * 0.3, 0);
       q.setFromEuler(eul);
@@ -1686,7 +1703,7 @@ export class TerrainGrid {
       const z = czm + Math.sin(ang) * rr;
       const s = 26 + rng() * 30;
       q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), rng() * Math.PI);
-      m.compose(new THREE.Vector3(x, -2, z), q, new THREE.Vector3(s * 1.5, s, s * 1.5));
+      m.compose(new THREE.Vector3(x, this.baseY + 0.5, z), q, new THREE.Vector3(s * 1.5, s, s * 1.5));
       ring.setMatrixAt(i, m);
       col.setHex(0x50697c).offsetHSL(0, 0.02, rng() * 0.05 - 0.02);
       ring.setColorAt(i, col);
