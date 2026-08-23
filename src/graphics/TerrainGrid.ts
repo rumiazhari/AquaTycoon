@@ -69,25 +69,25 @@ function biomeConfig(biome: LevelBiome): BiomeConfig {
     case 'farmland':
       return {
         grassA: 0x6f8f3c, grassB: 0x5c7a32, sand: 0xc2b280, mud: 0x6e5b3a, hillAmp: 1.7,
-        conifers: 200, broadleaf: 150, bushes: 130,
+        conifers: 330, broadleaf: 260, bushes: 210,
         coniferGreens: CONIFER_GREENS, broadleafGreens: BROADLEAF_GREENS,
-        farmPlots: 30, villageCottages: 9, cityDensity: 0.9, factories: 2,
+        farmPlots: 42, villageCottages: 14, cityDensity: 1.0, factories: 2,
         desertMode: false, dayBg: 0x93c2e6, dayFog: 0xb8d4e6,
       };
     case 'industrial':
       return {
         grassA: 0x77743a, grassB: 0x66653a, sand: 0xa89a72, mud: 0x5c5138, hillAmp: 1.2,
-        conifers: 90, broadleaf: 60, bushes: 60,
+        conifers: 150, broadleaf: 100, bushes: 100,
         coniferGreens: [0x5c6e35, 0x69773d], broadleafGreens: [0x7a7d36, 0x8c8030],
-        farmPlots: 6, villageCottages: 5, cityDensity: 1.25, factories: 7,
+        farmPlots: 6, villageCottages: 8, cityDensity: 1.5, factories: 7,
         desertMode: false, dayBg: 0x9fb0bd, dayFog: 0xb3bec6,
       };
     case 'lake_forest':
       return {
         grassA: 0x3f7a34, grassB: 0x2f6428, sand: 0xc9bd94, mud: 0x5f5236, hillAmp: 2.4,
-        conifers: 520, broadleaf: 300, bushes: 240,
+        conifers: 820, broadleaf: 500, bushes: 380,
         coniferGreens: [0x1e5c28, 0x276b30, 0x2f7a38], broadleafGreens: [0x3f8a33, 0x4c9a3e, 0x57a848],
-        farmPlots: 6, villageCottages: 7, cityDensity: 1.1, factories: 0,
+        farmPlots: 6, villageCottages: 12, cityDensity: 1.3, factories: 0,
         desertMode: false, dayBg: 0x8ecaefff & 0xffffff, dayFog: 0xcfe8dc,
       };
     case 'desert':
@@ -95,16 +95,16 @@ function biomeConfig(biome: LevelBiome): BiomeConfig {
         grassA: 0xd4b26a, grassB: 0xc4a058, sand: 0xe0c184, mud: 0x9a7d4e, hillAmp: 3.1,
         conifers: 0, broadleaf: 0, bushes: 70,
         coniferGreens: [], broadleafGreens: [],
-        farmPlots: 0, villageCottages: 10, cityDensity: 1.5, factories: 1,
+        farmPlots: 0, villageCottages: 14, cityDensity: 1.7, factories: 1,
         desertMode: true, dayBg: 0xbfe0ef, dayFog: 0xecd9ae,
       };
     case 'coastal':
     default:
       return {
         grassA: 0x4d7c3a, grassB: 0x3c6630, sand: 0xd6c491, mud: 0x6e5b3a, hillAmp: 1.9,
-        conifers: 260, broadleaf: 220, bushes: 170,
+        conifers: 420, broadleaf: 380, bushes: 260,
         coniferGreens: CONIFER_GREENS, broadleafGreens: BROADLEAF_GREENS,
-        farmPlots: 12, villageCottages: 10, cityDensity: 0.75, factories: 1,
+        farmPlots: 18, villageCottages: 16, cityDensity: 0.9, factories: 1,
         desertMode: false, dayBg: 0x87b8e4, dayFog: 0xaacdea,
       };
   }
@@ -214,6 +214,18 @@ export class TerrainGrid {
         this.flowParticles.setMatrixAt(i, m);
       }
       this.flowParticles.instanceMatrix.needsUpdate = true;
+    }
+
+    // ── Traffic: vehicles cruise along the road and across the bridge ──
+    if (this.traffic.length > 0) {
+      const xMin = -this.padX - 14;
+      const xMax = this.W + this.padX + 14;
+      for (const v of this.traffic) {
+        let x = v.group.position.x + v.dir * v.speed * dt;
+        if (x > xMax) x = xMin;
+        if (x < xMin) x = xMax;
+        v.group.position.x = x;
+      }
     }
 
     // ── Cloud drift ──
@@ -387,6 +399,7 @@ export class TerrainGrid {
     this.siteLights = [];
     this.flowParticles = null;
     this.flowData = [];
+    this.traffic = [];
   }
 
   // ══════════════ SITE FLOODLIGHTING (night visibility) ═══════════════
@@ -568,7 +581,7 @@ export class TerrainGrid {
     fc.width = 128; fc.height = 128;
     const fctx = fc.getContext('2d');
     if (fctx) {
-      fctx.fillStyle = '#3db4f0';
+      fctx.fillStyle = '#2f8fef';
       fctx.fillRect(0, 0, 128, 128);
       const rngF = mulberry32(777);
       for (let i = 0; i < 46; i++) {
@@ -576,7 +589,7 @@ export class TerrainGrid {
         const x = rngF() * 128;
         const wdt = 14 + rngF() * 40;
         const hgt = 3.5 + rngF() * 5;
-        fctx.fillStyle = rngF() > 0.4 ? 'rgba(255,255,255,0.95)' : 'rgba(170,228,255,1)';
+        fctx.fillStyle = rngF() > 0.4 ? 'rgba(255,255,255,0.95)' : 'rgba(185,230,255,1)';
         fctx.beginPath();
         fctx.roundRect(x, y, wdt, hgt, hgt / 2);
         fctx.fill();
@@ -588,15 +601,17 @@ export class TerrainGrid {
     flowTex.repeat.set(1, Math.max(8, steps / 6));
     this.riverFlowTex = flowTex;
 
+    // Flat, opaque cartoon blue — no transparency, no metallic reflections,
+    // plus a slight self-glow so it stays vividly blue day AND night.
     const mat = new THREE.MeshStandardMaterial({
-      color: 0x2cb5f5,
+      color: 0x2f8fef,
       map: flowTex,
-      roughness: 0.14,
-      metalness: 0.25,
-      transparent: true,
-      opacity: 0.96,
+      roughness: 0.4,
+      metalness: 0.0,
+      emissive: 0x0b3e7a,
+      emissiveIntensity: 0.45,
       normalMap,
-      normalScale: new THREE.Vector2(0.7, 0.7),
+      normalScale: new THREE.Vector2(0.5, 0.5),
     });
     this.riverMesh = new THREE.Mesh(geo, mat);
     this.riverBasePos = new Float32Array(positions);
@@ -701,57 +716,166 @@ export class TerrainGrid {
     const xMax = this.W + this.padX;
 
     const asphaltMat = new THREE.MeshStandardMaterial({ color: 0x2b303b, roughness: 0.98 });
-    const road = new THREE.Mesh(new THREE.PlaneGeometry(xMax - xMin, 4.6), asphaltMat);
+    const ROAD_W = 6.4;
+    const road = new THREE.Mesh(new THREE.PlaneGeometry(xMax - xMin, ROAD_W), asphaltMat);
     road.rotation.x = -Math.PI / 2;
     road.position.set((xMin + xMax) / 2, 0.04, zR);
     road.receiveShadow = true;
     roadGroup.add(road);
 
+    // Shoulder edges (lighter strips)
+    const shoulderMat = new THREE.MeshStandardMaterial({ color: 0x4a5261, roughness: 0.95 });
+    for (const s of [-1, 1]) {
+      const shoulder = new THREE.Mesh(new THREE.PlaneGeometry(xMax - xMin, 0.5), shoulderMat);
+      shoulder.rotation.x = -Math.PI / 2;
+      shoulder.position.set((xMin + xMax) / 2, 0.045, zR + s * (ROAD_W / 2 + 0.25));
+      roadGroup.add(shoulder);
+    }
+
+    // Driveway from plant gate to road
     const driveLen = Math.max(1, zR - this.D + 2.4);
     const drive = new THREE.Mesh(new THREE.PlaneGeometry(7, driveLen), asphaltMat);
     drive.rotation.x = -Math.PI / 2;
     drive.position.set(this.W / 2, 0.035, this.D + (zR - this.D) / 2 + 0.6);
     roadGroup.add(drive);
 
-    const dashMat = new THREE.MeshStandardMaterial({ color: 0xe8e3d3, roughness: 0.9 });
-    const dashGeo = new THREE.PlaneGeometry(1.6, 0.16);
-    for (let x = xMin + 2; x < xMax; x += 4.2) {
-      const dash = new THREE.Mesh(dashGeo, dashMat);
-      dash.rotation.x = -Math.PI / 2;
-      dash.position.set(x, 0.05, zR);
-      roadGroup.add(dash);
+    // Double yellow centre line (two-way traffic)
+    const lineMat = new THREE.MeshStandardMaterial({ color: 0xd8b13a, roughness: 0.9 });
+    for (const s of [-0.14, 0.14]) {
+      const line = new THREE.Mesh(new THREE.PlaneGeometry(xMax - xMin, 0.12), lineMat);
+      line.rotation.x = -Math.PI / 2;
+      line.position.set((xMin + xMax) / 2, 0.05, zR + s);
+      roadGroup.add(line);
+    }
+    // White edge lines
+    const edgeMat = new THREE.MeshStandardMaterial({ color: 0xe8e3d3, roughness: 0.9 });
+    for (const s of [-1, 1]) {
+      const edge = new THREE.Mesh(new THREE.PlaneGeometry(xMax - xMin, 0.14), edgeMat);
+      edge.rotation.x = -Math.PI / 2;
+      edge.position.set((xMin + xMax) / 2, 0.05, zR + s * (ROAD_W / 2 - 0.35));
+      roadGroup.add(edge);
     }
     this.envGroup.add(roadGroup);
 
     // Bridge where the road crosses the river
     const cx = this.riverCenterX(zR);
-    const span = this.riverHW * 2 + 7;
+    const span = this.riverHW * 2 + 9;
     const bridgeGroup = new THREE.Group();
 
     const deckMat = new THREE.MeshStandardMaterial({ color: 0x6b7280, roughness: 0.85 });
-    const deck = new THREE.Mesh(new THREE.BoxGeometry(span, 0.5, 5.4), deckMat);
-    deck.position.set(cx, -0.2, zR);
+    const deck = new THREE.Mesh(new THREE.BoxGeometry(span, 0.55, ROAD_W + 1.2), deckMat);
+    deck.position.set(cx, -0.22, zR);
     deck.castShadow = true;
     bridgeGroup.add(deck);
+    // Bridge asphalt overlay so lanes continue seamlessly
+    const bridgeRoad = new THREE.Mesh(new THREE.PlaneGeometry(span, ROAD_W), asphaltMat);
+    bridgeRoad.rotation.x = -Math.PI / 2;
+    bridgeRoad.position.set(cx, 0.055, zR);
+    bridgeGroup.add(bridgeRoad);
+    const bridgeLineMat = lineMat;
+    for (const s of [-0.14, 0.14]) {
+      const line = new THREE.Mesh(new THREE.PlaneGeometry(span, 0.12), bridgeLineMat);
+      line.rotation.x = -Math.PI / 2;
+      line.position.set(cx, 0.06, zR + s);
+      bridgeGroup.add(line);
+    }
 
     const railMat = new THREE.MeshStandardMaterial({ color: 0x9aa5b1, metalness: 0.5, roughness: 0.5 });
     for (const s of [-1, 1]) {
       const rail = new THREE.Mesh(new THREE.BoxGeometry(span, 0.09, 0.09), railMat);
-      rail.position.set(cx, 0.62, zR + s * 2.55);
+      rail.position.set(cx, 0.72, zR + s * (ROAD_W / 2 + 0.5));
       bridgeGroup.add(rail);
+      const railLow = new THREE.Mesh(new THREE.BoxGeometry(span, 0.07, 0.07), railMat);
+      railLow.position.set(cx, 0.42, zR + s * (ROAD_W / 2 + 0.5));
+      bridgeGroup.add(railLow);
       for (let px = -span / 2 + 1; px <= span / 2 - 1; px += 2.4) {
-        const post = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.75, 0.09), railMat);
-        post.position.set(cx + px, 0.28, zR + s * 2.55);
+        const post = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.85, 0.09), railMat);
+        post.position.set(cx + px, 0.32, zR + s * (ROAD_W / 2 + 0.5));
         bridgeGroup.add(post);
       }
     }
     const pillarMat = new THREE.MeshStandardMaterial({ color: 0x575f6b, roughness: 0.9 });
-    for (const px of [-span * 0.3, span * 0.3]) {
-      const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.55, 3.4, 10), pillarMat);
-      pillar.position.set(cx + px, -1.6, zR);
+    for (const px of [-span * 0.28, span * 0.28]) {
+      const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.62, 3.6, 10), pillarMat);
+      pillar.position.set(cx + px, -1.5, zR);
       bridgeGroup.add(pillar);
     }
     this.envGroup.add(bridgeGroup);
+
+    this._buildTraffic();
+  }
+
+  // ══════════════════ ROAD TRAFFIC (cars & trucks) ════════════════════
+
+  private traffic: { group: THREE.Group; dir: 1 | -1; speed: number }[] = [];
+
+  private _buildTraffic() {
+    const zR = this.zRoad;
+    const rng = mulberry32(55555);
+    const N = 12;
+    const carColors = [0xd94f4f, 0x4f7dd9, 0xe8e6e1, 0x3a3f47, 0xd9a53a, 0x4fae6a, 0x8f5fd4];
+    const wheelMat = std(0x1c1f24, 0.9, 0.1);
+    const glassMat = std(0x9fd8ee, 0.25, 0.4);
+
+    const makeCar = () => {
+      const g = new THREE.Group();
+      const col = carColors[Math.floor(rng() * carColors.length)];
+      const body = tbox(1.7, 0.42, 0.85, std(col, 0.45, 0.5));
+      body.position.y = 0.32; g.add(body);
+      const cabin = tbox(0.85, 0.36, 0.75, std(col, 0.45, 0.5));
+      cabin.position.set(-0.08, 0.68, 0); g.add(cabin);
+      const windshield = tbox(0.1, 0.28, 0.66, glassMat);
+      windshield.position.set(0.36, 0.68, 0); g.add(windshield);
+      for (const [wx, wz] of [[0.52, 0.42], [0.52, -0.42], [-0.52, 0.42], [-0.52, -0.42]] as const) {
+        const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.14, 10), wheelMat);
+        wheel.rotation.x = Math.PI / 2;
+        wheel.position.set(wx, 0.2, wz);
+        g.add(wheel);
+      }
+      // Headlights / taillights
+      const hl = tbox(0.06, 0.1, 0.18, new THREE.MeshBasicMaterial({ color: 0xfff2c0 }));
+      hl.position.set(0.86, 0.34, 0.24); g.add(hl);
+      const hl2 = hl.clone(); hl2.position.z = -0.24; g.add(hl2);
+      const tl = tbox(0.05, 0.09, 0.16, new THREE.MeshBasicMaterial({ color: 0xff5544 }));
+      tl.position.set(-0.86, 0.36, 0.24); g.add(tl);
+      const tl2 = tl.clone(); tl2.position.z = -0.24; g.add(tl2);
+      return g;
+    };
+
+    const makeTruck = () => {
+      const g = new THREE.Group();
+      const col = carColors[Math.floor(rng() * carColors.length)];
+      const cab = tbox(1.0, 0.95, 1.0, std(col, 0.45, 0.5));
+      cab.position.set(1.35, 0.62, 0); g.add(cab);
+      const glass = tbox(0.08, 0.4, 0.9, glassMat);
+      glass.position.set(1.88, 0.78, 0); g.add(glass);
+      const trailer = tbox(2.6, 1.15, 1.05, std(0xe4e7ea, 0.6, 0.3));
+      trailer.position.set(-0.55, 0.78, 0); g.add(trailer);
+      for (const [wx, wz] of [[1.35, 0.5], [1.35, -0.5], [-1.2, 0.5], [-1.2, -0.5], [-1.85, 0.5], [-1.85, -0.5]] as const) {
+        const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.24, 0.16, 10), wheelMat);
+        wheel.rotation.x = Math.PI / 2;
+        wheel.position.set(wx, 0.24, wz);
+        g.add(wheel);
+      }
+      return g;
+    };
+
+    for (let i = 0; i < N; i++) {
+      const isTruck = rng() > 0.62;
+      const g = isTruck ? makeTruck() : makeCar();
+      const dir: 1 | -1 = rng() > 0.5 ? 1 : -1;
+      const lane = dir === 1 ? -1.55 : 1.55; // right-hand traffic
+      const speed = (isTruck ? 7 : 10) + rng() * 6;
+      const x = lerpN(-this.padX, this.W + this.padX, rng());
+      g.position.set(x, 0.06, zR + lane);
+      g.rotation.y = dir === 1 ? 0 : Math.PI;
+      g.traverse(o => {
+        const mm = o as THREE.Mesh;
+        if (mm.isMesh) mm.castShadow = true;
+      });
+      this.envGroup.add(g);
+      this.traffic.push({ group: g, dir, speed });
+    }
   }
 
   // ══════════════════ FENCE, GATE & WELCOME SIGN ══════════════════════
@@ -834,7 +958,7 @@ export class TerrainGrid {
 
   private _natureAllowed(x: number, z: number): boolean {
     if (x > -3.2 && x < this.W + 3.2 && z > -3.2 && z < this.D + 3.2) return false;
-    if (Math.abs(z - this.zRoad) < 4.4) return false;
+    if (Math.abs(z - this.zRoad) < 5.2) return false;
     if (Math.abs(x - this.riverCenterX(z)) < this.riverHW + 2.8) return false;
     return true;
   }
@@ -1026,7 +1150,7 @@ export class TerrainGrid {
     const vScl = new THREE.Vector3();
 
     // Shared instanced pools
-    const MAX_HOUSES = Math.round(Math.min(240, Math.max(90, ((this.W + this.padX) * (this.D + this.padZ)) / 95)));
+    const MAX_HOUSES = Math.round(Math.min(380, Math.max(140, ((this.W + this.padX) * (this.D + this.padZ)) / 55)));
     const MAX_ROOFS = MAX_HOUSES;
     const bodyGeo = new THREE.BoxGeometry(1, 1, 1);
     bodyGeo.translate(0, 0.5, 0);
@@ -1052,7 +1176,7 @@ export class TerrainGrid {
     });
     const towerGeo = new THREE.BoxGeometry(1, 1, 1);
     towerGeo.translate(0, 0.5, 0);
-    const MAX_TOWERS = Math.round(Math.min(90, Math.max(40, ((this.W * 0.4 + this.padX) * (this.D + this.padZ)) / 260)));
+    const MAX_TOWERS = Math.round(Math.min(140, Math.max(60, ((this.W * 0.4 + this.padX) * (this.D + this.padZ)) / 150)));
     const towers = new THREE.InstancedMesh(towerGeo, this.windowMat, MAX_TOWERS);
     towers.castShadow = true; towers.receiveShadow = true;
     const roofSlabMat = new THREE.MeshStandardMaterial({ color: 0x39404d, roughness: 0.9 });
@@ -1104,28 +1228,28 @@ export class TerrainGrid {
     };
 
     // West suburb
-    for (let i = 0; i < 26; i++) {
+    for (let i = 0; i < 42; i++) {
       const x = lerpN(-this.padX + 10, -12, rng());
       const z = lerpN(-this.padZ + 10, this.zRoad - 7, rng());
       if (!this._townAllowed(x, z, placed, 3.4)) continue;
       addHouse(x, z, 1);
     }
     // South town across the road
-    for (let i = 0; i < Math.round(30 * this.cfg.cityDensity); i++) {
+    for (let i = 0; i < Math.round(48 * this.cfg.cityDensity); i++) {
       const x = lerpN(-this.padX + 10, this.W * 0.65, rng());
       const z = lerpN(this.zRoad + 6.5, this.D + this.padZ - 10, rng());
       if (!this._townAllowed(x, z, placed, 3.4)) continue;
       addHouse(x, z, 1 + rng() * 0.35);
     }
     // North farms
-    for (let i = 0; i < 16; i++) {
+    for (let i = 0; i < 26; i++) {
       const x = lerpN(-this.padX + 12, this.W - 8, rng());
       const z = lerpN(-this.padZ + 10, -8, rng());
       if (!this._townAllowed(x, z, placed, 4)) continue;
       addHouse(x, z, 1.15 + rng() * 0.5);
     }
     // East city core across the river
-    for (let i = 0; i < Math.round(34 * this.cfg.cityDensity); i++) {
+    for (let i = 0; i < Math.round(56 * this.cfg.cityDensity); i++) {
       const x = lerpN(this.W + 26, this.W + this.padX - 8, rng());
       const z = lerpN(-this.padZ + 12, this.D + this.padZ - 12, rng());
       if (!this._townAllowed(x, z, placed, 4.2)) continue;
@@ -1233,8 +1357,8 @@ export class TerrainGrid {
     const xMax = this.W + this.padX - 6;
     const zMin = -this.padZ + 6;
     const zMax = this.D + this.padZ - 6;
-    const N_CACTI = 130;
-    const N_PALMS = 70;
+    const N_CACTI = 190;
+    const N_PALMS = 110;
 
     // Saguaro cacti
     const trunkGeo = new THREE.CylinderGeometry(0.22, 0.28, 2.2, 8);
@@ -1455,7 +1579,7 @@ export class TerrainGrid {
     let placed = 0;
     for (let i = 0; i < n; i++) {
       const ang = (i / n) * Math.PI * 2 + rng() * 0.4;
-      const dist = 10 + rng() * 4;
+      const dist = 9 + rng() * 7;
       const hx = vx + Math.cos(ang) * dist;
       const hz = vz + Math.sin(ang) * dist;
       if (Math.abs(hx - this.riverCenterX(hz)) < this.riverHW + 3) continue;
@@ -1517,16 +1641,16 @@ export class TerrainGrid {
     const vOne = new THREE.Vector3(1, 1, 1);
 
     spots.forEach((sp, i) => {
-      const y = Math.max(0, this.terrainHeight(sp.x, zR + sp.side * 2.9));
+      const y = Math.max(0, this.terrainHeight(sp.x, zR + sp.side * 4.6));
       eul.set(0, sp.side > 0 ? 0 : Math.PI, 0);
       q.setFromEuler(eul);
-      vPos.set(sp.x, y, zR + sp.side * 2.9);
+      vPos.set(sp.x, y, zR + sp.side * 4.6);
       m.compose(vPos, q, vOne);
       poles.setMatrixAt(i, m);
-      vPos.set(sp.x + sp.side * 0.45, y + 2.95, zR + sp.side * 2.9);
+      vPos.set(sp.x + sp.side * 0.45, y + 2.95, zR + sp.side * 4.6);
       m.compose(vPos, q, vOne);
       arms.setMatrixAt(i, m);
-      vPos.set(sp.x + sp.side * 0.85, y + 2.88, zR + sp.side * 2.9);
+      vPos.set(sp.x + sp.side * 0.85, y + 2.88, zR + sp.side * 4.6);
       m.compose(vPos, q, vOne);
       bulbs.setMatrixAt(i, m);
     });
