@@ -185,12 +185,13 @@ export class TerrainGrid {
       }
       posAttr.needsUpdate = true;
     }
-    // Foam flecks ride the current
+    // Flow dashes ride the current, rotated to the local river direction
     if (this.flowParticles && this.flowData.length > 0) {
       const zMin = -this.padZ;
       const span = this.D + this.padZ * 2;
       const m = new THREE.Matrix4();
-      const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2, 0, elapsed * 0.6));
+      const q = new THREE.Quaternion();
+      const eul = new THREE.Euler();
       const scl = new THREE.Vector3();
       const pos = new THREE.Vector3();
       for (let i = 0; i < this.flowData.length; i++) {
@@ -199,7 +200,11 @@ export class TerrainGrid {
         if (f.t > 1) f.t -= 1;
         const z = zMin + f.t * span;
         const meander = this.riverCenterX(z);
-        pos.set(meander + f.u, -1.0, z);
+        // Yaw follows the local meander tangent so dashes point downstream
+        const dcx = this.riverCenterX(z + 0.6) - this.riverCenterX(z - 0.6);
+        eul.set(0, Math.atan2(dcx, 1.2), 0);
+        q.setFromEuler(eul);
+        pos.set(meander + f.u, -0.86, z);
         scl.set(f.scale, f.scale, f.scale);
         m.compose(pos, q, scl);
         this.flowParticles.setMatrixAt(i, m);
@@ -299,7 +304,7 @@ export class TerrainGrid {
     let h = hills * sstep(1, 15, odist) * this.cfg.hillAmp;
 
     const roadDist = Math.abs(z - this.zRoad);
-    h *= 1 - sstep(4.2, 1.6, roadDist);
+    h *= 1 - sstep(7.0, 4.2, roadDist);
     if (z > this.D - 2 && z < this.zRoad + 1 && Math.abs(x - this.W / 2) < 5.5) {
       h *= 1 - sstep(6.5, 3.5, Math.abs(x - this.W / 2));
     }
@@ -348,8 +353,10 @@ export class TerrainGrid {
     this._buildFenceAndGate();
     if (!this.cfg.desertMode) {
       this._buildForests(rng);
+      this._buildBushTrees(rng);
     } else {
       this._buildDesertVegetation(rng);
+      this._buildBushTrees(rng);
     }
     if (this.cfg.farmPlots > 0) this._buildFarmFields(rng);
     this._buildVillage(rng);
@@ -518,33 +525,45 @@ export class TerrainGrid {
     const zMax = this.D + this.padZ;
     const steps = Math.round((zMax - zMin) / 1.5);
 
-    const positions: number[] = [];
-    const indices: number[] = [];
-    for (let i = 0; i <= steps; i++) {
-      const z = zMin + ((zMax - zMin) * i) / steps;
-      const cx = this.riverCenterX(z);
-      positions.push(cx - this.riverHW * 0.96, -1.05, z);
-      positions.push(cx + this.riverHW * 0.96, -1.05, z);
-      if (i < steps) {
-        const a = i * 2;
-        indices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+    // WATER RIBBON � built with the exact same recipe as the shoreline foam
+    // (which provably renders in this scene): position-only indexed ribbon,
+    // unlit material, no textures, no normals, frustum culling off.
+    const mkRibbon = (halfWidth: number, y: number) => {
+      const pos: number[] = [];
+      const idx: number[] = [];
+      for (let i = 0; i <= steps; i++) {
+        const z = zMin + ((zMax - zMin) * i) / steps;
+        const cx = this.riverCenterX(z);
+        pos.push(cx - halfWidth, y, z);
+        pos.push(cx + halfWidth, y, z);
+        if (i < steps) {
+          const a = i * 2;
+          idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+        }
       }
-    }
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    geo.setIndex(indices);
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      g.setIndex(idx);
+      return g;
+    };
 
-    // BULLETPROOF CARTOON WATER: solid unlit blue. No textures, no uploads,
-    // no color-space traps � this CANNOT fail to render. Flow is shown by
-    // white dash particles drifting downstream (see flowParticles below).
-    const mat = new THREE.MeshBasicMaterial({ color: 0x3fc0ff });
-    this.riverMesh = new THREE.Mesh(geo, mat);
-    this.riverMesh.frustumCulled = false; // spans the whole world � never cull
-    this.riverBasePos = new Float32Array(positions);
-    this.envGroup.add(this.riverMesh);
+    // Flat cartoon blue surface, riding high in the dug channel
+    const waterGeo = mkRibbon(this.riverHW * 0.96, -0.92);
+    const water = new THREE.Mesh(
+      waterGeo,
+      new THREE.MeshBasicMaterial({ color: 0x3fc0ff })
+    );
+    water.frustumCulled = false;
+    water.renderOrder = 2;
+    this.riverMesh = water;
+    this.riverBasePos = new Float32Array(waterGeo.getAttribute('position').array as Float32Array);
+    this.envGroup.add(water);
 // Drifting foam flecks that ride the current downstream (+Z direction)
-    const N_FLECKS = Math.round((zMax - zMin) / 3.2);
-    const fleckGeo = new THREE.PlaneGeometry(0.62, 0.16);
+    const N_FLECKS = Math.round((zMax - zMin) / 3.0);
+    // Dash baked flat with its LONG AXIS along +Z (the flow direction);
+    // per-instance yaw then follows the local river tangent.
+    const fleckGeo = new THREE.PlaneGeometry(0.16, 0.66);
+    fleckGeo.rotateX(-Math.PI / 2);
     const fleckMat = new THREE.MeshBasicMaterial({
       color: 0xffffff, transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false,
     });
@@ -644,7 +663,7 @@ export class TerrainGrid {
     const ROAD_W = 6.4;
     const road = new THREE.Mesh(new THREE.PlaneGeometry(xMax - xMin, ROAD_W), asphaltMat);
     road.rotation.x = -Math.PI / 2;
-    road.position.set((xMin + xMax) / 2, 0.04, zR);
+    road.position.set((xMin + xMax) / 2, 0.09, zR);
     road.receiveShadow = true;
     roadGroup.add(road);
 
@@ -653,7 +672,7 @@ export class TerrainGrid {
     for (const s of [-1, 1]) {
       const shoulder = new THREE.Mesh(new THREE.PlaneGeometry(xMax - xMin, 0.5), shoulderMat);
       shoulder.rotation.x = -Math.PI / 2;
-      shoulder.position.set((xMin + xMax) / 2, 0.045, zR + s * (ROAD_W / 2 + 0.25));
+      shoulder.position.set((xMin + xMax) / 2, 0.095, zR + s * (ROAD_W / 2 + 0.25));
       roadGroup.add(shoulder);
     }
 
@@ -661,7 +680,7 @@ export class TerrainGrid {
     const driveLen = Math.max(1, zR - this.D + 2.4);
     const drive = new THREE.Mesh(new THREE.PlaneGeometry(7, driveLen), asphaltMat);
     drive.rotation.x = -Math.PI / 2;
-    drive.position.set(this.W / 2, 0.035, this.D + (zR - this.D) / 2 + 0.6);
+    drive.position.set(this.W / 2, 0.085, this.D + (zR - this.D) / 2 + 0.6);
     roadGroup.add(drive);
 
     // Double yellow centre line (two-way traffic)
@@ -669,7 +688,7 @@ export class TerrainGrid {
     for (const s of [-0.14, 0.14]) {
       const line = new THREE.Mesh(new THREE.PlaneGeometry(xMax - xMin, 0.12), lineMat);
       line.rotation.x = -Math.PI / 2;
-      line.position.set((xMin + xMax) / 2, 0.05, zR + s);
+      line.position.set((xMin + xMax) / 2, 0.105, zR + s);
       roadGroup.add(line);
     }
     // White edge lines
@@ -677,7 +696,7 @@ export class TerrainGrid {
     for (const s of [-1, 1]) {
       const edge = new THREE.Mesh(new THREE.PlaneGeometry(xMax - xMin, 0.14), edgeMat);
       edge.rotation.x = -Math.PI / 2;
-      edge.position.set((xMin + xMax) / 2, 0.05, zR + s * (ROAD_W / 2 - 0.35));
+      edge.position.set((xMin + xMax) / 2, 0.105, zR + s * (ROAD_W / 2 - 0.35));
       roadGroup.add(edge);
     }
     this.envGroup.add(roadGroup);
@@ -688,34 +707,34 @@ export class TerrainGrid {
     const bridgeGroup = new THREE.Group();
 
     const deckMat = new THREE.MeshStandardMaterial({ color: 0x6b7280, roughness: 0.85 });
-    const deck = new THREE.Mesh(new THREE.BoxGeometry(span, 0.55, ROAD_W + 1.2), deckMat);
-    deck.position.set(cx, -0.22, zR);
+    const deck = new THREE.Mesh(new THREE.BoxGeometry(span, 0.6, ROAD_W), deckMat);
+    deck.position.set(cx, -0.2, zR);
     deck.castShadow = true;
     bridgeGroup.add(deck);
     // Bridge asphalt overlay so lanes continue seamlessly
     const bridgeRoad = new THREE.Mesh(new THREE.PlaneGeometry(span, ROAD_W), asphaltMat);
     bridgeRoad.rotation.x = -Math.PI / 2;
-    bridgeRoad.position.set(cx, 0.055, zR);
+    bridgeRoad.position.set(cx, 0.1, zR);
     bridgeGroup.add(bridgeRoad);
     const bridgeLineMat = lineMat;
     for (const s of [-0.14, 0.14]) {
       const line = new THREE.Mesh(new THREE.PlaneGeometry(span, 0.12), bridgeLineMat);
       line.rotation.x = -Math.PI / 2;
-      line.position.set(cx, 0.06, zR + s);
+      line.position.set(cx, 0.11, zR + s);
       bridgeGroup.add(line);
     }
 
     const railMat = new THREE.MeshStandardMaterial({ color: 0x9aa5b1, metalness: 0.5, roughness: 0.5 });
     for (const s of [-1, 1]) {
       const rail = new THREE.Mesh(new THREE.BoxGeometry(span, 0.09, 0.09), railMat);
-      rail.position.set(cx, 0.72, zR + s * (ROAD_W / 2 + 0.5));
+      rail.position.set(cx, 0.82, zR + s * (ROAD_W / 2 + 0.55));
       bridgeGroup.add(rail);
       const railLow = new THREE.Mesh(new THREE.BoxGeometry(span, 0.07, 0.07), railMat);
-      railLow.position.set(cx, 0.42, zR + s * (ROAD_W / 2 + 0.5));
+      railLow.position.set(cx, 0.5, zR + s * (ROAD_W / 2 + 0.55));
       bridgeGroup.add(railLow);
       for (let px = -span / 2 + 1; px <= span / 2 - 1; px += 2.4) {
         const post = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.85, 0.09), railMat);
-        post.position.set(cx + px, 0.32, zR + s * (ROAD_W / 2 + 0.5));
+        post.position.set(cx + px, 0.42, zR + s * (ROAD_W / 2 + 0.55));
         bridgeGroup.add(post);
       }
     }
@@ -1472,6 +1491,68 @@ export class TerrainGrid {
         this.envGroup.add(tank);
       }
     }
+  }
+
+  // ════════════ WIDE BUSH-TREES — fills every remaining gap ════════════
+
+  private _buildBushTrees(rng: () => number) {
+    const area = (this.W + this.padX * 0.95) * (this.D + this.padZ * 0.95);
+    const k = Math.min(2.4, Math.max(1.1, area / 14000));
+    const N = Math.round(1500 * k);
+
+    const blobGeo = new THREE.IcosahedronGeometry(1, 1);
+    const mat = new THREE.MeshStandardMaterial({ roughness: 0.9, flatShading: true });
+    const blobs = new THREE.InstancedMesh(blobGeo, mat, N * 2);
+    blobs.castShadow = true;
+
+    const xMin = -this.padX + 3;
+    const xMax = this.W + this.padX - 3;
+    const zMin = -this.padZ + 3;
+    const zMax = this.D + this.padZ - 3;
+
+    const m = new THREE.Matrix4();
+    const q = new THREE.Quaternion();
+    const eul = new THREE.Euler();
+    const col = new THREE.Color();
+    let n = 0;
+
+    for (let tries = 0; tries < N * 8 && n < N * 2; tries++) {
+      const x = lerpN(xMin, xMax, rng());
+      const z = lerpN(zMin, zMax, rng());
+      if (!this._natureAllowed(x, z)) continue;
+      const y = this.terrainHeight(x, z);
+      if (y < -0.55) continue; // not in the river
+      const wide = 2.1 + rng() * 1.7;
+      const tall = 1.0 + rng() * 0.9;
+      eul.set(rng() * 0.3, rng() * Math.PI * 2, rng() * 0.3);
+      q.setFromEuler(eul);
+
+      // Main wide canopy
+      const vPos = new THREE.Vector3(x, y + tall * 0.55, z);
+      const vScl = new THREE.Vector3(wide, tall, wide);
+      m.compose(vPos, q, vScl);
+      blobs.setMatrixAt(n, m);
+      col.setHex(this.cfg.broadleafGreens.length > 0
+        ? this.cfg.broadleafGreens[Math.floor(rng() * this.cfg.broadleafGreens.length)]
+        : 0x8a8a4a
+      ).offsetHSL((rng() - 0.5) * 0.03, 0, (rng() - 0.5) * 0.08);
+      blobs.setColorAt(n, col);
+      n++;
+
+      // Secondary offset blob for a bushy silhouette
+      if (n >= N * 2) break;
+      vPos.set(x + (rng() - 0.5) * wide * 0.9, y + tall * 0.38, z + (rng() - 0.5) * wide * 0.9);
+      vScl.set(wide * 0.62, tall * 0.72, wide * 0.62);
+      m.compose(vPos, q, vScl);
+      blobs.setMatrixAt(n, m);
+      col.offsetHSL(0, 0, (rng() - 0.5) * 0.05);
+      blobs.setColorAt(n, col);
+      n++;
+    }
+    blobs.count = n;
+    blobs.instanceMatrix.needsUpdate = true;
+    if (blobs.instanceColor) blobs.instanceColor.needsUpdate = true;
+    this.envGroup.add(blobs);
   }
 
   // ══════════════════ VILLAGE (chapel, well, green) ═══════════════════
