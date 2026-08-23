@@ -136,9 +136,6 @@ export class TerrainGrid {
 
   private riverMesh: THREE.Mesh | null = null;
   private riverBasePos: Float32Array | null = null;
-  private riverNormalMap: THREE.CanvasTexture | null = null;
-  private riverFlowTex: THREE.CanvasTexture | null = null;
-  private riverFoam: THREE.Mesh | null = null;
   private baseY: number = -9;
   private cloudMesh: THREE.InstancedMesh | null = null;
   private cloudData: { y: number; z: number; speed: number; sx: number; sy: number; sz: number }[] = [];
@@ -187,19 +184,6 @@ export class TerrainGrid {
           Math.sin((bx + bz) * 0.3 - elapsed * 0.8) * 0.03;
       }
       posAttr.needsUpdate = true;
-    }
-    // Ripple normal + bold cartoon flow streaks travel downstream
-    if (this.riverNormalMap && this.riverMesh) {
-      this.riverNormalMap.offset.y -= dt * 0.55;
-      this.riverNormalMap.offset.x = Math.sin(elapsed * 0.35) * 0.06;
-    }
-    if (this.riverFlowTex) {
-      this.riverFlowTex.offset.y -= dt * 1.6; // unmistakable flowing motion
-    }
-    // Shoreline foam gently pulses
-    if (this.riverFoam) {
-      const fm = this.riverFoam.material as THREE.MeshBasicMaterial;
-      fm.opacity = 0.72 + Math.sin(elapsed * 2.2) * 0.16;
     }
     // Foam flecks ride the current
     if (this.flowParticles && this.flowData.length > 0) {
@@ -397,9 +381,6 @@ export class TerrainGrid {
     this.slabGroup.clear();
     this.riverMesh = null;
     this.riverBasePos = null;
-    this.riverNormalMap = null;
-    this.riverFlowTex = null;
-    this.riverFoam = null;
     this.cloudMesh = null;
     this.cloudData = [];
     this.lampBulbMat = null;
@@ -538,15 +519,12 @@ export class TerrainGrid {
     const steps = Math.round((zMax - zMin) / 1.5);
 
     const positions: number[] = [];
-    const uvs: number[] = [];
     const indices: number[] = [];
     for (let i = 0; i <= steps; i++) {
-      const v = i / steps;
       const z = zMin + ((zMax - zMin) * i) / steps;
       const cx = this.riverCenterX(z);
-      positions.push(cx - this.riverHW * 0.94, -1.05, z);
-      positions.push(cx + this.riverHW * 0.94, -1.05, z);
-      uvs.push(0, v, 1, v);
+      positions.push(cx - this.riverHW * 0.96, -1.05, z);
+      positions.push(cx + this.riverHW * 0.96, -1.05, z);
       if (i < steps) {
         const a = i * 2;
         indices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
@@ -554,76 +532,21 @@ export class TerrainGrid {
     }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
     geo.setIndex(indices);
-    geo.computeVertexNormals();
 
-    // Cartoon flow texture: bold light streaks & dashes that visibly travel
-    const fc = document.createElement('canvas');
-    fc.width = 128; fc.height = 128;
-    const fctx = fc.getContext('2d');
-    if (fctx) {
-      // Flat saturated cartoon blue base, exactly like stylized river art
-      fctx.fillStyle = '#41b6f7';
-      fctx.fillRect(0, 0, 128, 128);
-      const rngF = mulberry32(777);
-      for (let i = 0; i < 50; i++) {
-        const y = rngF() * 128;
-        const x = rngF() * 128;
-        const wdt = 14 + rngF() * 40;
-        const hgt = 3.5 + rngF() * 5;
-        fctx.fillStyle = rngF() > 0.35 ? 'rgba(255,255,255,0.95)' : 'rgba(200,240,255,1)';
-        fctx.beginPath();
-        fctx.roundRect(x, y, wdt, hgt, hgt / 2);
-        fctx.fill();
-      }
-    }
-    const flowTex = new THREE.CanvasTexture(fc);
-    flowTex.colorSpace = THREE.SRGBColorSpace;
-    flowTex.wrapS = THREE.RepeatWrapping;
-    flowTex.wrapT = THREE.RepeatWrapping;
-    flowTex.repeat.set(1, Math.max(8, steps / 6));
-    this.riverFlowTex = flowTex;
-
-    // FLAT CARTOON WATER: unlit basic material = the same vivid blue in every
-    // lighting condition, with white streaks doing all the animation.
-    const mat = new THREE.MeshBasicMaterial({
-      color: 0xffffff,
-      map: flowTex,
-    });
+    // BULLETPROOF CARTOON WATER: solid unlit blue. No textures, no uploads,
+    // no color-space traps � this CANNOT fail to render. Flow is shown by
+    // white dash particles drifting downstream (see flowParticles below).
+    const mat = new THREE.MeshBasicMaterial({ color: 0x3fc0ff });
     this.riverMesh = new THREE.Mesh(geo, mat);
+    this.riverMesh.frustumCulled = false; // spans the whole world � never cull
     this.riverBasePos = new Float32Array(positions);
     this.envGroup.add(this.riverMesh);
-
-    // White shoreline foam outlines where the water meets the banks
-    const foamPositions: number[] = [];
-    const foamIndices: number[] = [];
-    for (const side of [-1, 1]) {
-      const base = foamPositions.length / 3;
-      for (let i = 0; i <= steps; i++) {
-        const z = zMin + ((zMax - zMin) * i) / steps;
-        const cx2 = this.riverCenterX(z);
-        foamPositions.push(cx2 + side * this.riverHW * 0.97, -0.98, z);
-        if (i < steps) {
-          const a = base + i * 2;
-          foamIndices.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
-        }
-      }
-    }
-    const foamGeo = new THREE.BufferGeometry();
-    foamGeo.setAttribute('position', new THREE.Float32BufferAttribute(foamPositions, 3));
-    foamGeo.setIndex(foamIndices);
-    const foamMat = new THREE.MeshBasicMaterial({
-      color: 0xffffff, transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthWrite: false,
-    });
-    this.riverFoam = new THREE.Mesh(foamGeo, foamMat);
-    this.envGroup.add(this.riverFoam);
-
-    // Drifting foam flecks that ride the current downstream (+Z direction)
-    const N_FLECKS = Math.round((zMax - zMin) / 9);
-    const fleckGeo = new THREE.PlaneGeometry(0.34, 0.14);
+// Drifting foam flecks that ride the current downstream (+Z direction)
+    const N_FLECKS = Math.round((zMax - zMin) / 3.2);
+    const fleckGeo = new THREE.PlaneGeometry(0.62, 0.16);
     const fleckMat = new THREE.MeshBasicMaterial({
-      color: 0xeaf7fd, transparent: true, opacity: 0.55, side: THREE.DoubleSide, depthWrite: false,
+      color: 0xffffff, transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false,
     });
     this.flowParticles = new THREE.InstancedMesh(fleckGeo, fleckMat, N_FLECKS);
     const m = new THREE.Matrix4();
@@ -631,7 +554,7 @@ export class TerrainGrid {
     const one = new THREE.Vector3(1, 1, 1);
     const pos = new THREE.Vector3();
     for (let i = 0; i < N_FLECKS; i++) {
-      this.flowData.push({ t: rngFleck(), u: (rngFleck() - 0.5) * 1.55, speed: 0.75 + rngFleck() * 0.5, scale: 0.7 + rngFleck() * 0.8 });
+      this.flowData.push({ t: rngFleck(), u: (rngFleck() - 0.5) * 5.6, speed: 0.75 + rngFleck() * 0.5, scale: 0.8 + rngFleck() * 0.9 });
       pos.set(this.riverCenterX(this.flowData[i].t * (zMax - zMin) + zMin), -1.0, 0);
       m.compose(pos, q, one);
       this.flowParticles.setMatrixAt(i, m);
@@ -1088,51 +1011,51 @@ export class TerrainGrid {
     if (bushes.instanceColor) bushes.instanceColor.needsUpdate = true;
     this.envGroup.add(bushes);
 
-    // River rocks — some sitting IN the water (with cartoon foam rings where
-    // they break the surface), some on the banks (no rings).
+    // River rocks — a few sitting in the water, each marked with a THIN white
+    // waterline ring (cartoon outline, not a filled disc). Banks stay clean.
     const rockGeo = new THREE.DodecahedronGeometry(0.4, 0);
+    const N_ROCK_IN = Math.round(N_ROCK * 0.3);
     const rocks = new THREE.InstancedMesh(rockGeo, new THREE.MeshStandardMaterial({ color: 0x7d7f83, roughness: 0.95 }), N_ROCK);
     rocks.castShadow = true;
-    const foamDiscGeo = new THREE.CircleGeometry(0.62, 12);
-    const foamDiscs = new THREE.InstancedMesh(
-      foamDiscGeo,
-      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, depthWrite: false }),
-      N_ROCK
+    const ringGeo = new THREE.RingGeometry(0.42, 0.56, 20);
+    const rings = new THREE.InstancedMesh(
+      ringGeo,
+      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8, side: THREE.DoubleSide, depthWrite: false }),
+      N_ROCK_IN
     );
     let nR = 0;
     let nF = 0;
-    for (let tries = 0; tries < N_ROCK * 16 && nR < N_ROCK; tries++) {
+    for (let tries = 0; tries < N_ROCK * 14 && nR < N_ROCK; tries++) {
       const z = lerpN(zMin, zMax, rng());
-      const inWater = rng() > 0.45;
       const side = rng() > 0.5 ? 1 : -1;
+      const inWater = nR % 4 === 0; // ~25% of rocks break the surface
       const x = inWater
-        ? this.riverCenterX(z) + side * rng() * this.riverHW * 0.75
-        : this.riverCenterX(z) + side * (this.riverHW + 1.2 + rng() * 1.6);
+        ? this.riverCenterX(z) + side * rng() * this.riverHW * 0.6
+        : this.riverCenterX(z) + side * (this.riverHW + 1.4 + rng() * 2.2);
       const y = this.terrainHeight(x, z);
-      if (y > 0.1) continue; // skip dry high banks
-      const s = 0.5 + rng() * 1.1;
+      const s = 0.5 + rng() * 0.9;
       eul.set(rng() * Math.PI, rng() * Math.PI, rng() * 0.4);
       q.setFromEuler(eul);
-      const rockY = inWater ? Math.max(y, -1.15) + s * 0.18 : y;
+      const rockY = inWater ? -1.12 + s * 0.22 : y;
       vPos.set(x, rockY, z); vScl.set(s, s * 0.8, s);
       m.compose(vPos, q, vScl);
       rocks.setMatrixAt(nR, m);
-      // Foam ring only where the stone breaks the water surface
+      // Thin ring at the waterline where the stone breaks the surface
       if (inWater) {
-        eul.set(-Math.PI / 2, 0, rng() * Math.PI);
+        eul.set(-Math.PI / 2 + (rng() - 0.5) * 0.2, 0, rng() * Math.PI);
         q.setFromEuler(eul);
-        vPos.set(x, -0.99, z); vScl.set(s * 1.45, s * 1.25, s * 1.45);
+        vPos.set(x, -1.03, z); vScl.set(s, s, s);
         m.compose(vPos, q, vScl);
-        foamDiscs.setMatrixAt(nF++, m);
+        rings.setMatrixAt(nF++, m);
       }
       nR++;
     }
     rocks.count = nR;
-    foamDiscs.count = nF;
+    rings.count = nF;
     rocks.instanceMatrix.needsUpdate = true;
-    foamDiscs.instanceMatrix.needsUpdate = true;
+    rings.instanceMatrix.needsUpdate = true;
     this.envGroup.add(rocks);
-    this.envGroup.add(foamDiscs);
+    this.envGroup.add(rings);
   }
 
   // ══════════════════ SURROUNDING TOWN & CITY ═════════════════════════
