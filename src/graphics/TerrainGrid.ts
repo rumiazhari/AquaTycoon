@@ -179,13 +179,13 @@ export class TerrainGrid {
         const v = (bz - zMin) / span; // downstream parameter
         const phase = v * 14 - elapsed * 1.9; // waves travel +Z (downstream)
         arr[i + 1] =
-          Math.sin(phase) * 0.07 +
-          Math.sin(bx * 0.55 + elapsed * 1.4) * 0.04 +
+          Math.sin(phase) * 0.10 +
+          Math.sin(bx * 0.55 + elapsed * 1.4) * 0.06 +
           Math.sin((bx + bz) * 0.3 - elapsed * 0.8) * 0.03;
       }
       posAttr.needsUpdate = true;
     }
-    // Flow dashes ride the current, rotated to the local river direction
+    // Flow arrow streaks ride the current with bobbing and shimmer
     if (this.flowParticles && this.flowData.length > 0) {
       const zMin = -this.padZ;
       const span = this.D + this.padZ * 2;
@@ -200,12 +200,16 @@ export class TerrainGrid {
         if (f.t > 1) f.t -= 1;
         const z = zMin + f.t * span;
         const meander = this.riverCenterX(z);
-        // Yaw follows the local meander tangent so dashes point downstream
+        // Yaw follows the local meander tangent so arrows point downstream
         const dcx = this.riverCenterX(z + 0.6) - this.riverCenterX(z - 0.6);
         eul.set(0, Math.atan2(dcx, 1.2), 0);
         q.setFromEuler(eul);
-        pos.set(meander + f.u, -0.86, z);
-        scl.set(f.scale, f.scale, f.scale);
+        // Vertical bobbing for a dynamic flowing effect
+        const bob = Math.sin(elapsed * 3.0 + i * 1.7) * 0.04;
+        // Scale pulse for shimmer
+        const pulse = 1.0 + Math.sin(elapsed * 2.5 + i * 2.1) * 0.12;
+        pos.set(meander + f.u, -0.86 + bob, z);
+        scl.set(f.scale * pulse, f.scale * pulse, f.scale * pulse);
         m.compose(pos, q, scl);
         this.flowParticles.setMatrixAt(i, m);
       }
@@ -547,33 +551,81 @@ export class TerrainGrid {
       return g;
     };
 
-    // Flat cartoon blue surface, riding high in the dug channel
+    // Bright cartoonish blue surface, riding high in the dug channel
     const waterGeo = mkRibbon(this.riverHW * 0.96, -0.92);
     const water = new THREE.Mesh(
       waterGeo,
-      new THREE.MeshBasicMaterial({ color: 0x3fc0ff })
+      new THREE.MeshBasicMaterial({ color: 0x40c8ff })
     );
     water.frustumCulled = false;
     water.renderOrder = 2;
     this.riverMesh = water;
     this.riverBasePos = new Float32Array(waterGeo.getAttribute('position').array as Float32Array);
     this.envGroup.add(water);
-// Drifting foam flecks that ride the current downstream (+Z direction)
-    const N_FLECKS = Math.round((zMax - zMin) / 3.0);
-    // Dash baked flat with its LONG AXIS along +Z (the flow direction);
-    // per-instance yaw then follows the local river tangent.
-    const fleckGeo = new THREE.PlaneGeometry(0.16, 0.66);
-    fleckGeo.rotateX(-Math.PI / 2);
-    const fleckMat = new THREE.MeshBasicMaterial({
-      color: 0xffffff, transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false,
+
+    // Lighter highlight ribbon on top for a cartoonish sheen
+    const highlightGeo = mkRibbon(this.riverHW * 0.5, -0.85);
+    const highlight = new THREE.Mesh(
+      highlightGeo,
+      new THREE.MeshBasicMaterial({ color: 0x80e8ff, transparent: true, opacity: 0.5 })
+    );
+    highlight.frustumCulled = false;
+    highlight.renderOrder = 3;
+    this.envGroup.add(highlight);
+
+    // Thin white foam edges along both riverbanks
+    const foamW = 0.38;
+    const foamR = this.riverHW * 0.96;
+    for (const side of [-1, 1]) {
+      const foamPos: number[] = [];
+      const foamIdx: number[] = [];
+      for (let i = 0; i <= steps; i++) {
+        const z = zMin + ((zMax - zMin) * i) / steps;
+        const cx = this.riverCenterX(z);
+        const inner = cx + side * foamR;
+        const outer = cx + side * (foamR + foamW);
+        foamPos.push(inner, -0.89, z);
+        foamPos.push(outer, -0.89, z);
+        if (i < steps) {
+          const a = i * 2;
+          foamIdx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+        }
+      }
+      const foamGeo = new THREE.BufferGeometry();
+      foamGeo.setAttribute('position', new THREE.Float32BufferAttribute(foamPos, 3));
+      foamGeo.setIndex(foamIdx);
+      const foam = new THREE.Mesh(
+        foamGeo,
+        new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.6, side: THREE.DoubleSide, depthWrite: false })
+      );
+      foam.frustumCulled = false;
+      foam.renderOrder = 2;
+      this.envGroup.add(foam);
+    }
+// Drifting arrow streaks that ride the current downstream (+Z direction)
+    const N_ARROWS = Math.round((zMax - zMin) / 2.2);
+    // Arrow/chevron shape pointing downstream (+Z), baked flat (rotated to XZ plane)
+    const arrowShape = new THREE.Shape();
+    arrowShape.moveTo(-0.22, 0.38);
+    arrowShape.lineTo(0, 0.62);
+    arrowShape.lineTo(0.22, 0.38);
+    arrowShape.lineTo(0.1, 0.38);
+    arrowShape.lineTo(0.1, -0.38);
+    arrowShape.lineTo(-0.1, -0.38);
+    arrowShape.lineTo(-0.1, 0.38);
+    arrowShape.closePath();
+    const arrowGeo = new THREE.ShapeGeometry(arrowShape);
+    arrowGeo.rotateX(-Math.PI / 2);
+    const arrowMat = new THREE.MeshBasicMaterial({
+      color: 0x90e0ff, transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthWrite: false,
     });
-    this.flowParticles = new THREE.InstancedMesh(fleckGeo, fleckMat, N_FLECKS);
+    this.flowParticles = new THREE.InstancedMesh(arrowGeo, arrowMat, N_ARROWS);
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2, 0, 0));
     const one = new THREE.Vector3(1, 1, 1);
     const pos = new THREE.Vector3();
-    for (let i = 0; i < N_FLECKS; i++) {
-      this.flowData.push({ t: rngFleck(), u: (rngFleck() - 0.5) * 5.6, speed: 0.75 + rngFleck() * 0.5, scale: 0.8 + rngFleck() * 0.9 });
+    for (let i = 0; i < N_ARROWS; i++) {
+      this.flowData.push({ t: rngFleck(), u: (rngFleck() - 0.5) * 5.6, speed: 0.75 + rngFleck() * 0.5, scale: 1.0 + rngFleck() * 1.0 });
       pos.set(this.riverCenterX(this.flowData[i].t * (zMax - zMin) + zMin), -1.0, 0);
       m.compose(pos, q, one);
       this.flowParticles.setMatrixAt(i, m);
