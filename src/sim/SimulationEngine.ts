@@ -1,5 +1,7 @@
 import { GameFinancials, PlantOverallStats } from '../types/game';
-import { PipeConnection, PlacedUnit, TreatmentStandard, WaterQuality } from '../types/simulation';
+import {
+  GasStream, PipeConnection, PlacedUnit, TreatmentStandard, WaterQuality, emptyGas
+} from '../types/simulation';
 import { calculateUnitProcess, EnvironmentFactors, ProcessResult } from './UnitProcessModels';
 import { cloneWater, emptyWater, mixWaterStreams } from './WaterStream';
 
@@ -9,11 +11,57 @@ export interface SimulationStepResult {
   finalEffluent: WaterQuality;
   overallStats: PlantOverallStats;
   financials: GameFinancials;
+  /** Set when the relaxation loop hit its iteration cap without converging */
+  converged: boolean;
+  iterationsUsed: number;
+}
+
+/** Guards against NaN/Infinity/negative hydraulic values polluting the network. */
+function sanitizeStream(w: WaterQuality): WaterQuality {
+  const s = (v: number, floor = 0) => (!Number.isFinite(v) ? floor : Math.max(floor, v));
+  return {
+    flowRate: s(w.flowRate),
+    bod: s(w.bod),
+    cod: s(w.cod),
+    tss: s(w.tss),
+    tn: s(w.tn),
+    nh4: s(w.nh4),
+    no3: s(w.no3),
+    tp: s(w.tp),
+    pathogens: s(w.pathogens),
+    do: Number.isFinite(w.do) ? Math.max(0, Math.min(14, w.do)) : 0,
+    ph: Number.isFinite(w.ph) ? Math.min(14, Math.max(2, w.ph)) : 7,
+    temp: Number.isFinite(w.temp) ? w.temp : 20,
+    toxicIndex: s(w.toxicIndex),
+    turbidity: s(w.turbidity)
+  };
+}
+
+/** Liquid payload carried on a pipe for the given source unit + port. */
+function streamForPort(unit: PlacedUnit, portId: string): WaterQuality {
+  const ps = unit.portStreams?.[portId];
+  if (ps) return sanitizeStream(ps);
+  // Legacy fallback: sludge_outlet -> lastSludge-style stream stored under
+  // the old single-sludge field; anything else -> main outlet.
+  if (portId !== 'outlet') {
+    const legacy = (unit as PlacedUnit & { lastSludgeQuality?: WaterQuality }).lastSludgeQuality;
+    if (legacy && portId.includes('sludge')) return sanitizeStream(legacy);
+  }
+  return sanitizeStream(unit.lastOutletQuality ?? emptyWater());
 }
 
 export class SimulationEngine {
   /**
    * Solves the complete hydraulic and biochemical network for one simulation tick.
+   *
+   * The solver is a bounded Gauss-Seidel style relaxation over the directed
+   * pipe graph:
+   *   - each pass recomputes every unit from its CURRENT incoming streams
+   *     and immediately refreshes its outgoing per-port streams
+   *   - recycle loops converge because every unit's outputs are pure
+   *     functions of its inputs (no flow multiplication anywhere)
+   *   - under-relaxation damps oscillation around loops; we stop as soon as
+   *     flows and key concentrations settle within tolerance
    */
   public static stepSimulation(
     units: PlacedUnit[],
@@ -35,34 +83,124 @@ export class SimulationEngine {
     // 1. Find Influent Inlet units and set their initial outlet stream
     const inletUnits = units.filter(u => u.typeId === 'influent_inlet');
     for (const inlet of inletUnits) {
-      const liveInfluent = cloneWater(influentSpec);
-      unitMap.get(inlet.instanceId)!.lastOutletQuality = liveInfluent;
+      const liveInfluent = sanitizeStream(cloneWater(influentSpec));
+      const u = unitMap.get(inlet.instanceId)!;
+      u.lastOutletQuality = liveInfluent;
+      u.portStreams = { outlet: liveInfluent };
+      u.gasStreams = {};
     }
 
-    // 2. Iterative network relaxation solver (handles loops like RAS recycle and internal nitrate recycles)
-    const MAX_ITERATIONS = 4;
-    for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
-      // Propagate flow along each pipe
+    // 1b. Initialize all pipes to zero flow so results never depend on stale
+    //     pipe state (ordering-independent warm start).
+    const firstTick = updatedPipes.every(p => p.flowRate === 0);
+    if (firstTick) {
       for (const pipe of updatedPipes) {
-        const fromUnit = unitMap.get(pipe.fromUnitId);
-        if (!fromUnit) continue;
+        pipe.quality = emptyWater();
+        pipe.flowRate = 0;
+        pipe.gasFlowRate = 0;
+        pipe.gasCh4Fraction = 0;
+      }
+    }
+    // On subsequent ticks the previous converged state is retained as a warm
+    // start — the relaxation then needs only 1-2 passes per steady tick.
 
-        let sourceQuality = fromUnit.lastOutletQuality || emptyWater();
-        if (pipe.fromPortId === 'sludge_outlet' && fromUnit.lastSludgeQuality) {
-          sourceQuality = fromUnit.lastSludgeQuality;
-        }
+    // 2. Bounded convergence-aware relaxation solver
+    const MAX_ITERATIONS = 24;         // hard bound (was a fixed 4 passes)
+    const FLOW_TOL = 0.01;             // relative flow tolerance
+    const CONC_TOL = 0.005;            // relative concentration tolerance
+    const DAMPING = 0.6;               // under-relaxation factor (stability)
+    let converged = false;
+    let iter = 0;
+    let worstResidual = 0;
+    let worstResidualKey = '?';
 
-        pipe.quality = cloneWater(sourceQuality);
-        pipe.flowRate = sourceQuality.flowRate;
+    const relDiff = (a: number, b: number) => {
+      const scale = Math.max(Math.abs(a), Math.abs(b), 1);
+      return Math.abs(a - b) / scale;
+    };
+    const noteResidual = (key: string, d: number): boolean => {
+      if (!Number.isFinite(d)) { worstResidual = Infinity; worstResidualKey = key; converged = false; return true; }
+      if (d > worstResidual) { worstResidual = d; worstResidualKey = key; }
+      return false;
+    };
+
+    for (iter = 1; iter <= MAX_ITERATIONS && !converged; iter++) {
+      converged = true;
+      worstResidual = 0;
+      worstResidualKey = '?';
+
+      // ── 2a. Propagate streams along pipes from their SOURCE ports ──
+      // Defense-in-depth flow conservation: if a topology ever attaches
+      // several pipes to one source port (legacy saves, editor quirks), the
+      // port's stream is DIVIDED equally between them — never duplicated.
+      const pipesBySource = new Map<string, PipeConnection[]>();
+      for (const pipe of updatedPipes) {
+        const key = `${pipe.fromUnitId}::${pipe.fromPortId}`;
+        const list = pipesBySource.get(key);
+        if (list) list.push(pipe); else pipesBySource.set(key, [pipe]);
       }
 
-      // Compute each unit's inlet from all connected pipes to its inlet ports
+      for (const [key, portPipes] of pipesBySource.entries()) {
+        const sepIdx = key.indexOf('::');
+        const fromUnitId = key.slice(0, sepIdx);
+        const fromPortId = key.slice(sepIdx + 2);
+        const fromUnit = unitMap.get(fromUnitId);
+        if (!fromUnit) continue;
+        const nLiquid = portPipes.filter(p => p.pipeType !== 'gas').length;
+
+        for (const pipe of portPipes) {
+          if (pipe.pipeType === 'gas') {
+            const gas: GasStream = fromUnit.gasStreams?.[fromPortId] ?? emptyGas();
+            pipe.flowRate = 0;
+            pipe.quality = emptyWater();
+            pipe.gasFlowRate = Number.isFinite(gas.flowRate) ? Math.max(0, gas.flowRate) : 0;
+            pipe.gasCh4Fraction = Number.isFinite(gas.ch4Fraction)
+              ? Math.min(1, Math.max(0, gas.ch4Fraction))
+              : 0;
+            continue;
+          }
+
+          const sourceQuality = streamForPort(fromUnit, fromPortId);
+          // Split the port stream across duplicate pipes (ideal equal split)
+          const shareFactor = nLiquid > 1 ? 1 / nLiquid : 1;
+          const targetFlow = Math.max(0, sourceQuality.flowRate) * shareFactor;
+
+          // Under-relaxed update toward the fresh upstream value — applied to
+          // BOTH flow and quality, otherwise recycle-loop concentrations
+          // oscillate in a two-cycle around their fixed point.
+          pipe.flowRate = pipe.flowRate + DAMPING * (targetFlow - pipe.flowRate);
+          pipe.quality = sanitizeStream(
+            mixWaterStreams([
+              { quality: pipe.quality, flow: 1 - DAMPING },
+              { quality: sourceQuality, flow: DAMPING }
+            ])
+          );
+          pipe.quality.flowRate = pipe.flowRate;
+
+          if (
+            noteResidual(`flow:${key}`, relDiff(pipe.flowRate, targetFlow)) ||
+            relDiff(pipe.flowRate, targetFlow) > FLOW_TOL ||
+            relDiff(pipe.quality.bod, sourceQuality.bod) > CONC_TOL ||
+            relDiff(pipe.quality.tss, sourceQuality.tss) > CONC_TOL ||
+            relDiff(pipe.quality.nh4, sourceQuality.nh4) > CONC_TOL
+          ) {
+            converged = false;
+          }
+        }
+      }
+
+      // ── 2b. Compute each unit's inlet from connected pipes & re-run process ──
       for (const unit of units) {
         if (unit.typeId === 'influent_inlet') continue;
+        const targetUnit = unitMap.get(unit.instanceId);
+        if (!targetUnit) continue;
 
-        // Incoming streams to liquid inlets
+        // Incoming liquid streams to liquid inlets ('inlet' + 'ras_inlet')
         const incomingLiquidPipes = updatedPipes.filter(
-          p => p.toUnitId === unit.instanceId && (p.toPortId === 'inlet' || p.toPortId === 'ras_inlet')
+          p =>
+            p.pipeType !== 'gas' &&
+            p.toUnitId === unit.instanceId &&
+            (p.toPortId === 'inlet' || p.toPortId === 'ras_inlet')
         );
 
         let mergedInlet = emptyWater();
@@ -72,31 +210,104 @@ export class SimulationEngine {
           );
         }
 
-        // BUG FIX: track the main-line (forward) hydraulic throughput separately from
-        // recycles (RAS / internal nitrate). Without this, recycle loops compounded
-        // flow every relaxation pass and inflated plant throughput ~4x.
+        // Forward (main-line) hydraulic throughput entering via 'inlet' ports
+        // only — used by legacy process paths that need net throughput.
         const forwardInflow = incomingLiquidPipes
           .filter(p => p.toPortId === 'inlet')
           .reduce((acc, p) => acc + p.flowRate, 0);
 
         // Run unit process calculation
-        const result = calculateUnitProcess(unit, mergedInlet, forwardInflow, env);
+        const result = calculateUnitProcess(targetUnit, mergedInlet, forwardInflow, env);
         unitResults.set(unit.instanceId, result);
 
-        // Update unit state
-        const targetUnit = unitMap.get(unit.instanceId)!;
-        targetUnit.lastInletQuality = mergedInlet;
-        targetUnit.lastOutletQuality = result.effluent;
-        targetUnit.lastSludgeQuality = result.sludge;
-        targetUnit.lastGasProducedM3Day = result.gasProducedM3Day;
-        targetUnit.lastPowerKwActual = result.powerKw;
-        targetUnit.lastOpexActual = result.opexDay;
-        targetUnit.efficiencyRating = result.efficiency;
+        // Convergence check against this unit's previous inlet state
+        const prev = targetUnit.lastInletQuality;
+        if (
+          relDiff(mergedInlet.flowRate, prev.flowRate) > FLOW_TOL ||
+          noteResidual('unitInlet', relDiff(mergedInlet.bod, prev.bod)) ||
+          relDiff(mergedInlet.bod, prev.bod) > CONC_TOL ||
+          relDiff(mergedInlet.tss, prev.tss) > CONC_TOL ||
+          relDiff(mergedInlet.nh4, prev.nh4) > CONC_TOL ||
+          relDiff(mergedInlet.tn, prev.tn) > CONC_TOL
+        ) {
+          converged = false;
+        }
+
+        // ── RAS/WAS topology is physically meaningful ────────────────────
+        // Configured recycle/waste streams only leave through real pipes:
+        //   · WAS with no dewatering/thickening route folds back into the
+        //     clarifier underflow (the pump shares the RAS sump);
+        //   · RAS with no bioreactor return overflows the weir WITH the
+        //     effluent — biomass washes out and the plant degrades visibly.
+        // No magical internal recycle while pipes sit disconnected; the
+        // AdvisoryEngine tells the player exactly what is missing.
+        const hasOutgoingPipe = (portId: string) =>
+          updatedPipes.some(
+            p =>
+              p.pipeType !== 'gas' &&
+              p.fromUnitId === targetUnit.instanceId &&
+              p.fromPortId === portId
+          );
+        let effStreams: Record<string, WaterQuality> = { ...(result.portStreams ?? {}) };
+
+        if (
+          !hasOutgoingPipe('was_outlet') &&
+          (effStreams['was_outlet']?.flowRate ?? 0) > 0 &&
+          effStreams['sludge_outlet']
+        ) {
+          effStreams['sludge_outlet'] = sanitizeStream(mixWaterStreams([
+            { quality: effStreams['sludge_outlet'], flow: Math.max(0, effStreams['sludge_outlet'].flowRate) },
+            { quality: effStreams['was_outlet'], flow: Math.max(0, effStreams['was_outlet'].flowRate) }
+          ]));
+          effStreams['was_outlet'] = { ...effStreams['was_outlet'], flowRate: 0 };
+        }
+
+        if (
+          !hasOutgoingPipe('sludge_outlet') &&
+          (effStreams['sludge_outlet']?.flowRate ?? 0) > 0 &&
+          effStreams['outlet']
+        ) {
+          const mergedOverflow = sanitizeStream(mixWaterStreams([
+            { quality: effStreams['outlet'], flow: Math.max(0, effStreams['outlet'].flowRate) },
+            { quality: effStreams['sludge_outlet'], flow: Math.max(0, effStreams['sludge_outlet'].flowRate) }
+          ]));
+          effStreams['outlet'] = mergedOverflow;
+          effStreams['sludge_outlet'] = { ...effStreams['sludge_outlet'], flowRate: 0 };
+          Object.assign(result.effluent, mergedOverflow);
+        }
+        if (effStreams['sludge_outlet']) {
+          result.sludge = { ...(result.sludge ?? effStreams['sludge_outlet']), ...effStreams['sludge_outlet'] } as WaterQuality;
+        }
+
+        // Update unit state (per-port streams are authoritative)
+        targetUnit.lastInletQuality = sanitizeStream(mergedInlet);
+        targetUnit.lastOutletQuality = sanitizeStream(result.effluent);
+        targetUnit.portStreams = Object.fromEntries(
+          Object.entries(effStreams).map(([k, v]) => [k, sanitizeStream(v)])
+        );
+        targetUnit.gasStreams = result.gasStreams ?? {};
+        targetUnit.lastPowerKwActual = Number.isFinite(result.powerKw) ? result.powerKw : 0;
+        targetUnit.lastOpexActual = Number.isFinite(result.opexDay) ? result.opexDay : 0;
+        targetUnit.efficiencyRating = Math.round(result.efficiency);
         targetUnit.sludgeBlanketHeightPercent = result.sludgeBlanketHeight;
-        targetUnit.dissolvedOxygenActual = result.dissolvedOxygen;
-        targetUnit.mlssActual = result.mlss;
-        targetUnit.sviActual = result.svi;
+        targetUnit.dissolvedOxygenActual =
+          result.dissolvedOxygen !== undefined && Number.isFinite(result.dissolvedOxygen)
+            ? result.dissolvedOxygen : undefined;
+        targetUnit.mlssActual =
+          result.mlss !== undefined && Number.isFinite(result.mlss) ? result.mlss : undefined;
+        targetUnit.sviActual =
+          result.svi !== undefined && Number.isFinite(result.svi) ? result.svi : undefined;
       }
+    }
+
+    if (!converged) {
+      // Diagnostic (never fatal): surface it so tuning can react, but keep the
+      // last relaxed state — it is still mass-conserving per unit.
+      console.warn(
+        `[AquaTycoon sim] hydraulic network did not fully converge within ${MAX_ITERATIONS} passes ` +
+        `(worst residual ${(worstResidual * 100).toFixed(1)}% at ${worstResidualKey}). ` +
+        `Check for pathological recycle topologies.`
+      );
     }
 
     // 3. Find Outfall Units & Calculate Final Effluent
@@ -228,7 +439,9 @@ export class SimulationEngine {
       updatedPipes,
       finalEffluent,
       overallStats,
-      financials
+      financials,
+      converged,
+      iterationsUsed: iter
     };
   }
 }

@@ -6,11 +6,24 @@ import { calcWaterColorHex } from '../sim/WaterStream';
  * Renders the pipe network as real process piping:
  *  - steel segments + flanges between waypoints
  *  - a train of directional chevron arrows inside each pipe that travel
- *    with the water — speed and marker density scale with flow rate
- *  - fluid tint reflects live water quality (murky → teal → cyan)
+ *    with the fluid — speed and marker density scale with the TRUE flow of
+ *    the selected source port (liquid m³/d or gas Nm³/d)
+ *  - fluid tint is unambiguous per stream class:
+ *      liquid (quality-tinted) · sludge (dark brown) · RAS (dark amber)
+ *      recycle (violet) · gas (yellow, thin & translucent)
+ *  - zero-flow streams visibly stop (particles hidden + dimmed dry pipe)
  */
 
 const ARROW_SPACING = 2.4; // world units between direction markers
+
+const PIPE_STYLE: Record<string, { color: string; radius: number; opacity?: number }> = {
+  liquid: { color: '', radius: 0.09 },            // quality-tinted at runtime
+  sludge: { color: '#3b1c04', radius: 0.11 },
+  ras: { color: '#7c4a12', radius: 0.10 },
+  recycle: { color: '#7c3aed', radius: 0.085 },
+  gas: { color: '#eab308', radius: 0.07, opacity: 0.55 },
+  chemical: { color: '#a3e635', radius: 0.06 }
+};
 
 interface PipeVisual {
   group: THREE.Group;
@@ -19,6 +32,26 @@ interface PipeVisual {
   arrows: THREE.InstancedMesh | null;
   pathLen: number;
   cumLens: number[];
+}
+
+function styleFor(pipe: PipeConnection) {
+  return PIPE_STYLE[pipe.pipeType] ?? PIPE_STYLE.liquid;
+}
+
+/** Runtime fluid color: fixed for process lines, quality-tinted for liquids. */
+function colorFor(pipe: PipeConnection): string {
+  if (pipe.pipeType === 'gas') return PIPE_STYLE.gas.color;
+  if (pipe.pipeType === 'sludge') return PIPE_STYLE.sludge.color;
+  if (pipe.pipeType === 'ras') return PIPE_STYLE.ras.color;
+  if (pipe.pipeType === 'recycle') return PIPE_STYLE.recycle.color;
+  if (pipe.pipeType === 'chemical') return PIPE_STYLE.chemical.color;
+  return calcWaterColorHex(pipe.quality);
+}
+
+/** True volumetric flow driving the particle animation for this pipe. */
+function flowOf(pipe: PipeConnection): number {
+  if (pipe.pipeType === 'gas') return Math.max(0, pipe.gasFlowRate ?? 0);
+  return Math.max(0, pipe.flowRate);
 }
 
 export class PipeRenderer {
@@ -43,25 +76,40 @@ export class PipeRenderer {
 
     for (const pipe of pipes) {
       let vis = this.visuals.get(pipe.id);
+      const style = styleFor(pipe);
+
+      // Rebuild when the semantic type changes (e.g. legacy auto-sludge line
+      // reclassified from 'liquid' to its true sludge/RAS/gas identity).
+      if (vis && (vis as PipeVisual & { builtType?: string }).builtType !== pipe.pipeType) {
+        this.group.remove(vis.group);
+        this._disposeGroup(vis.group);
+        this.visuals.delete(pipe.id);
+        vis = undefined;
+      }
       if (!vis) {
         vis = this._build(pipe);
+        (vis as PipeVisual & { builtType?: string }).builtType = pipe.pipeType;
         this.visuals.set(pipe.id, vis);
         this.group.add(vis.group);
       }
 
       // Live fluid color
-      const colorHex = pipe.pipeType === 'sludge'
-        ? '#3b1c04'
-        : (pipe.pipeType === 'gas' ? '#eab308' : calcWaterColorHex(pipe.quality));
+      const colorHex = colorFor(pipe);
       vis.fluidMat.color.set(colorHex);
       vis.arrowMat.color.set(colorHex);
 
-      // Directional flow animation — speed follows the actual flow rate
-      const hasFlow = pipe.flowRate > 1;
+      // Zero-flow streams visibly stop: particles off, pipe dims to a dry hue
+      const hasFlow = flowOf(pipe) > 1;
       if (vis.arrows) vis.arrows.visible = hasFlow;
+      vis.fluidMat.transparent = !!style.opacity || !hasFlow;
+      vis.fluidMat.opacity = style.opacity ?? (hasFlow ? 1 : 0.35);
+      vis.fluidMat.needsUpdate = true;
+
       if (hasFlow && vis.arrows && vis.pathLen > 0) {
-        // m³/day → visual tiles/sec (0.35 slow trickle … 5.5 torrent)
-        const speed = THREE.MathUtils.clamp(pipe.flowRate / 900, 0.35, 5.5);
+        // Flow → visual tiles/sec (gas flows are numerically smaller; scale up)
+        const raw = flowOf(pipe);
+        const scaled = pipe.pipeType === 'gas' ? raw / 40 : raw;
+        const speed = THREE.MathUtils.clamp(scaled / 900, 0.35, 5.5);
         const offset = ((timeSec * speed) % ARROW_SPACING);
         const count = vis.arrows.count;
         const m = new THREE.Matrix4();
@@ -95,11 +143,14 @@ export class PipeRenderer {
     const group = new THREE.Group();
     group.name = `pipe_${pipe.id}`;
 
-    const colorHex = pipe.pipeType === 'sludge' ? '#3b1c04' : calcWaterColorHex(pipe.quality);
+    const style = styleFor(pipe);
+    const colorHex = colorFor(pipe);
     const fluidMat = new THREE.MeshStandardMaterial({
       color: colorHex,
       roughness: 0.3,
       metalness: 0.6,
+      transparent: !!style.opacity,
+      opacity: style.opacity ?? 1,
     });
     const arrowMat = new THREE.MeshBasicMaterial({ color: colorHex });
 
@@ -116,7 +167,7 @@ export class PipeRenderer {
       pathLen += dist;
       cumLens.push(pathLen);
 
-      const segGeo = new THREE.CylinderGeometry(0.09, 0.09, dist, 10);
+      const segGeo = new THREE.CylinderGeometry(style.radius, style.radius, dist, 10);
       const segMesh = new THREE.Mesh(segGeo, fluidMat);
       const mid = new THREE.Vector3().addVectors(p1, p2).multiplyScalar(0.5);
       segMesh.position.copy(mid);
@@ -126,7 +177,7 @@ export class PipeRenderer {
       );
       group.add(segMesh);
 
-      const flangeGeo = new THREE.CylinderGeometry(0.13, 0.13, 0.06, 10);
+      const flangeGeo = new THREE.CylinderGeometry(style.radius + 0.04, style.radius + 0.04, 0.06, 10);
       const flangeMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: 0.8 });
       const flange = new THREE.Mesh(flangeGeo, flangeMat);
       flange.position.copy(points[i]);

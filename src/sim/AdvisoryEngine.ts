@@ -11,7 +11,7 @@ import { PlacedUnit, TreatmentStandard, UnitTypeId, WaterQuality } from '../type
  */
 
 export interface FixAction {
-  kind: 'adjust_param' | 'build_unit' | 'start_piping';
+  kind: 'adjust_param' | 'build_unit' | 'start_piping' | 'auto_train';
   label: string;
   detail: string;
   /** predicted parameter outcome for adjust_param actions */
@@ -207,9 +207,14 @@ export function generateAdvisories(gs: GameState): Advisory[] {
       title: 'No treated water is reaching the river',
       cause: 'Water only flows through pipes YOU lay. Open the Pipes tool, click a unit to pick its output port, then click the destination. Connection order matters — each unit expects a certain feed quality.',
       fixes: [{
+        kind: 'auto_train',
+        label: '⚡ Auto-connect main treatment train',
+        detail: 'One click wires the main liquid line: Inlet → Screen → Grit → Primary → Bioreactor → Clarifier → UV → Outfall. Sludge, RAS & gas lines always stay manual.',
+        affordable: true,
+      }, {
         kind: 'start_piping',
         label: 'Open the Pipes tool',
-        detail: 'Manual piping: source unit → destination. Click the same unit to cycle output ports (main / sludge / gas).',
+        detail: 'Manual piping by port: source unit → pick port → destination → pick inlet.',
         affordable: true,
       }],
     });
@@ -217,6 +222,41 @@ export function generateAdvisories(gs: GameState): Advisory[] {
   }
 
   // ── Piping-mistake detection: bad routing has real consequences ──────
+  // RAS topology warning: a secondary clarifier configured for RAS must have
+  // its sludge_outlet physically piped back to a bioreactor ras_inlet.
+  {
+    const bioIds = new Set(gs.units.filter(u => u.typeId === 'activated_sludge_cas' || u.typeId === 'a2o_bardenpho').map(u => u.instanceId));
+    for (const u of gs.units) {
+      if (u.typeId !== 'secondary_clarifier') continue;
+      const hasRasReturn = gs.pipes.some(
+        p => p.fromUnitId === u.instanceId && p.fromPortId === 'sludge_outlet' &&
+             bioIds.has(p.toUnitId) && p.toPortId === 'ras_inlet'
+      );
+      const hasWasOut = gs.pipes.some(p => p.fromUnitId === u.instanceId && p.fromPortId === 'was_outlet');
+      if (!hasRasReturn) {
+        adv.push({
+          id: `ras_disconnected_${u.instanceId}`,
+          severity: 'warning',
+          title: `Secondary clarifier RAS is not returning to a bioreactor`,
+          cause:
+            `${UNIT_DEFINITIONS[u.typeId].name} is configured for ${u.customParams.rasRecycleRatioPercent ?? 75}% RAS, ` +
+            `but its "RAS Return" port is not piped back to any aeration basin's RAS inlet. Without the return loop, ` +
+            `biomass leaves with the effluent and BOD removal will collapse. Open Pipes → click the clarifier → choose "RAS Return" → click the reactor.`,
+          fixes: [{ kind: 'start_piping', label: 'Open the Pipes tool', detail: 'Pipe the clarifier\'s RAS Return port into the aeration basin\'s RAS inlet.', affordable: true }],
+        });
+      }
+      if (!hasWasOut) {
+        adv.push({
+          id: `was_disconnected_${u.instanceId}`,
+          severity: 'warning',
+          title: `Waste Activated Sludge (WAS) has nowhere to go`,
+          cause: `The clarifier purges WAS to control Sludge Age (SRT). Route its "WAS Waste Sludge" port to a sludge thickener so solids leave the liquid train in a controlled way.`,
+          fixes: [{ kind: 'start_piping', label: 'Open the Pipes tool', detail: 'Pipe WAS Waste Sludge → Sludge Thickener inlet.', affordable: true }],
+        });
+      }
+    }
+  }
+
   for (const u of gs.units) {
     const inlet = u.lastInletQuality;
     if (!inlet || inlet.flowRate <= 1) continue;
@@ -228,7 +268,7 @@ export function generateAdvisories(gs: GameState): Advisory[] {
         severity: 'critical',
         title: `${name} is blinded by solids`,
         cause: `UV light cannot penetrate water this murky (TSS ${inlet.tss.toFixed(0)} mg/L, turbidity ${inlet.turbidity.toFixed(0)} NTU) — particles shadow pathogens from the lamp, so disinfection collapses. Route UV AFTER clarifiers/filters, not straight from raw sewage.`,
-        fixes: [{ kind: 'start_piping', label: 'Re-route with the Pipes tool', detail: 'In the Pipes tool, reconnecting the same two units removes that pipe � then re-route in the correct order.', affordable: true }],
+        fixes: [{ kind: 'start_piping', label: 'Re-route with the Pipes tool', detail: 'In the Pipes tool, reconnecting the same two units removes that pipe � then re-route in the correct order.', affordable: true }],
       });
     }
     if (u.typeId === 'reverse_osmosis' && (inlet.tss > 2 || inlet.turbidity > 3)) {

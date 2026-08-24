@@ -1,9 +1,20 @@
-import { PlacedUnit, UnitDefinition, UnitTypeId, WaterQuality } from '../types/simulation';
+import { GasStream, PlacedUnit, UnitDefinition, UnitTypeId, WaterQuality } from '../types/simulation';
 import { cloneWater, emptyWater } from './WaterStream';
 
 export interface ProcessResult {
+  /** Main treated liquid effluent ('outlet' port). Kept for UI compatibility. */
   effluent: WaterQuality;
+  /** Primary underflow/sludge stream ('sludge_outlet' port). Kept for UI compatibility. */
   sludge?: WaterQuality;
+  /**
+   * Explicit per-port liquid output streams, keyed by port id.
+   * Every liquid-carrying port of the unit appears here exactly once;
+   * SimulationEngine propagates ONLY the stream bound to the actual fromPortId,
+   * so a sludge line can never silently inherit the main effluent.
+   */
+  portStreams?: Record<string, WaterQuality>;
+  /** Explicit per-port gas outputs keyed by gas port id. Gas is never wastewater. */
+  gasStreams?: Record<string, GasStream>;
   gasProducedM3Day?: number;
   powerKw: number;
   opexDay: number;
@@ -12,6 +23,50 @@ export interface ProcessResult {
   dissolvedOxygen?: number;
   mlss?: number;
   svi?: number;
+}
+
+/**
+ * Builds the authoritative per-port stream map from the individual named
+ * outputs. Ports not explicitly produced by the process fall back to:
+ *   outlet        -> main effluent
+ *   sludge_outlet -> sludge stream (if any)
+ *   recycle_outlet-> explicit recycle stream (if any)
+ * so every legacy unit definition keeps working while new code can rely on
+ * `portStreams` being complete.
+ */
+function buildPortStreams(
+  def: UnitDefinition,
+  effluent: WaterQuality,
+  sludge: WaterQuality | undefined,
+  extra: Record<string, WaterQuality> = {}
+): Record<string, WaterQuality> {
+  const streams: Record<string, WaterQuality> = { ...extra };
+  for (const port of def.ports) {
+    if (streams[port.id]) continue;
+    if (port.type === 'inlet' || port.type === 'ras_inlet') continue;
+    if (port.type === 'gas_outlet') continue; // gas handled separately in gasStreams
+    if (port.type === 'outlet') streams[port.id] = cloneWater(effluent);
+    else if (port.type === 'sludge_outlet') { if (sludge) streams[port.id] = cloneWater(sludge); }
+    else if (port.type === 'recycle_outlet') { /* only when explicitly produced */ }
+  }
+  return streams;
+}
+
+/**
+ * Ideal hydraulic splitter: divides an incoming stream between two branch
+ * ports conserving flow while keeping concentrations unchanged.
+ *   Q1 = Qin * r,  Q2 = Qin * (1 - r),  Q1 + Q2 = Qin
+ */
+export function splitStream(
+  inlet: WaterQuality,
+  ratio1: number
+): { branch1: WaterQuality; branch2: WaterQuality } {
+  const r = Math.min(1, Math.max(0, ratio1));
+  const q1 = Math.max(0, inlet.flowRate) * r;
+  const q2 = Math.max(0, inlet.flowRate) - q1;
+  const b1 = cloneWater(inlet); b1.flowRate = q1;
+  const b2 = cloneWater(inlet); b2.flowRate = q2;
+  return { branch1: b1, branch2: b2 };
 }
 
 export const UNIT_DEFINITIONS: Record<UnitTypeId, UnitDefinition> = {
@@ -282,7 +337,8 @@ export const UNIT_DEFINITIONS: Record<UnitTypeId, UnitDefinition> = {
     ports: [
       { id: 'inlet', name: 'Mixed Liquor Inflow', type: 'inlet', relativePosition: [-2, 0.5, 0] },
       { id: 'outlet', name: 'Clarified Effluent', type: 'outlet', relativePosition: [2, 0.5, 0] },
-      { id: 'sludge_outlet', name: 'RAS / WAS Sludge', type: 'sludge_outlet', relativePosition: [0, 0.2, 2] }
+      { id: 'sludge_outlet', name: 'RAS Return', type: 'sludge_outlet', relativePosition: [-1, 0.2, 2] },
+      { id: 'was_outlet', name: 'WAS Waste Sludge', type: 'sludge_outlet', relativePosition: [1, 0.2, 2] }
     ],
     defaultParams: { rasRecycleRatioPercent: 75, wasPurgeRateM3d: 50 },
     paramDefinitions: [
@@ -716,14 +772,14 @@ export interface EnvironmentFactors {
  * Executes high-precision environmental engineering mass-balance calculations
  * for a specific placed unit given its incoming stream and operational parameters.
  *
- * forwardInflow (optional) is the main-line hydraulic throughput entering via
- * 'inlet' ports only — i.e. excluding recycle streams (RAS / internal nitrate).
- * It lets reactors pass stable net throughput instead of compounding recycles.
+ * forwardInflow is retained in the signature for legacy call sites/tests: the
+ * per-port stream architecture no longer needs a separate net-throughput hint —
+ * the secondary clarifier derives forward flow analytically from Qclar/(1+r).
  */
 export function calculateUnitProcess(
   unit: PlacedUnit,
   inlet: WaterQuality,
-  forwardInflow?: number,
+  _forwardInflow?: number,
   env?: EnvironmentFactors
 ): ProcessResult {
   // Renewable generators are standalone infrastructure with no water ports —
@@ -760,6 +816,8 @@ export function calculateUnitProcess(
   const p = { ...def.defaultParams, ...unit.customParams };
   const eff = cloneWater(inlet);
   let sludge: WaterQuality | undefined = undefined;
+  const portStreams: Record<string, WaterQuality> = {};
+  const gasStreams: Record<string, GasStream> = {};
   let gasProducedM3Day = 0;
   let powerKw = def.powerConsumptionKw;
   let opexDay = def.baseOpexPerDay;
@@ -894,6 +952,10 @@ export function calculateUnitProcess(
       // Biomass assimilation strips ~25% of phosphorus into the waste sludge
       eff.tp *= 0.75;
 
+      // Biological pathogen removal: adsorption to flocs + protozoan predation
+      // give conventional activated sludge ~1.5–2 log indicator-bacteria removal
+      eff.pathogens = Math.max(0, eff.pathogens * 0.02);
+
       eff.do = doTarget;
       // NOTE: reactors pass their FULL mixed-liquor flow (feed + RAS return).
       // Loop stability comes from the secondary clarifier's mass-conserving
@@ -940,6 +1002,13 @@ export function calculateUnitProcess(
       opexDay = def.baseOpexPerDay + (carbonDose * inlet.flowRate * 0.001 * 0.6); // Carbon chemical cost
       powerKw = def.powerConsumptionKw * (0.8 + 0.2 * irRatio);
       efficiency = 97;
+
+      // Internal Nitrate Recycle: an explicit, separate liquid stream on its own
+      // port — never to be confused with the nitrified mixed-liquor outlet.
+      const recyclePort = def.ports.find(pp => pp.type === 'recycle_outlet');
+      if (recyclePort) {
+        portStreams[recyclePort.id] = { ...cloneWater(eff), flowRate: inlet.flowRate * irRatio };
+      }
       break;
     }
 
@@ -998,37 +1067,69 @@ export function calculateUnitProcess(
 
     // -----------------------------------------------------
     case 'secondary_clarifier': {
-      // Gravity biomass separation. SOR uses the NET forward (overflow) flow —
-      // the RAS underflow recirculates and does not load the clarifier surface.
-      const forward = (forwardInflow !== undefined && forwardInflow > 0.01) ? forwardInflow : inlet.flowRate;
-      const sor = forward / 144; // standard 12x12m footprint
-      const clarifierTssRemoval = sor < 20 ? 0.96 : sor < 30 ? 0.93 : sor < 40 ? 0.88 : 0.75;
+      // ── Correct RAS mathematics ─────────────────────────────────────────
+      // The recycle ratio r = rasRecycleRatioPercent/100 is defined as
+      //     r = Qras / Qforward   (RAS relative to NET forward flow)
+      // with clarifier mixed-liquor influent Qclar = Qforward + Qras, hence:
+      //     Qforward = Qclar / (1 + r)
+      //     Qras     = Qclar * r / (1 + r)
+      // (NOT r * Qclar — that made "75% RAS" converge to ~300% of forward flow.)
+      const r = Math.max(0, (p.rasRecycleRatioPercent ?? 75) / 100);
+      const qClar = Math.max(0, inlet.flowRate);
+      const qForward = qClar / (1 + r);
 
-      const removedTss = eff.tss * clarifierTssRemoval;
-      eff.tss -= removedTss;
-      eff.turbidity = Math.max(1.2, eff.tss * 0.8);
-      eff.bod = Math.max(3, eff.bod * (1 - clarifierTssRemoval * 0.28));
+      // Surface overflow rate loads on the FORWARD (overflow) flow only — the
+      // underflow recirculates and does not load the clarifier surface.
+      const sor = qForward / 144; // standard 12x12m footprint
 
-      // Particulate-associated pollutants settle out with the solids
-      // (particulate COD ≈ 1.45 mg COD per mg VSS, plus flocculated N & P)
-      eff.cod = Math.max(10, eff.cod - removedTss * 1.45);
-      eff.tn = Math.max(eff.nh4 + eff.no3 * 0.9, eff.tn - removedTss * 0.06);
-      eff.tp = Math.max(0.05, eff.tp - removedTss * 0.02);
+      // Final settling tanks capture >99% of solids even from dense mixed
+      // liquor: effluent TSS is governed by an ESCAPE concentration that
+      // grows with surface overflow rate (solids carryover), not by a fixed
+      // percentage of a 5,000 mg/L liquor.
+      const escapeTss = sor < 16 ? 6 : sor < 24 ? 10 : sor < 32 ? 16 : sor < 45 ? 30 : 70;
+      eff.tss = escapeTss;
+      eff.turbidity = Math.max(1.2, escapeTss * 0.8);
+      // Particulate BOD settles with the floc; soluble BOD stays suspended.
+      eff.bod = Math.max(3, inlet.bod * 0.22);
+      // Floc entanglement + predation in the blanket strip ~90% of pathogens
+      // that survive the bioreactor (secondary clarifiers are good polishers).
+      eff.pathogens = Math.max(0, eff.pathogens * 0.1);
 
-      // BUG FIX: mass-conserving RAS split. The underflow is bounded by the main-line
-      // forward flow, so the recycle loop converges instead of compounding ~4x.
-      // Clarified effluent keeps the net throughput; RAS recirculates biomass.
-      const rasFrac = (p.rasRecycleRatioPercent || 75) / 100;
-      const rasFlow = Math.min(rasFrac * forward, inlet.flowRate * 0.85);
-      eff.flowRate = Math.max(0, inlet.flowRate - rasFlow);
+      // Soluble/particulate-associated dissolved pollutants follow the liquid;
+      // particulate fractions leave with the wasted solids.
+      const solidsCaptureFrac = Math.min(0.995, 1 - escapeTss / Math.max(50, inlet.tss));
+      eff.cod = Math.max(10, eff.cod - (eff.cod * 0.55 * solidsCaptureFrac));
+      eff.tn = Math.max(eff.nh4 + eff.no3 * 0.9, eff.tn - inlet.tss * solidsCaptureFrac * 0.055);
+      eff.tp = Math.max(0.05, eff.tp - inlet.tp * solidsCaptureFrac * 0.25);
 
-      sludge = {
+      // Underflow split: RAS returns to the bioreactor, WAS is purged for SRT
+      // control and leaves the liquid train entirely.
+      //   Qras = qForward * r ; Qwas = wasPurgeRateM3d capped by what remains
+      const qRas = qForward * r;
+      const wasTarget = p.wasPurgeRateM3d ?? 50;
+      const qWas = Math.min(wasTarget, Math.max(0, qClar - qForward));
+      eff.flowRate = Math.max(0, qForward - qWas); // net plant flow minus real wasting
+
+      // Concentrations: both sludge streams draw from the same thickened
+      // blanket (≈6,000–12,000 mg/L, denser with higher captured load).
+      const blanketTss = Math.min(14000, Math.max(4500, inlet.tss * 1.9));
+      const rasStream = { ...cloneWater(inlet), flowRate: qRas, tss: blanketTss };
+      const wasStream = {
         ...cloneWater(inlet),
-        flowRate: rasFlow,
-        tss: 6000 // 6,000 mg/L RAS
+        flowRate: qWas,
+        tss: blanketTss,
+        bod: Math.max(5, inlet.bod * 0.22),
+        tp: Math.max(0.05, inlet.tp * (1 - solidsCaptureFrac * 0.25))
       };
+
+      portStreams['outlet'] = cloneWater(eff);
+      portStreams['sludge_outlet'] = rasStream;
+      if (def.ports.some(pp => pp.id === 'was_outlet')) {
+        portStreams['was_outlet'] = wasStream;
+      }
+      sludge = rasStream;
       sludgeBlanketHeight = (sor > 40) ? 0.75 : 0.3;
-      efficiency = Math.round(clarifierTssRemoval * 100);
+      efficiency = Math.round(solidsCaptureFrac * 100);
       break;
     }
 
@@ -1094,10 +1195,10 @@ export function calculateUnitProcess(
     case 'uv_disinfection': {
       const dose = p.uvFluenceMJCm2 || 35;
       // UV SHADOWING (piping consequence): suspended particles absorb and
-      // scatter germicidal light. Feeding raw/unsettled water into UV makes
-      // disinfection collapse. Calibrated so polished feed (TSS<10) still
-      // achieves a full ~4-log kill, while raw feed gets almost nothing.
-      const uvTransmittance = Math.max(0.04, 1 - (eff.turbidity / 40) - (eff.tss / 45));
+      // scatter germicidal light. Calibrated against real UVT data:
+      // filtered secondary effluent (TSS ≈ 10–30, turbidity < 5) transmits
+      // ~85-100% and achieves a full ~4-log kill; raw sewage collapses.
+      const uvTransmittance = Math.max(0.04, Math.min(1, 1 - eff.tss / 220 - eff.turbidity / 160));
       const effectiveDose = dose * uvTransmittance;
       // Log inactivation: Log10(N0/N) = k * Dose
       const logKill = Math.min(5.5, (effectiveDose / 35.0) * 4.0);
@@ -1229,6 +1330,17 @@ export function calculateUnitProcess(
         tss: inlet.tss * (1 - vsDestruction),
         pathogens: inlet.pathogens * 0.01 // High temperature pathogen destruction (Class B / Class A)
       };
+
+      // Biogas exits through its dedicated gas port as a GAS stream — never
+      // carried on a liquid WaterQuality pipe.
+      const gasPort = def.ports.find(pp => pp.type === 'gas_outlet');
+      if (gasPort) {
+        gasStreams[gasPort.id] = {
+          flowRate: gasProducedM3Day,
+          ch4Fraction: 0.65,
+          h2sPpm: 25
+        };
+      }
       efficiency = Math.round(vsDestruction * 100);
       break;
     }
@@ -1272,19 +1384,48 @@ export function calculateUnitProcess(
     }
 
     // -----------------------------------------------------
-    case 'effluent_outfall': {
-      // Cascade / weir re-aeration at the discharge point: falling water
-      // entrains oxygen, recovering dissolved oxygen toward saturation (~9 mg/L).
-      eff.do = Math.min(9.5, eff.do + 2.5);
-      efficiency = 100;
+    case 'pipe_junction': {
+      // Ideal hydraulic splitter/manifold. The configured split ratio r
+      // divides the incoming flow between the two branch ports:
+      //   Q1 = Qin * r,  Q2 = Qin * (1 - r),  Q1 + Q2 = Qin
+      // Concentrations stay unchanged (ideal splitter). This is the ONLY unit
+      // whose outlet ports may legitimately feed more than one downstream pipe.
+      const splitRatio = Math.min(0.9, Math.max(0.1, (p.splitRatioPercent ?? 50) / 100));
+      const { branch1, branch2 } = splitStream(inlet, splitRatio);
+      const branch2Port = def.ports.find(pp => pp.type === 'recycle_outlet');
+      if (branch2Port) {
+        portStreams[branch2Port.id] = branch2;
+        eff.flowRate = branch1.flowRate;
+        efficiency = 100;
+      }
       break;
     }
 
     // -----------------------------------------------------
-    case 'influent_inlet':
-    case 'pump_station':
-    case 'pipe_junction': {
-      // Pure hydraulic nodes — no quality transformation
+    case 'influent_inlet': {
+      // Pure hydraulic node — no quality transformation
+      efficiency = 100;
+      break;
+    }
+    case 'pump_station': {
+      // Pure hydraulic pass-through plus PUMP CLOGGING (piping consequence):
+      // pumps handling unscreened sewage suffer rag jamming & impeller wear —
+      // more power, more maintenance.
+      if (inlet.tss > 350) {
+        powerKw = def.powerConsumptionKw * 1.35;
+        opexDay = def.baseOpexPerDay * 2.2;
+        efficiency = 70;
+      } else {
+        efficiency = 100;
+      }
+      break;
+    }
+
+    // -----------------------------------------------------
+    case 'effluent_outfall': {
+      // Cascade / weir re-aeration at the discharge point: falling water
+      // entrains oxygen, recovering dissolved oxygen toward saturation (~9 mg/L).
+      eff.do = Math.min(9.5, eff.do + 2.5);
       efficiency = 100;
       break;
     }
@@ -1299,6 +1440,8 @@ export function calculateUnitProcess(
   return {
     effluent: eff,
     sludge,
+    portStreams: buildPortStreams(def, eff, sludge, portStreams),
+    gasStreams,
     gasProducedM3Day,
     powerKw,
     opexDay,

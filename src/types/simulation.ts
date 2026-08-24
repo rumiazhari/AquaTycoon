@@ -15,6 +15,17 @@ export interface WaterQuality {
   turbidity: number;     // NTU
 }
 
+/** Gas stream representation — gas is NEVER a WaterQuality liquid stream. */
+export interface GasStream {
+  flowRate: number;      // m3/day (at standard conditions)
+  ch4Fraction: number;   // 0 - 1 volumetric methane fraction
+  h2sPpm: number;        // ppm trace hydrogen sulfide
+}
+
+export function emptyGas(): GasStream {
+  return { flowRate: 0, ch4Fraction: 0, h2sPpm: 0 };
+}
+
 export type UnitCategory =
   | 'preliminary'
   | 'primary'
@@ -112,7 +123,10 @@ export interface PlacedUnit {
   // Real-time engineering calculated values
   lastInletQuality: WaterQuality;
   lastOutletQuality: WaterQuality;
-  lastSludgeQuality?: WaterQuality;
+  /** Per-port liquid streams keyed by port id ('outlet', 'sludge_outlet', 'recycle_outlet'…) */
+  portStreams?: Record<string, WaterQuality>;
+  /** Gas production per gas port (digester biogas). Gas is never a WaterQuality stream. */
+  gasStreams?: Record<string, GasStream>;
   lastGasProducedM3Day?: number;
   lastPowerKwActual: number;
   lastOpexActual: number;
@@ -129,9 +143,11 @@ export interface PipeConnection {
   toUnitId: string;
   toPortId: string;
   pathPoints: [number, number, number][]; // 3D waypoints
-  flowRate: number; // m3/day
-  quality: WaterQuality;
-  pipeType: 'liquid' | 'sludge' | 'ras' | 'gas' | 'chemical';
+  flowRate: number; // m3/day (liquid) OR Nm3/day (gas pipes)
+  quality: WaterQuality;      // liquid payload (zero-flow for gas pipes)
+  gasFlowRate?: number;       // gas payload, only on 'gas' pipes
+  gasCh4Fraction?: number;
+  pipeType: 'liquid' | 'sludge' | 'ras' | 'gas' | 'chemical' | 'recycle';
 }
 
 export interface TreatmentStandard {

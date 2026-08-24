@@ -109,6 +109,48 @@ export const PlantFlowDiagram: React.FC<PlantFlowDiagramProps> = ({ gameState, o
                       <div>TN: <span className="text-purple-300">{outWater?.tn.toFixed(1) || 0}</span></div>
                     </div>
 
+                    {/* Per-port streams: sludge / RAS / recycle / gas lines */}
+                    {unit.portStreams && Object.entries(unit.portStreams).some(([, s]) => s.flowRate > 0.5) && (
+                      <div className="flex flex-wrap gap-1">
+                        {Object.entries(unit.portStreams).map(([portId, s]) => {
+                          if (s.flowRate <= 0.5) return null;
+                          const portDef = def.ports.find(pp => pp.id === portId);
+                          if (!portDef || portDef.type === 'outlet') return null;
+                          const isRas = portId === 'sludge_outlet' && def.name.includes('Secondary');
+                          return (
+                            <span
+                              key={portId}
+                              className={`text-[9px] font-mono px-1.5 py-0.5 rounded border ${
+                                isRas
+                                  ? 'bg-amber-900/30 text-amber-400 border-amber-800/60'
+                                  : 'bg-yellow-900/30 text-yellow-600 border-yellow-800/50'
+                              }`}
+                              title={`${portDef.name}: ${s.flowRate.toFixed(0)} m³/d @ ${s.tss.toFixed(0)} mg/L TSS`}
+                            >
+                              {portDef.name}: {s.flowRate.toFixed(0)} m³/d
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {unit.gasStreams && Object.values(unit.gasStreams).some(g => g.flowRate > 0.01) && (
+                      <div className="flex flex-wrap gap-1">
+                        {Object.entries(unit.gasStreams).map(([portId, gas]) => {
+                          if (gas.flowRate <= 0.01) return null;
+                          const portDef = def.ports.find(pp => pp.id === portId);
+                          return (
+                            <span
+                              key={portId}
+                              className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/40"
+                              title={`${portDef?.name ?? portId}: ${gas.flowRate.toFixed(1)} Nm³/d @ ${(gas.ch4Fraction * 100).toFixed(0)}% CH₄`}
+                            >
+                              🔥 {(portDef?.name ?? 'Gas')}: {gas.flowRate.toFixed(1)} Nm³/d ({(gas.ch4Fraction * 100).toFixed(0)}% CH₄)
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
+
                     <div className="flex items-center justify-between text-[10px] text-slate-400 font-mono">
                       <span>⚡ {unit.lastPowerKwActual.toFixed(1)} kW</span>
                       <span>💰 ${(unit.lastOpexActual || 0).toFixed(0)}/day</span>

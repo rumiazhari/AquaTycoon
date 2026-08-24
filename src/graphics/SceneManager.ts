@@ -5,6 +5,7 @@ import { UnitMeshBuilder } from './UnitMeshes';
 import { PipeRenderer } from './PipeRenderer';
 import { PipeConnection, PlacedUnit, UnitTypeId } from '../types/simulation';
 import { UNIT_DEFINITIONS } from '../sim/UnitProcessModels';
+import { getPortWorldPosition, getRotatedFootprint } from '../sim/PipeNetwork';
 import type { LevelBiome } from '../types/game';
 
 const lerpN = (a: number, b: number, t: number) => a + (b - a) * t;
@@ -436,9 +437,15 @@ export class SceneManager {
   }
 
   /**
-   * Highlights the selected pipe source unit with a glowing ring.
+   * Highlights the selected pipe source unit with a glowing ring, centered on
+   * the ROTATED footprint so non-square units ring correctly at any rotation.
+   * Optionally draws markers on every selectable port (chosen one emphasized).
    */
-  public setPipeSourceHighlight(unitInstanceId: string | null, units: PlacedUnit[]) {
+  public setPipeSourceHighlight(
+    unitInstanceId: string | null,
+    units: PlacedUnit[],
+    opts?: { chosenPortId?: string | null; showPorts?: boolean }
+  ) {
     for (const ring of this.pipeSelectRingMap.values()) {
       this.unitGroup.remove(ring);
       ring.geometry.dispose();
@@ -452,15 +459,59 @@ export class SceneManager {
     const def = UNIT_DEFINITIONS[unit.typeId];
     if (!def) return;
 
-    const [fw, fl] = def.footprint;
+    const [fw, fl] = getRotatedFootprint(def, unit.rotation);
     const radius = Math.max(fw, fl) * 0.65;
+    const cx = unit.gridX + fw / 2;
+    const cz = unit.gridY + fl / 2;
+
     const ringGeo = new THREE.TorusGeometry(radius, 0.06, 8, 32);
     const ringMat = new THREE.MeshBasicMaterial({ color: 0x06b6d4, transparent: true, opacity: 0.9 });
     const ring = new THREE.Mesh(ringGeo, ringMat);
     ring.rotation.x = Math.PI / 2;
-    ring.position.set(unit.gridX + fw / 2, 0.15, unit.gridY + fl / 2);
+    ring.position.set(cx, 0.15, cz);
     this.unitGroup.add(ring);
-    this.pipeSelectRingMap.set(unitInstanceId, ring);
+    this.pipeSelectRingMap.set(unitInstanceId + '__ring', ring);
+
+    // Optional per-port markers: cyan = available, amber = currently chosen.
+    if (opts?.showPorts) {
+      const chosen = opts.chosenPortId ?? null;
+      for (const port of def.ports) {
+        const [px, py, pz] = getPortWorldPosition(unit, port.id);
+        const isChosen = port.id === chosen;
+        const markerGeo = new THREE.SphereGeometry(isChosen ? 0.3 : 0.18, 12, 10);
+        const markerMat = new THREE.MeshBasicMaterial({
+          color: isChosen ? 0xfbbf24 : 0x22d3ee,
+          transparent: true,
+          opacity: isChosen ? 0.95 : 0.55
+        });
+        const marker = new THREE.Mesh(markerGeo, markerMat);
+        marker.position.set(px, Math.max(0.25, py), pz);
+        this.unitGroup.add(marker);
+        this.pipeSelectRingMap.set(`${unitInstanceId}__port_${port.id}`, marker);
+      }
+    }
+  }
+
+  /** Projects a world point to canvas pixel coordinates (for HTML overlays). */
+  public worldToScreen(x: number, y: number, z: number): { x: number; y: number } | null {
+    const canvas = this.renderer.domElement;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    const v = new THREE.Vector3(x, y, z).project(this.cameraController.camera);
+    if (v.z > 1) return null; // behind camera
+    return {
+      x: rect.left + ((v.x + 1) / 2) * rect.width,
+      y: rect.top + ((-v.y + 1) / 2) * rect.height
+    };
+  }
+
+  /** Canvas-local projection (same as worldToScreen but relative to canvas top-left). */
+  public worldToCanvasPx(x: number, y: number, z: number): { x: number; y: number } | null {
+    const s = this.worldToScreen(x, y, z);
+    if (!s) return null;
+    const canvas = this.renderer.domElement;
+    const rect = canvas.getBoundingClientRect();
+    return { x: s.x - rect.left, y: s.y - rect.top };
   }
 
   /** Raycasts screen coords to grid tile using the canvas rect */
