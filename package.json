@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "test": "tsx scripts/sim-tests.ts",
     "build:launcher": "node scripts/make-launcher.mjs",
     "build:all": "npm run build && npm run build:launcher",
     "preview": "vite preview"
@@ -26,6 +27,7 @@
     "autoprefixer": "^10.4.20",
     "postcss": "^8.5.3",
     "tailwindcss": "^3.4.17",
+    "tsx": "^4.23.12",
     "typescript": "~5.7.3",
     "vite": "^6.2.0"
   },

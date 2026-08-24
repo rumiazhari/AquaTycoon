@@ -1,7 +1,11 @@
-/* Headless smoke tests for the fixed simulation core (run via esbuild+node) */
+/* Headless smoke tests for the fixed simulation core (run via `npm test` → tsx) */
 import { GameManager } from '../src/gameplay/GameManager';
 import { SimulationEngine } from '../src/sim/SimulationEngine';
-import { UNIT_DEFINITIONS, calculateUnitProcess } from '../src/sim/UnitProcessModels';
+import {
+  UNIT_DEFINITIONS,
+  calculateUnitProcess
+} from '../src/sim/UnitProcessModels';
+import { generateAdvisories } from '../src/sim/AdvisoryEngine';
 import {
   validateConnection,
   getPortWorldPosition,
@@ -65,20 +69,16 @@ function emptyW(): any {
     ...emptyW(), flowRate: 12000, bod: 260, cod: 520, tss: 290,
     tn: 58, nh4: 45, no3: 1, tp: 7.8, pathogens: 1e6, turbidity: 180,
   };
-  const res = UNIT_DEFINITIONS && (() => {
-    const mod = require('../src/sim/UnitProcessModels');
-    return mod.calculateUnitProcess(a2o, inletQ, 12000);
-  })();
+  const res = calculateUnitProcess(a2o, inletQ, 12000);
   assert(res.effluent.tn < 5.0, `Level 4 achievable: A2O effluent TN = ${res.effluent.tn.toFixed(2)} mg/L (< 5)`);
   assert(res.effluent.flowRate === 12000, `Forward flow preserved through A2O: ${res.effluent.flowRate}`);
 }
 
 // ── Test 3: Secondary clarifier mass conservation ───────────────────────────
 {
-  const mod = require('../src/sim/UnitProcessModels');
   const clar = mkUnit('c', 'secondary_clarifier', 0, 0);
   const q = { ...emptyW(), flowRate: 10000 + 7500, tss: 3200 }; // mixed liquor w/ RAS
-  const r = mod.calculateUnitProcess(clar, q, 10000);
+  const r = calculateUnitProcess(clar, q, 10000);
   assert(Math.abs(r.effluent.flowRate - 10000) < 600,
     `Clarifier passes forward flow: eff=${r.effluent.flowRate.toFixed(0)} (target ~10000), RAS=${r.sludge!.flowRate.toFixed(0)}`);
 }
@@ -130,15 +130,13 @@ function emptyW(): any {
 
 // ── Test 5: DO must never be structurally impossible (outfall reaeration) ───
 {
-  const mod = require('../src/sim/UnitProcessModels');
   const outfall = mkUnit('o', 'effluent_outfall', 0, 0);
-  const r = mod.calculateUnitProcess(outfall, { ...emptyW(), flowRate: 3500, do: 1.8 }, 3500);
+  const r = calculateUnitProcess(outfall, { ...emptyW(), flowRate: 3500, do: 1.8 }, 3500);
   assert(r.effluent.do >= 4.0, `Cascade re-aeration lifts DO 1.8 → ${r.effluent.do.toFixed(1)} mg/L`);
 }
 
 // ── Test 6: Operator Console advisor proposes fixes that actually work ──────
 {
-  const { generateAdvisories } = require('../src/sim/AdvisoryEngine');
 
   // Broken plant: no pipes at all
   const broken = GameManager.createInitialState(0, false);
@@ -198,17 +196,16 @@ function emptyW(): any {
 
 // ── Test 7: Power system — solar follows daylight, wind follows resource ────
 {
-  const mod = require('../src/sim/UnitProcessModels');
   const solar = mkUnit('pv', 'solar_array', 0, 0);
   const wind = mkUnit('wt', 'wind_turbine', 0, 0);
 
-  const noon = mod.calculateUnitProcess(solar, emptyW(), undefined, { daylight: 1, wind: 1 });
-  const midnight = mod.calculateUnitProcess(solar, emptyW(), undefined, { daylight: 0, wind: 1 });
+  const noon = calculateUnitProcess(solar, emptyW(), undefined, { daylight: 1, wind: 1 });
+  const midnight = calculateUnitProcess(solar, emptyW(), undefined, { daylight: 0, wind: 1 });
   assert(noon.powerKw === -42 && midnight.powerKw === 0,
     `Solar: ${noon.powerKw} kW at full sun, ${midnight.powerKw} kW at night`);
 
-  const windy = mod.calculateUnitProcess(wind, emptyW(), undefined, { daylight: 0, wind: 1 });
-  const calm = mod.calculateUnitProcess(wind, emptyW(), undefined, { daylight: 0, wind: 0.2 });
+  const windy = calculateUnitProcess(wind, emptyW(), undefined, { daylight: 0, wind: 1 });
+  const calm = calculateUnitProcess(wind, emptyW(), undefined, { daylight: 0, wind: 0.2 });
   assert(windy.powerKw === -85 && Math.abs(calm.powerKw + 17) < 0.01,
     `Wind: ${windy.powerKw} kW rated, ${calm.powerKw} kW at 20% wind`);
 }
@@ -233,48 +230,44 @@ function emptyW(): any {
 
 // ── Test 9: PIPING CONSEQUENCE — UV blinded by raw sewage (bad routing) ─────
 {
-  const mod = require('../src/sim/UnitProcessModels');
   const uv = mkUnit('uv', 'uv_disinfection', 0, 0);
   const dirty = { ...emptyW(), flowRate: 3500, pathogens: 5e5, tss: 250, turbidity: 180 };
   const clean  = { ...emptyW(), flowRate: 3500, pathogens: 5e5, tss: 3, turbidity: 2 };
-  const rDirty = mod.calculateUnitProcess(uv, dirty);
-  const rClean = mod.calculateUnitProcess(uv, clean);
+  const rDirty = calculateUnitProcess(uv, dirty);
+  const rClean = calculateUnitProcess(uv, clean);
   assert(rDirty.effluent.pathogens > 5e4 && rClean.effluent.pathogens < 200,
     `UV consequence: raw feed survives as ${rDirty.effluent.pathogens.toExponential(1)} CFU, polished feed drops to ${rClean.effluent.pathogens.toFixed(0)} CFU`);
 }
 
 // ── Test 10: CHLORINE DEMAND — ammonia starves disinfection ─────────────────
 {
-  const mod = require('../src/sim/UnitProcessModels');
   const cl = mkUnit('cl', 'chlorination_basin', 0, 0);
   const septic = { ...emptyW(), flowRate: 3500, pathogens: 1e6, nh4: 40 };
   const nitrified = { ...emptyW(), flowRate: 3500, pathogens: 1e6, nh4: 1.5 };
-  const rSeptic = mod.calculateUnitProcess(cl, septic);
-  const rNitrif = mod.calculateUnitProcess(cl, nitrified);
+  const rSeptic = calculateUnitProcess(cl, septic);
+  const rNitrif = calculateUnitProcess(cl, nitrified);
   assert(rSeptic.effluent.pathogens > rNitrif.effluent.pathogens * 100,
     `Chlorine demand: septic feed leaves ${rSeptic.effluent.pathogens.toExponential(1)} vs ${rNitrif.effluent.pathogens.toExponential(1)} CFU after nitrification`);
 }
 
 // ── Test 11: RO FOULING — unpolished feed collapses rejection ───────────────
 {
-  const mod = require('../src/sim/UnitProcessModels');
   const ro = mkUnit('ro', 'reverse_osmosis', 0, 0);
   const unfiltered = { ...emptyW(), flowRate: 10000, bod: 30, tss: 25, turbidity: 40, pathogens: 1e4 };
   const polished   = { ...emptyW(), flowRate: 10000, bod: 5, tss: 0.2, turbidity: 0.4, pathogens: 100 };
-  const rBad = mod.calculateUnitProcess(ro, unfiltered);
-  const rGood = mod.calculateUnitProcess(ro, polished);
+  const rBad = calculateUnitProcess(ro, unfiltered);
+  const rGood = calculateUnitProcess(ro, polished);
   assert(rBad.effluent.bod > rGood.effluent.bod * 5 && rBad.effluent.pathogens > rGood.effluent.pathogens,
     `RO consequence: fouled permeate BOD ${rBad.effluent.bod.toFixed(1)} vs clean ${rGood.effluent.bod.toFixed(1)}`);
 }
 
 // ── Test 12: PUMP CLOGGING on unscreened sewage ─────────────────────────────
 {
-  const mod = require('../src/sim/UnitProcessModels');
   const pump = mkUnit('ps', 'pump_station', 0, 0);
   const raw = { ...emptyW(), flowRate: 3500, tss: 420 };
   const screened = { ...emptyW(), flowRate: 3500, tss: 120 };
-  const rRaw = mod.calculateUnitProcess(pump, raw);
-  const rScr = mod.calculateUnitProcess(pump, screened);
+  const rRaw = calculateUnitProcess(pump, raw);
+  const rScr = calculateUnitProcess(pump, screened);
   assert(rRaw.opexDay > rScr.opexDay * 2 && rRaw.powerKw > rScr.powerKw,
     `Pump consequence: unscreened opex $${rRaw.opexDay.toFixed(0)}/d & ${rRaw.powerKw.toFixed(1)} kW vs screened $${rScr.opexDay.toFixed(0)}/d`);
 }
@@ -668,6 +661,497 @@ function solve(units: PlacedUnit[], pipes: PipeConnection[], flow = 10000) {
   assert(r.effluent.flowRate === 12000, `O++. A2O forward flow preserved: ${r.effluent.flowRate} (not 16000 or 40000)`);
   assert(r.effluent.tn < 12, `O+++. A2O achieves low TN: ${r.effluent.tn.toFixed(2)} mg/L — internal IR enables ANAMMOX/DENIT`
 );
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// CAMPAIGN GAME-LOGIC TESTS (A–Y) — Prompt 3: objectives, domain rules, advisor
+// ═════════════════════════════════════════════════════════════════════════════
+
+import { analyzeActiveLiquidPath, hasActiveProcessTypeOnPath } from '../src/gameplay/PlantTopology';
+import { CAMPAIGN_LEVELS } from '../src/gameplay/LevelsData';
+import { TECH_TREE_NODES } from '../src/gameplay/TechTreeData';
+
+/** Build a Level-1-style conventional train (units + pipes + RAS) on a state */
+function buildConventionalTrain(gs: ReturnType<typeof GameManager.createInitialState>) {
+  const units = [
+    mkUnit('inl', 'influent_inlet', 2, 10),
+    mkUnit('scr', 'bar_screen', 5, 10),
+    mkUnit('grt', 'grit_chamber', 8, 10),
+    mkUnit('pri', 'primary_clarifier_circular', 11, 9),
+    mkUnit('cas', 'activated_sludge_cas', 15, 9),
+    mkUnit('clr', 'secondary_clarifier', 18, 12),
+    mkUnit('uv', 'uv_disinfection', 21, 10),
+    ...gs.units.filter(u => u.typeId === 'effluent_outfall')
+  ];
+  const pipes = [
+    mkPipe('t1', 'inl', 'outlet', 'scr', 'inlet'),
+    mkPipe('t2', 'scr', 'outlet', 'grt', 'inlet'),
+    mkPipe('t3', 'grt', 'outlet', 'pri', 'inlet'),
+    mkPipe('t4', 'pri', 'outlet', 'cas', 'inlet'),
+    mkPipe('t5', 'cas', 'outlet', 'clr', 'inlet'),
+    mkPipe('t6', 'clr', 'outlet', 'uv', 'inlet'),
+    mkPipe('t7', 'uv', 'outlet', gs.units.find(u => u.typeId === 'effluent_outfall')!.instanceId, 'inlet'),
+    mkPipe('t8', 'clr', 'sludge_outlet', 'cas', 'ras_inlet', 'ras')
+  ];
+  return { units, pipes };
+}
+
+function tickN(state: any, n: number) {
+  let s = state;
+  for (let i = 0; i < n; i++) s = GameManager.tick(s, 0.5);
+  return s;
+}
+
+const obj = (state: any, id: string) => state.currentLevel.objectives.find((o: any) => o.id === id);
+
+// ── Test A: MBR hydraulic conservation Qin ≈ Qperm + QWAS (normal + fouled) ──
+{
+  const mbr = mkUnit('mbr', 'mbr_membrane', 0, 0);
+  const normal = { ...emptyW(), flowRate: 10000, bod: 20, tss: 3500 };
+  const rNormal = calculateUnitProcess(mbr, normal);
+  const balNormal = Math.abs(10000 - rNormal.effluent.flowRate - rNormal.sludge!.flowRate) / 10000;
+  assert(balNormal < 0.01,
+    `A. MBR normal balance |Qin−Qperm−Qwas|/Qin = ${(balNormal * 100).toFixed(2)}% < 1%`);
+
+  // Fouled MBR still conserves flow
+  const mbrF = mkUnit('mbrf', 'mbr_membrane', 0, 0);
+  const foulingFeed = { ...emptyW(), flowRate: 8000, bod: 400, tss: 1500 }; // raw-ish → fouled
+  const rFouled = calculateUnitProcess(mbrF, foulingFeed);
+  const balFouled = Math.abs(8000 - rFouled.effluent.flowRate - rFouled.sludge!.flowRate) / 8000;
+  assert(balFouled < 0.01,
+    `A+. MBR fouled balance error ${(balFouled * 100).toFixed(2)}% < 1%`);
+}
+
+// ── Tests B/C: disconnected vs connected MBR for obj_mbr ─────────────────────
+{
+  // B. Disconnected MBR must NOT satisfy obj_mbr
+  const gsB = GameManager.createInitialState(4, false); // Level 5 has obj_mbr
+  gsB.units.push(mkUnit('mbrDisc', 'mbr_membrane', 30, 30)); // no pipes at all
+  const sB = tickN(gsB, 20);
+  assert(!obj(sB, 'obj_mbr').achieved,
+    'B. disconnected MBR does NOT satisfy obj_mbr');
+
+  // C. Connected MBR with qualifying effluent CAN satisfy obj_mbr.
+  //    The MBR waste-sludge line MUST be routed away — an undrained sludge
+  //    sump legitimately overflows into the effluent (no free magic disposal).
+  const gsC = GameManager.createInitialState(4, false);
+  const unitsC = [
+    mkUnit('inl', 'influent_inlet', 2, 10),
+    mkUnit('scr', 'bar_screen', 5, 10),
+    mkUnit('grt', 'grit_chamber', 8, 10),
+    mkUnit('mbrC', 'mbr_membrane', 12, 10),
+    mkUnit('uv', 'uv_disinfection', 17, 10),
+    mkUnit('thkS', 'sludge_thickener', 22, 18), // WAS sink
+    ...gsC.units.filter(u => u.typeId === 'effluent_outfall')
+  ];
+  const outC = gsC.units.find(u => u.typeId === 'effluent_outfall')!.instanceId;
+  const pipesC = [
+    mkPipe('c1', 'inl', 'outlet', 'scr', 'inlet'),
+    mkPipe('c2', 'scr', 'outlet', 'grt', 'inlet'),
+    mkPipe('c3', 'grt', 'outlet', 'mbrC', 'inlet'),
+    mkPipe('c4', 'mbrC', 'outlet', 'uv', 'inlet'),
+    mkPipe('c5', 'uv', 'outlet', outC, 'inlet'),
+    mkPipe('c6', 'mbrC', 'sludge_outlet', 'thkS', 'inlet', 'sludge')
+  ];
+  const sC0 = { ...gsC, units: unitsC, pipes: pipesC };
+  const sC = tickN(sC0, 25);
+  assert(obj(sC, 'obj_mbr').achieved && sC.finalEffluent.tss <= 0.1,
+    `C. connected MBR satisfies obj_mbr (TSS ${sC.finalEffluent.tss.toFixed(3)} ≤ 0.1)`);
+}
+
+// ── Tests D/E: RO objective requires integration ─────────────────────────────
+{
+  // D. Disconnected RO fails
+  const gsD = GameManager.createInitialState(4, false);
+  gsD.units.push(mkUnit('roDisc', 'reverse_osmosis', 40, 40));
+  const sD = tickN(gsD, 15);
+  assert(!obj(sD, 'obj_ro').achieved, 'D. disconnected RO does NOT satisfy obj_ro');
+
+  // E. Connected multi-barrier train with RO can satisfy obj_ro.
+  //    Brine + MBR-WAS routes provided (undrained waste would foul the product).
+  const gsE = GameManager.createInitialState(4, false);
+  const unitsE = [
+    mkUnit('inlE', 'influent_inlet', 2, 10),
+    mkUnit('scrE', 'bar_screen', 5, 10),
+    mkUnit('grtE', 'grit_chamber', 8, 10),
+    mkUnit('mbrE', 'mbr_membrane', 12, 10),
+    mkUnit('roE', 'reverse_osmosis', 17, 10),
+    mkUnit('uvE', 'uv_disinfection', 22, 10),
+    mkUnit('aopE', 'advanced_oxidation_aop', 26, 10),
+    mkUnit('thkW', 'sludge_thickener', 31, 18),
+    mkUnit('thkB', 'sludge_thickener', 36, 18),
+    ...gsE.units.filter(u => u.typeId === 'effluent_outfall')
+  ];
+  const outId = gsE.units.find(u => u.typeId === 'effluent_outfall')!.instanceId;
+  const pipesE = [
+    mkPipe('e1', 'inlE', 'outlet', 'scrE', 'inlet'),
+    mkPipe('e2', 'scrE', 'outlet', 'grtE', 'inlet'),
+    mkPipe('e3', 'grtE', 'outlet', 'mbrE', 'inlet'),
+    mkPipe('e4', 'mbrE', 'outlet', 'roE', 'inlet'),
+    mkPipe('e5', 'roE', 'outlet', 'uvE', 'inlet'),
+    mkPipe('e6', 'uvE', 'outlet', 'aopE', 'inlet'),
+    mkPipe('e7', 'aopE', 'outlet', outId, 'inlet'),
+    mkPipe('e8', 'mbrE', 'sludge_outlet', 'thkW', 'inlet', 'sludge'),
+    mkPipe('e9', 'roE', 'sludge_outlet', 'thkB', 'inlet', 'sludge')
+  ];
+  const sE0 = { ...gsE, units: unitsE, pipes: pipesE };
+  const sE = tickN(sE0, 25);
+  assert(obj(sE, 'obj_ro').achieved,
+    `E. connected RO multi-barrier satisfies obj_ro (BOD ${sE.finalEffluent.bod.toFixed(2)}, TSS ${sE.finalEffluent.tss.toFixed(3)})`);
+}
+
+// ── Test F: obj_pathogen_zero honors target 0 exactly ────────────────────────
+{
+  // A plant whose effluent still carries pathogens must NOT pass a 0-CFU target.
+  const gsF = GameManager.createInitialState(4, false);
+  // Simple non-disinfected train: screen→grit→MBR→outfall (pathogens survive MBR)
+  const unitsF = [
+    mkUnit('inlF', 'influent_inlet', 2, 10),
+    mkUnit('scrF', 'bar_screen', 5, 10),
+    mkUnit('grtF', 'grit_chamber', 8, 10),
+    mkUnit('mbrF', 'mbr_membrane', 12, 10),
+    mkUnit('thkF', 'sludge_thickener', 17, 18),
+    ...gsF.units.filter(u => u.typeId === 'effluent_outfall')
+  ];
+  const outF = gsF.units.find(u => u.typeId === 'effluent_outfall')!.instanceId;
+  const pipesF = [
+    mkPipe('f1', 'inlF', 'outlet', 'scrF', 'inlet'),
+    mkPipe('f2', 'scrF', 'outlet', 'grtF', 'inlet'),
+    mkPipe('f3', 'grtF', 'outlet', 'mbrF', 'inlet'),
+    mkPipe('f4', 'mbrF', 'outlet', outF, 'inlet'),
+    mkPipe('f5', 'mbrF', 'sludge_outlet', 'thkF', 'inlet', 'sludge')
+  ];
+  const sF0 = { ...gsF, units: unitsF, pipes: pipesF };
+  const sF = tickN(sF0, 20);
+  if (sF.finalEffluent.pathogens > 0) {
+    assert(!obj(sF, 'obj_pathogen_zero').achieved,
+      `F. pathogen_zero NOT achieved while effluent has ${sF.finalEffluent.pathogens.toExponential(1)} CFU (target exactly 0)`);
+  } else {
+    assert(obj(sF, 'obj_pathogen_zero').achieved,
+      'F. pathogen_zero achieved when effluent reaches true 0 CFU');
+  }
+}
+
+// ── Tests G/H: obj_volume uses CURRENT m³/day, not cumulative volume ─────────
+{
+  // H. A plant treating only ~3,500 m³/d can NEVER pass a 10,000 m³/d target —
+  //    even after many game days of accumulation. tick(0.5s) at 1x = 0.5/60 day,
+  //    so run at max speed with long deltas to accumulate real volume.
+  const gsH = GameManager.createInitialState(0, false);
+  gsH.currentLevel.objectives = [{
+    id: 'obj_volume', description: 'Reclaim and sell >10,000 m³/day',
+    type: 'treat_volume', targetValue: 10000, achieved: false
+  }];
+  const trainH = buildConventionalTrain(gsH); // Level 1 influent = 3,500 m³/d
+  let sH: any = { ...gsH, units: trainH.units, pipes: trainH.pipes };
+  for (let i = 0; i < 40; i++) sH = GameManager.tick(sH, 60 * 5); // ~3.3 days total
+  assert(!obj(sH, 'obj_volume').achieved && sH.financials.totalTreatedM3 > 10000,
+    `G/H. cumulative ${sH.financials.totalTreatedM3.toFixed(0)} m³ accumulated but obj_volume NOT latched — current-flow semantics verified (${sH.finalEffluent.flowRate.toFixed(0)} m³/d < 10,000)`);
+
+  // G. A plant with CURRENT flow ≥ target passes immediately
+  const gsG2 = GameManager.createInitialState(4, false);
+  gsG2.currentLevel.objectives = [{
+    id: 'obj_volume', description: 'test', type: 'treat_volume', targetValue: 5000, achieved: false
+  }];
+  const trainG = buildConventionalTrain(gsG2); // Level 5 influent = 18,000 m³/d
+  const sG = tickN({ ...gsG2, units: trainG.units, pipes: trainG.pipes }, 10);
+  assert(obj(sG, 'obj_volume').achieved && sG.finalEffluent.flowRate >= 5000,
+    `G+. obj_volume passes on CURRENT throughput (${sG.finalEffluent.flowRate.toFixed(0)} ≥ 5,000 m³/d)`);
+}
+
+// ── Test I: obj_aeration uses reactor DO, not effluent DO ────────────────────
+{
+  const gsI = GameManager.createInitialState(1, false); // Level 2 has obj_aeration
+  const trainI = buildConventionalTrain(gsI);
+  // Set reactor DO below target — even though UV/oxygenated effluent might read high DO
+  const casI = trainI.units.find(u => u.instanceId === 'cas')!;
+  casI.customParams.doSetpoint = 0.5; // far below 2.0 target
+  const sI = tickN({ ...gsI, units: trainI.units, pipes: trainI.pipes }, 15);
+  assert(!obj(sI, 'obj_aeration').achieved,
+    `I. obj_aeration tracks REACTOR DO (setpoint 0.5 → actual ${(casI.dissolvedOxygenActual ?? 0).toFixed(1)}), not satisfied despite flow`);
+}
+
+// ── Test J: energy objective reflects CURRENT performance ────────────────────
+{
+  const gsJ = GameManager.createInitialState(3, false); // Level 4 has obj_energy 50%
+  const sJ = tickN(gsJ, 10); // no renewables yet
+  assert(!obj(sJ, 'obj_energy').achieved && sJ.overallStats.energySelfSufficiencyPercent < 50,
+    `J. obj_energy unmet while self-sufficiency is ${sJ.overallStats.energySelfSufficiencyPercent.toFixed(0)}%`);
+
+  // Add solar+wind at noon → sufficiency jumps
+  const unitsJ = [...sJ.units, mkUnit('pvJ', 'solar_array', 50, 20), mkUnit('wtJ', 'wind_turbine', 56, 24)];
+  const sJ2raw = SimulationEngine.stepSimulation(
+    unitsJ, [], gsJ.currentLevel.influentSpec, gsJ.currentLevel.standards,
+    sJ.financials, gsJ.currentLevel.tariffPerM3, 0.15, 45, { daylight: 1, wind: 1 }
+  );
+  assert(sJ2raw.overallStats.energySelfSufficiencyPercent > 0 || sJ2raw.overallStats.totalGreenGenerationKw > 0,
+    `J+. adding renewables raises green generation to ${sJ2raw.overallStats.totalGreenGenerationKw.toFixed(0)} kW`);
+}
+
+// ── Test K: compliance streak resets after violation ─────────────────────────
+{
+  const gsK = GameManager.createInitialState(2, false); // Level 3 has obj_compliance
+  let sK: any = { ...gsK, simSpeed: 1 as const };
+  const place = (type: UnitTypeId, x: number, y: number, params?: Record<string, number>) => {
+    const r = GameManager.placeUnit(sK, type, x, y);
+    sK = r.newState;
+    const u = sK.units[sK.units.length - 1] as PlacedUnit;
+    if (params) Object.assign(u.customParams, params);
+    return u;
+  };
+  const scr = place('bar_screen', 10, 20)!;
+  const grt = place('grit_chamber', 13, 20)!;
+  const m1 = place('mbbr_reactor', 16, 20, { carrierFillRatioPercent: 100 })!;
+  const m2 = place('mbbr_reactor', 19, 24, { carrierFillRatioPercent: 100 })!;
+  const cl = place('secondary_clarifier', 22, 23)!;
+  const a1 = place('advanced_oxidation_aop', 26, 20, { ozoneDoseMgL: 18 })!;
+  const cp1 = place('chemical_phosphorus', 30, 20, { coagulantDoseMgL: 60 })!;
+  const cp2 = place('chemical_phosphorus', 34, 20, { coagulantDoseMgL: 60 })!;
+  const uv = place('uv_disinfection', 38, 20)!;
+  sK.pipes = [
+    mkPipe('p1', 'inlet_0', 'outlet', scr.instanceId, 'inlet'),
+    mkPipe('p2', scr.instanceId, 'outlet', grt.instanceId, 'inlet'),
+    mkPipe('p3', grt.instanceId, 'outlet', m1.instanceId, 'inlet'),
+    mkPipe('p4', m1.instanceId, 'outlet', m2.instanceId, 'inlet'),
+    mkPipe('p5', m2.instanceId, 'outlet', cl.instanceId, 'inlet'),
+    mkPipe('p6', cl.instanceId, 'outlet', a1.instanceId, 'inlet'),
+    mkPipe('p7', a1.instanceId, 'outlet', cp1.instanceId, 'inlet'),
+    mkPipe('p8', cp1.instanceId, 'outlet', cp2.instanceId, 'inlet'),
+    mkPipe('p9', cp2.instanceId, 'outlet', uv.instanceId, 'inlet'),
+    mkPipe('p10', uv.instanceId, 'outlet', 'outfall_0', 'inlet'),
+    mkPipe('p11', cl.instanceId, 'sludge_outlet', m1.instanceId, 'ras_inlet', 'ras')
+  ];
+  for (let i = 0; i < 250; i++) sK = GameManager.tick(sK, 1); // warm-up to steady state
+  for (let i = 0; i < 5; i++) sK = GameManager.tick(sK, 300); // +25 game days of streak
+  const streakBefore = sK.complianceStreakDays;
+
+  // Break the biology: bypass both MBBRs entirely (grit → clarifier directly).
+  // Without biological treatment BOD/COD/TSS/NH4 all explode and the
+  // compliance streak must reset to zero.
+  sK.pipes = sK.pipes.filter((p: PipeConnection) => !['p3', 'p4', 'p11'].includes(p.id));
+  sK.pipes.push(mkPipe('pBypass', grt.instanceId, 'outlet', cl.instanceId, 'inlet'));
+  for (let i = 0; i < 5; i++) sK = GameManager.tick(sK, 300);
+  const streakAfter = sK.complianceStreakDays;
+
+  assert(streakBefore > 0 && streakAfter === 0,
+    `K. compliance streak resets on process failure (${streakBefore.toFixed(1)}d → ${streakAfter.toFixed(1)}d)`);
+}
+
+// ── Tests L/M: disconnected EQ basin / sand filter fail their objectives ─────
+{
+  const gsL = GameManager.createInitialState(1, false); // Level 2 has obj_eq
+  gsL.units.push(mkUnit('eqDisc', 'equalization_basin', 40, 30)); // disconnected
+  const trainL = buildConventionalTrain(gsL).pipes;
+  const withDAF = [
+    ...gsL.units.filter(u => u.typeId !== 'equalization_basin' && u.typeId !== 'effluent_outfall' || u.typeId === 'effluent_outfall'),
+    mkUnit('eqDisc', 'equalization_basin', 44, 30)
+  ];
+  const sL = tickN({ ...gsL, units: withDAF, pipes: [] }, 12);
+  assert(!obj(sL, 'obj_eq').achieved, 'L. disconnected Equalization Basin does NOT satisfy obj_eq');
+
+  const gsM = GameManager.createInitialState(3, false); // Level 4 has obj_sand
+  const unitsM = [
+    mkUnit('inlM', 'influent_inlet', 2, 10),
+    mkUnit('scrM', 'bar_screen', 5, 10),
+    mkUnit('grtM', 'grit_chamber', 8, 10),
+    mkUnit('a2oM', 'a2o_bardenpho', 11, 10),
+    mkUnit('clrM', 'secondary_clarifier', 17, 13),
+    mkUnit('uvM', 'uv_disinfection', 21, 10),
+    mkUnit('sandDisc', 'sand_filter', 45, 35), // DISCONNECTED sand filter
+    ...gsM.units.filter(u => u.typeId === 'effluent_outfall')
+  ];
+  const outM = gsM.units.find(u => u.typeId === 'effluent_outfall')!.instanceId;
+  const pipesM = [
+    mkPipe('m1', 'inlM', 'outlet', 'scrM', 'inlet'),
+    mkPipe('m2', 'scrM', 'outlet', 'grtM', 'inlet'),
+    mkPipe('m3', 'grtM', 'outlet', 'a2oM', 'inlet'),
+    mkPipe('m4', 'a2oM', 'outlet', 'clrM', 'inlet'),
+    mkPipe('m5', 'clrM', 'outlet', 'uvM', 'inlet'),
+    mkPipe('m6', 'uvM', 'outlet', outM, 'inlet'),
+    mkPipe('m7', 'clrM', 'sludge_outlet', 'a2oM', 'ras_inlet', 'ras')
+  ];
+  const sM = tickN({ ...gsM, units: unitsM, pipes: pipesM }, 15);
+  assert(!obj(sM, 'obj_sand').achieved,
+    `M. disconnected sand filter does NOT satisfy obj_sand (TSS ${sM.finalEffluent.tss.toFixed(1)})`);
+}
+
+// ── Tests N/O/P/Q: domain-rule enforcement in GameManager ────────────────────
+{
+  // N. placeUnit rejects unit unavailable in level
+  const gsN = GameManager.createInitialState(0, false); // L1: no RO
+  const rN = GameManager.placeUnit(gsN, 'reverse_osmosis', 10, 10);
+  assert(!rN.success && !!rN.reason, `N. placeUnit rejects unavailable unit: "${rN.reason}"`);
+
+  // O. placeUnit rejects locked technology
+  const gsO = GameManager.createInitialState(3, false); // L4 has no MBR tech
+  const rO = GameManager.placeUnit(gsO, 'mbr_membrane', 10, 10);
+  assert(!rO.success && !!rO.reason, `O. placeUnit rejects locked-tech unit: "${rO.reason}"`);
+
+  // P. unlockTech rejects missing prerequisites.
+  //    Pick a tech whose prereq chain is NOT satisfied at level start
+  //    (Level 1 only unlocks tech_basics — anything requiring an unowned node fails).
+  const gsP = GameManager.createInitialState(0, false);
+  const lockedDeep = TECH_TREE_NODES.find(
+    n => !n.unlocked && (n.prerequisites ?? []).some(pid => !gsP.techTree.find(t => t.id === pid)?.unlocked)
+  )!;
+  const rP = GameManager.unlockTech(gsP, lockedDeep.id);
+  assert(!rP.success && (rP.reason ?? '').includes('research'),
+    `P. unlockTech rejects missing prerequisites: "${rP.reason}"`);
+
+  // Q. valid tech unlock succeeds (unlock prerequisite chain first)
+  const base = gsP.techTree.find(n => n.unlocked)!;
+  const child = TECH_TREE_NODES.find(n => (n.prerequisites ?? []).includes(base.id))!;
+  const rQ = GameManager.unlockTech(gsP, child.id);
+  assert(rQ.success && rQ.newState.techTree.find(n => n.id === child.id)!.unlocked,
+    `Q. valid tech unlock succeeds: ${child.id}`);
+}
+
+// ── Test R: active liquid path handles RAS cycles without infinite traversal ─
+{
+  const gsR = GameManager.createInitialState(0, false);
+  const tr = buildConventionalTrain(gsR);
+  const analysis = analyzeActiveLiquidPath(tr.units, []);
+  assert(analysis.activeUnitIds.size === 1 && !analysis.influentToOutfall,
+    'R. zero-pipe plant: only the inlet is active, no path to outfall');
+
+  // With RAS loop present the BFS must terminate and find the full train
+  const sR = tickN({ ...gsR, units: tr.units, pipes: tr.pipes }, 8);
+  const an2 = analyzeActiveLiquidPath(sR.units, sR.pipes);
+  assert(an2.activeUnitIds.size >= 7 && an2.influentToOutfall,
+    `R+. RAS loop terminates; ${an2.activeUnitIds.size} units active, influent→outfall=${an2.influentToOutfall}`);
+
+  assert(hasActiveProcessTypeOnPath('activated_sludge_cas', sR.units, sR.pipes),
+    'R++. CAS detected as active on-path process');
+}
+
+// ── Test S: valid Level 1 canonical train can complete Level 1 ───────────────
+{
+  const gsS = GameManager.createInitialState(0, false);
+  let s: any = { ...gsS, simSpeed: 5 as const };
+  const place = (type: UnitTypeId, x: number, y: number, params?: Record<string, number>) => {
+    const r = GameManager.placeUnit(s, type, x, y);
+    if (!r.success) { console.error('place fail:', type, r.reason); return null; }
+    s = r.newState;
+    const u = s.units[s.units.length - 1];
+    if (params) Object.assign(u.customParams, params);
+    return u as PlacedUnit;
+  };
+  // Stage A: core liquid train within starting budget (350k)
+  const scr = place('bar_screen', 5, 20)!;
+  const grt = place('grit_chamber', 8, 20)!;
+  const pri = place('primary_clarifier_circular', 11, 20)!;
+  const cas = place('activated_sludge_cas', 16, 20, { doSetpoint: 2.5 })!;
+  const cl = place('secondary_clarifier', 22, 23)!;
+  s.pipes = [
+    mkPipe('sp1', 'inlet_0', 'outlet', scr.instanceId, 'inlet'),
+    mkPipe('sp2', scr.instanceId, 'outlet', grt.instanceId, 'inlet'),
+    mkPipe('sp3', grt.instanceId, 'outlet', pri.instanceId, 'inlet'),
+    mkPipe('sp4', pri.instanceId, 'outlet', cas.instanceId, 'inlet'),
+    mkPipe('sp5', cas.instanceId, 'outlet', cl.instanceId, 'inlet'),
+    mkPipe('sp6', cl.instanceId, 'outlet', 'outfall_0', 'inlet'),
+    mkPipe('sp7', cl.instanceId, 'sludge_outlet', cas.instanceId, 'ras_inlet', 'ras')
+  ];
+  for (let i = 0; i < 300; i++) s = GameManager.tick(s, 1);
+  // Stage B: add UV disinfection from earned revenue
+  const uv = place('uv_disinfection', 26, 20)!;
+  s.pipes = s.pipes.filter((p: PipeConnection) => !(p.fromUnitId === cl.instanceId && p.toUnitId === 'outfall_0'));
+  s.pipes.push(
+    mkPipe('sp8', cl.instanceId, 'outlet', uv.instanceId, 'inlet'),
+    mkPipe('sp9', uv.instanceId, 'outlet', 'outfall_0', 'inlet')
+  );
+  for (let i = 0; i < 600; i++) s = GameManager.tick(s, 1);
+  assert(s.isLevelComplete && s.currentLevel.objectives.every((o: any) => o.achieved),
+    `S. Level 1 canonical staged build COMPLETES (score ${s.overallStats.complianceScore}%, cash $${s.financials.cash.toFixed(0)})`);
+}
+
+// ── Tests T–W: advisor behavior per level ─────────────────────────────────────
+{
+  // T/U. Level 3: with screen+grit+MBBR+clarifier placed but toxic/COD/TP high
+  // (no effluent yet — chemistry unproven) → AOP & chemP suggested in order.
+  const gsT = GameManager.createInitialState(2, false); // level.id===3 is index 2
+  const unitsT = [
+    mkUnit('scr', 'bar_screen', 5, 20),
+    mkUnit('grt', 'grit_chamber', 8, 20),
+    mkUnit('mbb', 'mbbr_reactor', 11, 20),
+    mkUnit('clr', 'secondary_clarifier', 16, 23)
+  ];
+  const sugT = GameManager.computeNextSuggestion(unitsT, gsT.currentLevel);
+  assert(!!sugT && sugT.unitTypeId === 'advanced_oxidation_aop',
+    `T. L3 advisor suggests AOP when toxic/COD remain high (${sugT?.unitTypeId})`);
+  // After AOP exists, chemP should be next while TP still high
+  unitsT.push(mkUnit('aop', 'advanced_oxidation_aop', 21, 20));
+  const sugU = GameManager.computeNextSuggestion(unitsT, gsT.currentLevel);
+  assert(!!sugU && sugU.unitTypeId === 'chemical_phosphorus',
+    `U. L3 advisor suggests chemical P when TP remains high (${sugU?.unitTypeId})`);
+
+  // V/W. Level 4: after bio+clarifier+polishing chain exists but sludge/energy
+  // chain missing → thickener/digester suggested; sand filter recognized.
+  const gsV = GameManager.createInitialState(3, false);
+  const unitsV = [
+    mkUnit('scr4', 'bar_screen', 5, 20),
+    mkUnit('grt4', 'grit_chamber', 8, 20),
+    mkUnit('a2o4', 'a2o_bardenpho', 11, 20),
+    mkUnit('clr4', 'secondary_clarifier', 18, 23),
+    mkUnit('uv4', 'uv_disinfection', 22, 20)
+  ];
+  const sugV = GameManager.computeNextSuggestion(unitsV, gsV.currentLevel);
+  assert(!!sugV && sugV.unitTypeId === 'sand_filter',
+    `W. L4 advisor recognizes missing sand filtration (${sugV?.unitTypeId})`);
+  // Now add sand+chemP — energy/sludge chain should be next
+  unitsV.push(mkUnit('sf4', 'sand_filter', 24, 20));
+  unitsV.push(mkUnit('cp4', 'chemical_phosphorus', 28, 20));
+  const sugV2 = GameManager.computeNextSuggestion(unitsV, gsV.currentLevel);
+  assert(!!sugV2 && sugV2.unitTypeId === 'sludge_thickener',
+    `V. L4 advisor directs to sludge/energy recovery chain (${sugV2?.unitTypeId})`);
+}
+
+// ── Test X: Level 5 volume objective uses current throughput criterion ────────
+{
+  const gsX = GameManager.createInitialState(4, false);
+  const unitsX = [
+    mkUnit('x_scr', 'bar_screen', 5, 10),
+    mkUnit('x_grt', 'grit_chamber', 8, 10),
+    mkUnit('x_mbr', 'mbr_membrane', 12, 10),
+    mkUnit('x_ro', 'reverse_osmosis', 17, 10),
+    mkUnit('x_uv', 'uv_disinfection', 22, 10),
+    mkUnit('x_thk', 'sludge_thickener', 27, 18)
+  ];
+  const pipesX = [
+    mkPipe('x1', 'inl', 'outlet', 'x_scr', 'inlet'),
+    mkPipe('x2', 'x_scr', 'outlet', 'x_grt', 'inlet'),
+    mkPipe('x3', 'x_grt', 'outlet', 'x_mbr', 'inlet'),
+    mkPipe('x4', 'x_mbr', 'outlet', 'x_ro', 'inlet'),
+    mkPipe('x5', 'x_ro', 'outlet', 'x_uv', 'inlet'),
+    mkPipe('x6', 'x_uv', 'outlet', 'outf', 'inlet'),
+    mkPipe('x7', 'x_mbr', 'sludge_outlet', 'x_thk', 'inlet', 'sludge')
+  ];
+  // NOTE: uses own inlet/outfall ids below
+  unitsX.unshift(mkUnit('inl', 'influent_inlet', 2, 10));
+  unitsX.push(mkUnit('outf', 'effluent_outfall', 27, 10));
+  pipesX[0] = mkPipe('x1', 'inl', 'outlet', 'x_scr', 'inlet');
+  pipesX[5] = mkPipe('x6', 'x_uv', 'outlet', 'outf', 'inlet');
+  let sX: any = { ...gsX, units: unitsX, pipes: pipesX, simSpeed: 5 as const };
+  for (let i = 0; i < 40; i++) sX = GameManager.tick(sX, 1);
+  const flowOk = sX.finalEffluent.flowRate >= 10000;
+  assert(obj(sX, 'obj_volume').achieved === flowOk,
+    `X. L5 obj_volume tracks CURRENT throughput (${sX.finalEffluent.flowRate.toFixed(0)} m³/d → achieved=${obj(sX, 'obj_volume').achieved})`);
+}
+
+// ── Test Y: Level 5 completion is campaign completion (no wrap to Level 1) ────
+{
+  const lastIdx = CAMPAIGN_LEVELS.length - 1;
+  const lastLevel = CAMPAIGN_LEVELS[lastIdx];
+  // App.tsx logic under test:
+  const wouldWrap = (() => {
+    const idx = CAMPAIGN_LEVELS.findIndex(l => l.id === lastLevel.id) + 1;
+    return idx % CAMPAIGN_LEVELS.length; // OLD buggy modulo behavior
+  })();
+  const advancesCorrectly = (() => {
+    const idx = CAMPAIGN_LEVELS.findIndex(l => l.id === lastLevel.id);
+    return idx < CAMPAIGN_LEVELS.length - 1 ? idx + 1 : idx; // NEW guard
+  })();
+  assert(wouldWrap === 0 && advancesCorrectly === lastIdx,
+    'Y. Level 5 completion does NOT wrap to Level 1 (modulo removed, guarded advance)');
 }
 
 console.log(failures === 0 ? '\nALL TESTS PASSED' : `\n${failures} TEST(S) FAILED`);

@@ -400,6 +400,15 @@ export class SceneManager {
   ) {
     while (this.ghostSuggestGroup.children.length > 0) {
       const c = this.ghostSuggestGroup.children[0];
+      // Dispose transient preview resources — each ghost creates fresh
+      // geometry/material, so skipping this leaks VRAM on every refresh.
+      c.traverse(o => {
+        const m = o as THREE.Mesh;
+        if (m.geometry) m.geometry.dispose();
+        const mat = m.material as THREE.Material | THREE.Material[] | undefined;
+        if (Array.isArray(mat)) mat.forEach(mm => mm.dispose());
+        else if (mat) mat.dispose();
+      });
       this.ghostSuggestGroup.remove(c);
     }
     if (!unitTypeId) return;

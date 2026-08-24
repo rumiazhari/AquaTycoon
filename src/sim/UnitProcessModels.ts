@@ -1111,8 +1111,10 @@ export function calculateUnitProcess(
         opexDay = def.baseOpexPerDay * 1.8;     // chemical cleans
         efficiency = 58;
       } else {
-        // Membrane absolute barrier: TSS = 0, Turbidity < 0.2 NTU, 4-log pathogen rejection!
-        eff.tss = Math.max(0, eff.tss * 0.005);
+        // Membrane absolute barrier: intact hollow fibers retain ALL suspended
+        // solids (pore size ≈ 0.1–0.4 µm << floc size) — permeate TSS is
+        // effectively zero, turbidity < 0.2 NTU, 4-log pathogen rejection.
+        eff.tss = 0;
         eff.turbidity = Math.min(0.2, eff.turbidity * 0.02);
         eff.bod = Math.max(2, eff.bod * 0.03);
         eff.cod = Math.max(12, eff.cod * 0.06);
@@ -1127,23 +1129,23 @@ export function calculateUnitProcess(
       // the incoming solids load (permeate carries ~0), so:
       //   Qwas × Xwas = Qin·Xin − Qperm·Xperm
       // with Xwas at typical MBR sludge density (10 g/L).
+      //
+      // HYDRAULIC COMPLEMENTARITY: Qin = Qpermeate + Qwas. Permeate flow is
+      // DERIVED as whatever remains after the WAS draw — never added on top.
       const qInMbr = Math.max(0, inlet.flowRate);
       const inSolidsKg = loadKgDay(qInMbr, inlet.tss);
-      const permSolidsKg = loadKgDay(eff.flowRate > 0 ? eff.flowRate : qInMbr * 0.98, eff.tss);
-      const wastedSolidsKg = Math.max(0, inSolidsKg - (eff.flowRate > 0 ? permSolidsKg : 0));
+      const wastedSolidsKg = Math.max(0, inSolidsKg); // membrane passes ~no solids
       const mbrWasTss = 10000; // mg/L — typical MBR waste sludge density
-      const wasFlow = Math.max(2, (wastedSolidsKg * 1000) / mbrWasTss);
+      const wasFlow = Math.min(qInMbr * 0.2, Math.max(2, (wastedSolidsKg * 1000) / mbrWasTss));
       sludge = {
         ...cloneWater(inlet),
         flowRate: wasFlow,
-        tss: mbrWasTss,
+        tss: wasFlow > 0.01 ? Math.min(mbrWasTss, (wastedSolidsKg * 1000) / wasFlow) : 0,
         bod: Math.max(5, inlet.bod * 0.25),
         nh4: inlet.nh4 * 0.9 // biomass-bound liquor
       };
-      if (eff.flowRate <= 0) {
-        // No permeate produced: nothing leaves via membranes; keep hydraulics sane.
-        eff.flowRate = Math.max(0, qInMbr - wasFlow);
-      }
+      // Permeate = feed minus wasting — strictly complementary (conserves flow)
+      eff.flowRate = Math.max(0, qInMbr - wasFlow);
       if (!fouled) efficiency = 99;
       break;
     }
@@ -1168,8 +1170,9 @@ export function calculateUnitProcess(
       // Final settling tanks capture >99% of solids even from dense mixed
       // liquor: effluent TSS is governed by an ESCAPE concentration that
       // grows with surface overflow rate (solids carryover), not by a fixed
-      // percentage of a 5,000 mg/L liquor.
-      const escapeTss = sor < 16 ? 6 : sor < 24 ? 10 : sor < 32 ? 16 : sor < 45 ? 30 : 70;
+      // percentage of a 5,000 mg/L liquor. Calibrated so a well-designed
+      // clarifier at reasonable SOR meets a 20-30 mg/L permit with margin.
+      const escapeTss = sor < 16 ? 5 : sor < 24 ? 8 : sor < 32 ? 12 : sor < 45 ? 20 : 30;
       eff.tss = escapeTss;
       eff.turbidity = Math.max(1.2, escapeTss * 0.8);
       // Particulate BOD settles with the floc; soluble BOD stays suspended.

@@ -353,6 +353,20 @@ export const App: React.FC = () => {
       }
     };
 
+    // CANCELLED pointer sequences (palm rejection, OS gestures, second touch,
+    // alt-tab) must NEVER be converted into a game action. Reset transient
+    // pointer state only — no placement, selection, piping or demolition.
+    const onPointerCancel = (e: PointerEvent) => {
+      e.preventDefault();
+      try {
+        canvas.releasePointerCapture(e.pointerId);
+      } catch {
+        // Capture may already be gone — irrelevant for cancellation.
+      }
+      pointerDown.current = false;
+      pointerDist.current = 0;
+    };
+
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       sceneRef.current?.cameraController.zoom(e.deltaY * 0.025);
@@ -363,7 +377,7 @@ export const App: React.FC = () => {
     canvas.addEventListener('pointerdown',  onPointerDown,  { passive: false });
     canvas.addEventListener('pointermove',  onPointerMove,  { passive: false });
     canvas.addEventListener('pointerup',    onPointerUp,    { passive: false });
-    canvas.addEventListener('pointercancel', onPointerUp,   { passive: false });
+    canvas.addEventListener('pointercancel', onPointerCancel, { passive: false });
     canvas.addEventListener('wheel',        onWheel,        { passive: false });
     canvas.addEventListener('contextmenu',  onContextMenu,  { passive: false });
 
@@ -372,7 +386,7 @@ export const App: React.FC = () => {
       canvas.removeEventListener('pointerdown',  onPointerDown);
       canvas.removeEventListener('pointermove',  onPointerMove);
       canvas.removeEventListener('pointerup',    onPointerUp);
-      canvas.removeEventListener('pointercancel', onPointerUp);
+      canvas.removeEventListener('pointercancel', onPointerCancel);
       canvas.removeEventListener('wheel',        onWheel);
       canvas.removeEventListener('contextmenu',  onContextMenu);
       sm.dispose();
@@ -574,16 +588,9 @@ export const App: React.FC = () => {
         const tp = findPort(toUnit, toPortId);
         if (!fp || !tp) return;
 
-        const v = validateConnection(gs.pipes, gs.units, fromUnit.instanceId, fp.id, toUnit.instanceId, tp.id);
-        if (!v.ok) {
-          SoundManager.playWarning();
-          setToast(`⛔ ${v.reason}`);
-          return;
-        }
-
-        // TOGGLE: reconnecting the exact same existing pipe removes it — full
-        // manual control over routing mistakes. validateConnection already
-        // rejects duplicates, so detect the toggle case before that check.
+        // TOGGLE FIRST: reconnecting the exact same existing pipe removes it.
+        // This check MUST precede validateConnection, which rejects duplicate
+        // connections and would otherwise make removal unreachable.
         if (isConnectionExisting(gs.pipes, fromUnit.instanceId, fp.id, toUnit.instanceId, tp.id)) {
           const remaining = gs.pipes.filter(p =>
             !(p.fromUnitId === fromUnit.instanceId && p.fromPortId === fp.id &&
@@ -595,6 +602,13 @@ export const App: React.FC = () => {
           sm.syncPipes(remaining);
           setToast(`Pipe removed: ${unitName(fromUnit)} [${fp.name}] ➔ ${unitName(toUnit)}. Re-route as needed. (Ctrl+Z to undo)`);
           cancelPipeSelection(true);
+          return;
+        }
+
+        const v = validateConnection(gs.pipes, gs.units, fromUnit.instanceId, fp.id, toUnit.instanceId, tp.id);
+        if (!v.ok) {
+          SoundManager.playWarning();
+          setToast(`⛔ ${v.reason}`);
           return;
         }
 
@@ -1154,7 +1168,11 @@ export const App: React.FC = () => {
           techTree={gameState.techTree}
           playerCash={gameState.financials.cash}
           isSandbox={gameState.gameMode === 'sandbox'}
-          onUnlockTech={id => setGameState(prev => GameManager.unlockTech(prev, id))}
+          onUnlockTech={id => {
+            const res = GameManager.unlockTech(gameState, id);
+            if (!res.success && res.reason) setToast(`🔒 ${res.reason}`);
+            return res.newState;
+          }}
           onClose={() => setTechModal(false)}
         />
       )}
@@ -1175,12 +1193,23 @@ export const App: React.FC = () => {
       {gameState.levelVictoryModalOpen && (
         <VictoryModal
           level={gameState.currentLevel}
+          isCampaignComplete={gameState.currentLevel.id >= CAMPAIGN_LEVELS.length}
           onNextLevel={() => {
-            const idx = (CAMPAIGN_LEVELS.findIndex(l => l.id === gameState.currentLevel.id) + 1) % CAMPAIGN_LEVELS.length;
-            handleSelectLevel(idx, false);
+            // NEVER wrap: only advance when a next level exists.
+            const idx = CAMPAIGN_LEVELS.findIndex(l => l.id === gameState.currentLevel.id);
+            if (idx < CAMPAIGN_LEVELS.length - 1) {
+              handleSelectLevel(idx + 1, false);
+            }
             setGameState(prev => ({ ...prev, levelVictoryModalOpen: false }));
           }}
           onContinuePlaying={() => setGameState(prev => ({ ...prev, levelVictoryModalOpen: false }))}
+          onOpenLevelSelect={() => {
+            setGameState(prev => ({ ...prev, levelVictoryModalOpen: false }));
+            setLevelModal(true);
+          }}
+          onRestartCampaign={() => {
+            setGameState(GameManager.createInitialState(0, false));
+          }}
         />
       )}
 
