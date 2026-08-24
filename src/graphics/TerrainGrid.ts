@@ -134,8 +134,7 @@ export class TerrainGrid {
   private riverHW = 4.2;
   private zRoad = 22;
 
-  private riverMesh: THREE.Mesh | null = null;
-  private riverBasePos: Float32Array | null = null;
+  private waterY = -0.85;
   private baseY: number = -9;
   private cloudMesh: THREE.InstancedMesh | null = null;
   private cloudData: { y: number; z: number; speed: number; sx: number; sy: number; sz: number }[] = [];
@@ -166,25 +165,6 @@ export class TerrainGrid {
 
   /** Per-frame updates: river flow, cloud drift, night glow */
   public tick(dt: number, elapsed: number, nightFactor: number) {
-    // ── River fluid mechanics: advected waves + scrolling ripple normals ──
-    if (this.riverMesh && this.riverBasePos) {
-      const zMin = -this.padZ;
-      const span = this.D + this.padZ * 2;
-      const posAttr = this.riverMesh.geometry.getAttribute('position') as THREE.BufferAttribute;
-      const arr = posAttr.array as Float32Array;
-      const base = this.riverBasePos;
-      for (let i = 0; i < arr.length; i += 3) {
-        const bx = base[i];
-        const bz = base[i + 2];
-        const v = (bz - zMin) / span; // downstream parameter
-        const phase = v * 14 - elapsed * 1.9; // waves travel +Z (downstream)
-        arr[i + 1] =
-          Math.sin(phase) * 0.10 +
-          Math.sin(bx * 0.55 + elapsed * 1.4) * 0.06 +
-          Math.sin((bx + bz) * 0.3 - elapsed * 0.8) * 0.03;
-      }
-      posAttr.needsUpdate = true;
-    }
     // Flow arrow streaks ride the current with bobbing and shimmer
     if (this.flowParticles && this.flowData.length > 0) {
       const zMin = -this.padZ;
@@ -205,10 +185,10 @@ export class TerrainGrid {
         eul.set(0, Math.atan2(dcx, 1.2), 0);
         q.setFromEuler(eul);
         // Vertical bobbing for a dynamic flowing effect
-        const bob = Math.sin(elapsed * 3.0 + i * 1.7) * 0.04;
+        const bob = Math.sin(elapsed * 3.0 + i * 1.7) * 0.03;
         // Scale pulse for shimmer
         const pulse = 1.0 + Math.sin(elapsed * 2.5 + i * 2.1) * 0.12;
-        pos.set(meander + f.u, -0.86 + bob, z);
+        pos.set(meander + f.u, this.waterY + 0.04 + bob, z);
         scl.set(f.scale * pulse, f.scale * pulse, f.scale * pulse);
         m.compose(pos, q, scl);
         this.flowParticles.setMatrixAt(i, m);
@@ -390,8 +370,6 @@ export class TerrainGrid {
     this.slabGroup.traverse(kill);
     this.envGroup.clear();
     this.slabGroup.clear();
-    this.riverMesh = null;
-    this.riverBasePos = null;
     this.cloudMesh = null;
     this.cloudData = [];
     this.lampBulbMat = null;
@@ -542,7 +520,8 @@ export class TerrainGrid {
         pos.push(cx + halfWidth, y, z);
         if (i < steps) {
           const a = i * 2;
-          idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+          // Wound so the face normal points UP (+Y) toward the camera
+          idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
         }
       }
       const g = new THREE.BufferGeometry();
@@ -551,57 +530,18 @@ export class TerrainGrid {
       return g;
     };
 
-    // Bright cartoonish blue surface, riding high in the dug channel
-    const waterGeo = mkRibbon(this.riverHW * 0.96, -0.92);
+    // ONE flat blue plane filling the whole wetted channel. The dug channel
+    // (flat bed to riverHW, slopes out to riverHW*2.3) crosses waterY at
+    // roughly riverHW*1.55, so this width keeps the plane tucked inside the
+    // banks with zero exposed bed — pure cartoon blue edge to edge.
+    const waterGeo = mkRibbon(this.riverHW * 1.52, this.waterY);
     const water = new THREE.Mesh(
       waterGeo,
-      new THREE.MeshBasicMaterial({ color: 0x40c8ff })
+      new THREE.MeshBasicMaterial({ color: 0x2ea8f0, side: THREE.DoubleSide })
     );
     water.frustumCulled = false;
     water.renderOrder = 2;
-    this.riverMesh = water;
-    this.riverBasePos = new Float32Array(waterGeo.getAttribute('position').array as Float32Array);
     this.envGroup.add(water);
-
-    // Lighter highlight ribbon on top for a cartoonish sheen
-    const highlightGeo = mkRibbon(this.riverHW * 0.5, -0.85);
-    const highlight = new THREE.Mesh(
-      highlightGeo,
-      new THREE.MeshBasicMaterial({ color: 0x80e8ff, transparent: true, opacity: 0.5 })
-    );
-    highlight.frustumCulled = false;
-    highlight.renderOrder = 3;
-    this.envGroup.add(highlight);
-
-    // Thin white foam edges along both riverbanks
-    const foamW = 0.38;
-    const foamR = this.riverHW * 0.96;
-    for (const side of [-1, 1]) {
-      const foamPos: number[] = [];
-      const foamIdx: number[] = [];
-      for (let i = 0; i <= steps; i++) {
-        const z = zMin + ((zMax - zMin) * i) / steps;
-        const cx = this.riverCenterX(z);
-        const inner = cx + side * foamR;
-        const outer = cx + side * (foamR + foamW);
-        foamPos.push(inner, -0.89, z);
-        foamPos.push(outer, -0.89, z);
-        if (i < steps) {
-          const a = i * 2;
-          foamIdx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
-        }
-      }
-      const foamGeo = new THREE.BufferGeometry();
-      foamGeo.setAttribute('position', new THREE.Float32BufferAttribute(foamPos, 3));
-      foamGeo.setIndex(foamIdx);
-      const foam = new THREE.Mesh(
-        foamGeo,
-        new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.6, side: THREE.DoubleSide, depthWrite: false })
-      );
-      foam.frustumCulled = false;
-      foam.renderOrder = 2;
-      this.envGroup.add(foam);
-    }
 // Drifting arrow streaks that ride the current downstream (+Z direction)
     const N_ARROWS = Math.round((zMax - zMin) / 2.2);
     // Arrow/chevron shape pointing downstream (+Z), baked flat (rotated to XZ plane)
@@ -626,7 +566,7 @@ export class TerrainGrid {
     const pos = new THREE.Vector3();
     for (let i = 0; i < N_ARROWS; i++) {
       this.flowData.push({ t: rngFleck(), u: (rngFleck() - 0.5) * 5.6, speed: 0.75 + rngFleck() * 0.5, scale: 1.0 + rngFleck() * 1.0 });
-      pos.set(this.riverCenterX(this.flowData[i].t * (zMax - zMin) + zMin), -1.0, 0);
+      pos.set(this.riverCenterX(this.flowData[i].t * (zMax - zMin) + zMin), this.waterY + 0.04, 0);
       m.compose(pos, q, one);
       this.flowParticles.setMatrixAt(i, m);
     }
@@ -1107,7 +1047,7 @@ export class TerrainGrid {
       const s = 0.5 + rng() * 0.9;
       eul.set(rng() * Math.PI, rng() * Math.PI, rng() * 0.4);
       q.setFromEuler(eul);
-      const rockY = inWater ? -1.12 + s * 0.22 : y;
+      const rockY = inWater ? this.waterY - 0.20 + s * 0.22 : y;
       vPos.set(x, rockY, z); vScl.set(s, s * 0.8, s);
       m.compose(vPos, q, vScl);
       rocks.setMatrixAt(nR, m);
@@ -1115,7 +1055,7 @@ export class TerrainGrid {
       if (inWater) {
         eul.set(-Math.PI / 2 + (rng() - 0.5) * 0.2, 0, rng() * Math.PI);
         q.setFromEuler(eul);
-        vPos.set(x, -1.03, z); vScl.set(s, s, s);
+        vPos.set(x, this.waterY - 0.06, z); vScl.set(s, s, s);
         m.compose(vPos, q, vScl);
         rings.setMatrixAt(nF++, m);
       }
