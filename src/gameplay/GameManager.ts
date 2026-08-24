@@ -374,7 +374,9 @@ export class GameManager {
       state.currentLevel.tariffPerM3,
       0.15,
       45,
-      { daylight, wind }
+      { daylight, wind },
+      // Unlocked tech ids drive centralized passive bonuses (e.g. CHP +20%)
+      new Set(state.techTree.filter(t => t.unlocked).map(t => t.id))
     );
 
     // Apply financial cash flow

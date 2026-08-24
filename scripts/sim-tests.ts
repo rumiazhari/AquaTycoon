@@ -555,5 +555,120 @@ function solve(units: PlacedUnit[], pipes: PipeConnection[], flow = 10000) {
   assert(!v4.ok, `J+++. duplicate connection to the same target port rejected`);
 }
 
+// ── Test K: digester gas CHP revenue offsets grid imports ────────────────────
+{
+  // Build a complete plant train with a sludge-to-digester chain.
+  const gs = GameManager.createInitialState(0, false);
+  const inf = gs.currentLevel.influentSpec;
+  const units = [
+    mkUnit('inl', 'influent_inlet', 2, 10),
+    mkUnit('scr', 'bar_screen', 5, 10),
+    mkUnit('grt', 'grit_chamber', 8, 10),
+    mkUnit('pri', 'primary_clarifier_circular', 11, 9),
+    mkUnit('cas', 'activated_sludge_cas', 15, 9),
+    mkUnit('clr', 'secondary_clarifier', 17, 13),
+    mkUnit('uv', 'uv_disinfection', 20, 10),
+    mkUnit('outf', 'effluent_outfall', 24, 10),
+    mkUnit('thk', 'sludge_thickener', 30, 12),
+    mkUnit('dig', 'anaerobic_digester', 36, 0),
+    mkUnit('pv', 'solar_array', 40, 0),
+    mkUnit('wt', 'wind_turbine', 44, 0)
+  ];
+  const pipes: PipeConnection[] = [
+    mkPipe('k_a', 'inl', 'outlet', 'scr', 'inlet'),
+    mkPipe('k_b', 'scr', 'outlet', 'grt', 'inlet'),
+    mkPipe('k_c', 'grt', 'outlet', 'pri', 'inlet'),
+    mkPipe('k_d', 'pri', 'outlet', 'cas', 'inlet'),
+    mkPipe('k_e', 'cas', 'outlet', 'clr', 'inlet'),
+    mkPipe('k_f', 'clr', 'outlet', 'uv', 'inlet'),
+    mkPipe('k_g', 'uv', 'outlet', 'outf', 'inlet'),
+    // Sludge chain: clarifier WAS → thickener → digester
+    mkPipe('k_h', 'clr', 'was_outlet', 'thk', 'inlet', 'sludge'),
+    mkPipe('k_i', 'thk', 'sludge_outlet', 'dig', 'inlet', 'sludge'),
+    // RAS return to CAS
+    mkPipe('k_r', 'clr', 'sludge_outlet', 'cas', 'ras_inlet', 'ras')
+  ];
+
+  const res = SimulationEngine.stepSimulation(
+    units, pipes,
+    inf,
+    gs.currentLevel.standards,
+    gs.financials,
+    gs.currentLevel.tariffPerM3,
+    0.15, 45,
+    { daylight: 1, wind: 1 }
+  ) as any;
+
+  const digU = res.updatedUnits?.find((u: any) => u.instanceId === 'dig') ?? units.find(u => u.instanceId === 'dig');
+  const gen = res.overallStats?.totalGreenGenerationKw ?? 0;
+  const imp = res.overallStats?.gridImportKw ?? 0;
+  const digGen = digU?.lastPowerKwActual ?? 0; // negative = generation
+  assert(gen > 0, `K. biogas + renewables generate: ${gen.toFixed(1)} kW green`);
+  assert(digGen <= -0.01, `K+. digester CHP produces real power: ${digGen.toFixed(1)} kW (negative=gen)`);
+  assert(imp < (digGen < 0 ? Math.abs(digGen) : gen), `K++. grid import (${imp.toFixed(1)}) < green generation — self-consumption is real`);
+}
+
+// ── Test L: RO mass conservation — permeate + brine = feed ───────────────────
+{
+  const ro = mkUnit('ro', 'reverse_osmosis', 0, 0);
+  const feed = { ...emptyW(), flowRate: 10000, bod: 20, cod: 50, tss: 5, tn: 12, tp: 3, pathogens: 1e3 };
+  const r = calculateUnitProcess(ro, feed);
+  const permQ = r.effluent.flowRate;
+  const brineQ = r.sludge?.flowRate ?? 0;
+  const sum = permQ + brineQ;
+  assert(Math.abs(sum - 10000) < 500, `L. RO: perm ${permQ.toFixed(0)} + brine ${brineQ.toFixed(0)} = ${sum.toFixed(0)} ≈ 10000 m³/d`);
+  // Brine must carry MORE contaminants than feed (concentrated reject)
+  assert(r.sludge!.bod > feed.bod, `L+. RO brine concentrates BOD: ${r.sludge!.bod.toFixed(1)} > ${feed.bod}`);
+  // Permeate must be cleaner
+  assert(r.effluent.bod < feed.bod * 0.2, `L++. RO permeate is clean: BOD ${r.effluent.bod.toFixed(2)} << ${feed.bod}`);
+}
+
+// ── Test M: sludge thickener dry-solids conservation ──────────────────────────
+{
+  const thick = mkUnit('thk', 'sludge_thickener', 0, 0);
+  const feed = { ...emptyW(), flowRate: 1000, tss: 10000 }; // 1000 m³/d @ 10,000 mg/L
+  const r = calculateUnitProcess(thick, feed);
+  const solidsIn = 1000 * 10000 / 1000;       // kg/d = 10,000 kg/d
+  const solidsThick = (r.sludge?.flowRate ?? 0) * (r.sludge?.tss ?? 0) / 1000;
+  const solidsSup = r.effluent.flowRate * r.effluent.tss / 1000;
+  const totalOut = solidsThick + solidsSup;
+  assert(Math.abs(totalOut - solidsIn) / solidsIn < 0.02,
+    `M. thickener solids balance: in=${solidsIn.toFixed(0)} kg/d, out=${totalOut.toFixed(0)} kg/d (thick=${solidsThick.toFixed(0)}, sup=${solidsSup.toFixed(0)})`);
+  assert(r.sludge!.tss > feed.tss, `M+. thickener concentrates: ${r.sludge!.tss.toFixed(0)} > ${feed.tss}`);
+}
+
+// ── Test N: clarifier WAS stream is distinct from RAS ─────────────────────────
+{
+  const clar = mkUnit('clar', 'secondary_clarifier', 0, 0);
+  clar.customParams.rasRecycleRatioPercent = 75;
+  clar.customParams.wasPurgeRateM3d = 50;
+  const q = { ...emptyW(), flowRate: 17500, tss: 3200 }; // Qforward*(1+r)
+  const r = calculateUnitProcess(clar, q);
+  // RAS → sludge_outlet ; WAS → was_outlet (when defined) — both present and distinct
+  const ras = r.portStreams?.['sludge_outlet'];
+  const was = r.portStreams?.['was_outlet'];
+  assert(!!ras && !!was, `N. clarifier emits distinct RAS (${ras?.flowRate}) and WAS (${was?.flowRate}) streams`);
+  if (ras && was) {
+    assert(ras.flowRate > 5000, `N+. RAS flow ${ras.flowRate.toFixed(0)} m³/d (>5000 = 75% of forward)`);
+    assert(was.flowRate > 0 && was.flowRate <= 50, `N++. WAS purge ${was.flowRate.toFixed(0)} m³/d (capped, distinct path)`);
+  }
+}
+
+// ── Test O: A2O internal recycle is internal (no external gas/LC outlet) ──────
+{
+  const a2o = mkUnit('a2o', 'a2o_bardenpho', 0, 0);
+  a2o.customParams = { internalRecyclePercent: 400, aerobicDo: 4.5, carbonDosingRateMgL: 40 };
+  const def = UNIT_DEFINITIONS.a2o_bardenpho;
+  const gasPorts = def.ports.filter(p => p.type.includes('gas'));
+  const recyclePorts = def.ports.filter(p => p.type.includes('recycle'));
+  assert(recyclePorts.length === 0, `O. A2O has no external recycle_outlet (was flow-creating bug): ${recyclePorts.map(p=>p.id).join(',')}`);
+  assert(gasPorts.length === 0, `O+. A2O emits no gas (process gas is internal)`, gasPorts);
+  const q = { ...emptyW(), flowRate: 12000, bod: 260, cod: 520, tss: 290, tn: 58, nh4: 45, tp: 7.8, pathogens: 1e6, turbidity: 180 };
+  const r = calculateUnitProcess(a2o, q);
+  assert(r.effluent.flowRate === 12000, `O++. A2O forward flow preserved: ${r.effluent.flowRate} (not 16000 or 40000)`);
+  assert(r.effluent.tn < 12, `O+++. A2O achieves low TN: ${r.effluent.tn.toFixed(2)} mg/L — internal IR enables ANAMMOX/DENIT`
+);
+}
+
 console.log(failures === 0 ? '\nALL TESTS PASSED' : `\n${failures} TEST(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);

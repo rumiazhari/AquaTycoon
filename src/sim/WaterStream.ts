@@ -44,7 +44,9 @@ export function createInfluentWater(params: Partial<WaterQuality> = {}): WaterQu
 }
 
 /**
- * Mass balance mixing of multiple water streams
+ * Mass balance mixing of multiple water streams.
+ * pH is mixed in hydrogen-ion concentration space ([H+] = 10^-pH), then
+ * converted back — never arithmetic-averaged (Task: pH stream mixing).
  */
 export function mixWaterStreams(streams: { quality: WaterQuality; flow: number }[]): WaterQuality {
   const activeStreams = streams.filter(s => s.flow > 0.001);
@@ -62,7 +64,7 @@ export function mixWaterStreams(streams: { quality: WaterQuality; flow: number }
   let tpMass = 0;
   let pathogenCount = 0;
   let doMass = 0;
-  let phSum = 0;
+  let hIonSum = 0; // flow-weighted [H+] in mol/L
   let tempSum = 0;
   let toxicSum = 0;
   let turbSum = 0;
@@ -79,7 +81,7 @@ export function mixWaterStreams(streams: { quality: WaterQuality; flow: number }
     tpMass += w.tp * q;
     pathogenCount += w.pathogens * q;
     doMass += w.do * q;
-    phSum += w.ph * q;
+    hIonSum += Math.pow(10, -clampPh(w.ph)) * q;
     tempSum += w.temp * q;
     toxicSum += w.toxicIndex * q;
     turbSum += w.turbidity * q;
@@ -96,11 +98,17 @@ export function mixWaterStreams(streams: { quality: WaterQuality; flow: number }
     tp: Math.max(0, tpMass / totalFlow),
     pathogens: Math.max(0, pathogenCount / totalFlow),
     do: Math.max(0, doMass / totalFlow),
-    ph: phSum / totalFlow,
+    ph: -Math.log10(Math.max(1e-14, hIonSum / totalFlow)), // back-transform from [H+]
     temp: tempSum / totalFlow,
     toxicIndex: Math.max(0, toxicSum / totalFlow),
     turbidity: Math.max(0, turbSum / totalFlow)
   };
+}
+
+/** Keeps a pH value inside the physically meaningful range before exponentiation. */
+function clampPh(ph: number): number {
+  if (!Number.isFinite(ph)) return 7;
+  return Math.min(14, Math.max(0, ph));
 }
 
 /**

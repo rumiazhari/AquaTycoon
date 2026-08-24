@@ -4,6 +4,7 @@ import {
 } from '../types/simulation';
 import { calculateUnitProcess, EnvironmentFactors, ProcessResult } from './UnitProcessModels';
 import { cloneWater, emptyWater, mixWaterStreams } from './WaterStream';
+import { evaluateTechEffects } from './TechEffects';
 
 export interface SimulationStepResult {
   updatedUnits: PlacedUnit[];
@@ -72,7 +73,8 @@ export class SimulationEngine {
     tariffPerM3: number,
     powerCostPerKwh: number = 0.15,
     sludgeDisposalCostPerTon: number = 45,
-    env?: EnvironmentFactors
+    env?: EnvironmentFactors,
+    unlockedTechIds?: Iterable<string>
   ): SimulationStepResult {
     const unitMap = new Map<string, PlacedUnit>();
     units.forEach(u => unitMap.set(u.instanceId, { ...u }));
@@ -103,6 +105,9 @@ export class SimulationEngine {
     }
     // On subsequent ticks the previous converged state is retained as a warm
     // start — the relaxation then needs only 1-2 passes per steady tick.
+
+    // Centralized technology-effects evaluation (Task: passive bonuses must be real)
+    const techEffects = unlockedTechIds ? evaluateTechEffects(unlockedTechIds) : null;
 
     // 2. Bounded convergence-aware relaxation solver
     const MAX_ITERATIONS = 24;         // hard bound (was a fixed 4 passes)
@@ -218,6 +223,12 @@ export class SimulationEngine {
 
         // Run unit process calculation
         const result = calculateUnitProcess(targetUnit, mergedInlet, forwardInflow, env);
+
+        // Technology passive bonuses: the digester's "+20% energy recovery"
+        // tech boosts CHP electrical output (negative powerKw = generation).
+        if (techEffects && targetUnit.typeId === 'anaerobic_digester' && result.powerKw < 0) {
+          result.powerKw *= techEffects.energyRecoveryMultiplier;
+        }
         unitResults.set(unit.instanceId, result);
 
         // Convergence check against this unit's previous inlet state
@@ -339,6 +350,10 @@ export class SimulationEngine {
       : 0;
 
     // Power & Gas aggregation
+    //   generation  = sum of all producer units (negative demand convention)
+    //   selfConsumed = min(generation, demand)      — offsets on-site load
+    //   gridImport   = max(demand − generation, 0)  — what we PAY for
+    //   export       = max(generation − demand, 0)  — only surplus earns revenue
     let totalPowerDemandKw = 0;
     let totalGreenGenerationKw = 0;
     let totalUnitOpex = 0;
@@ -353,32 +368,47 @@ export class SimulationEngine {
       totalUnitOpex += (u.lastOpexActual || 0);
     }
 
-    const netPowerKw = Math.max(0, totalPowerDemandKw - totalGreenGenerationKw);
+    const selfConsumedKw = Math.min(totalGreenGenerationKw, totalPowerDemandKw);
+    const gridImportKw = Math.max(0, totalPowerDemandKw - totalGreenGenerationKw);
+    const exportedKw = Math.max(0, totalGreenGenerationKw - totalPowerDemandKw);
+    const netPowerKw = gridImportKw; // grid cost applies to imports only
     const energySelfSufficiency = totalPowerDemandKw > 0
-      ? Math.min(100, (totalGreenGenerationKw / totalPowerDemandKw) * 100)
+      ? Math.min(100, (selfConsumedKw / totalPowerDemandKw) * 100)
       : (totalGreenGenerationKw > 0 ? 100 : 0);
 
     // 5. Compliance Check against Environmental Standards
+    // Every applicable permit criterion is evaluated and counted; the score
+    // denominator derives from the criteria actually checked (never hardcoded).
     const violations: string[] = [];
+    let criteriaChecked = 0;
     if (hasFlow) {
-      if (eff.bod > standards.maxBod) violations.push(`BOD (${eff.bod.toFixed(1)} > ${standards.maxBod} mg/L)`);
-      if (eff.cod > standards.maxCod) violations.push(`COD (${eff.cod.toFixed(1)} > ${standards.maxCod} mg/L)`);
-      if (eff.tss > standards.maxTss) violations.push(`TSS (${eff.tss.toFixed(1)} > ${standards.maxTss} mg/L)`);
-      if (eff.tn > standards.maxTn) violations.push(`TN (${eff.tn.toFixed(1)} > ${standards.maxTn} mg/L)`);
-      if (eff.tp > standards.maxTp) violations.push(`TP (${eff.tp.toFixed(2)} > ${standards.maxTp} mg/L)`);
-      if (eff.pathogens > standards.maxPathogens) violations.push(`Pathogens (${eff.pathogens.toFixed(0)} > ${standards.maxPathogens} CFU)`);
-      if (eff.do < standards.minDo) violations.push(`DO (${eff.do.toFixed(1)} < ${standards.minDo} mg/L)`);
+      const check = (fails: boolean, msg: string) => {
+        criteriaChecked++;
+        if (fails) violations.push(msg);
+      };
+      check(eff.bod > standards.maxBod, `BOD (${eff.bod.toFixed(1)} > ${standards.maxBod} mg/L)`);
+      check(eff.cod > standards.maxCod, `COD (${eff.cod.toFixed(1)} > ${standards.maxCod} mg/L)`);
+      check(eff.tss > standards.maxTss, `TSS (${eff.tss.toFixed(1)} > ${standards.maxTss} mg/L)`);
+      check(eff.tn > standards.maxTn, `TN (${eff.tn.toFixed(1)} > ${standards.maxTn} mg/L)`);
+      check(eff.nh4 > standards.maxNh4, `Ammonia (${eff.nh4.toFixed(1)} > ${standards.maxNh4} mg/L NH4-N)`);
+      check(eff.tp > standards.maxTp, `TP (${eff.tp.toFixed(2)} > ${standards.maxTp} mg/L)`);
+      check(eff.pathogens > standards.maxPathogens, `Pathogens (${eff.pathogens.toFixed(0)} > ${standards.maxPathogens} CFU)`);
+      check(eff.do < standards.minDo, `DO (${eff.do.toFixed(1)} < ${standards.minDo} mg/L)`);
+      check(eff.ph < standards.minPh, `pH too low (${eff.ph.toFixed(2)} < ${standards.minPh})`);
+      check(eff.ph > standards.maxPh, `pH too high (${eff.ph.toFixed(2)} > ${standards.maxPh})`);
+      check(eff.turbidity > standards.maxTurbidity, `Turbidity (${eff.turbidity.toFixed(1)} > ${standards.maxTurbidity} NTU)`);
     } else {
       violations.push('No treated effluent flow reaching outfall!');
     }
 
-    const maxPoints = 7;
+    const maxPoints = Math.max(1, criteriaChecked); // derived, never hardcoded
     const complianceScore = hasFlow ? Math.max(0, Math.round(((maxPoints - violations.length) / maxPoints) * 100)) : 0;
 
     // 6. Economic Calculations (Per Day)
     const dailyTreatedM3 = eff.flowRate;
     const dailyTariffRevenue = complianceScore >= 80 ? (dailyTreatedM3 * tariffPerM3) : (dailyTreatedM3 * tariffPerM3 * 0.4);
-    const dailyBiogasElectricityRevenue = totalGreenGenerationKw * 24 * powerCostPerKwh;
+    const dailyExportRevenue = exportedKw * 24 * powerCostPerKwh; // ONLY surplus export is credited
+    const dailyBiogasElectricityRevenue = dailyExportRevenue;
     const dailyPowerCost = netPowerKw * 24 * powerCostPerKwh;
     const dailyChemicalCost = totalUnitOpex * 0.4;
     const dailySludgeCost = (dailyTreatedM3 * 0.001) * sludgeDisposalCostPerTon;

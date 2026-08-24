@@ -1,5 +1,6 @@
 import { GasStream, PlacedUnit, UnitDefinition, UnitTypeId, WaterQuality } from '../types/simulation';
 import { cloneWater, emptyWater } from './WaterStream';
+import { loadKgDay } from './MassBalance';
 
 export interface ProcessResult {
   /** Main treated liquid effluent ('outlet' port). Kept for UI compatibility. */
@@ -45,11 +46,25 @@ function buildPortStreams(
     if (streams[port.id]) continue;
     if (port.type === 'inlet' || port.type === 'ras_inlet') continue;
     if (port.type === 'gas_outlet') continue; // gas handled separately in gasStreams
-    if (port.type === 'outlet') streams[port.id] = cloneWater(effluent);
-    else if (port.type === 'sludge_outlet') { if (sludge) streams[port.id] = cloneWater(sludge); }
+    if (port.type === 'outlet') streams[port.id] = sanitizeStream(cloneWater(effluent));
+    else if (port.type === 'sludge_outlet') { if (sludge) streams[port.id] = sanitizeStream(cloneWater(sludge)); }
     else if (port.type === 'recycle_outlet') { /* only when explicitly produced */ }
   }
   return streams;
+}
+
+/** Sanitizes a WaterQuality stream in-place: clamps NaN/Infinity/negative. */
+function sanitizeStream(w: WaterQuality): WaterQuality {
+  const s = (v: number) => Number.isFinite(v) ? Math.max(0, v) : 0;
+  return {
+    ...w,
+    flowRate: s(w.flowRate),
+    bod: s(w.bod), cod: s(w.cod), tss: s(w.tss), tn: s(w.tn), nh4: s(w.nh4),
+    no3: s(w.no3), tp: s(w.tp), pathogens: s(w.pathogens), do: s(w.do),
+    ph: Number.isFinite(w.ph) ? Math.min(14, Math.max(2, w.ph)) : 7,
+    temp: Number.isFinite(w.temp) ? Math.max(0, w.temp) : 20,
+    toxicIndex: s(w.toxicIndex), turbidity: s(w.turbidity)
+  };
 }
 
 /**
@@ -262,8 +277,7 @@ export const UNIT_DEFINITIONS: Record<UnitTypeId, UnitDefinition> = {
     ports: [
       { id: 'inlet', name: 'Influent', type: 'inlet', relativePosition: [-2.5, 0.5, 0] },
       { id: 'ras_inlet', name: 'RAS Return', type: 'ras_inlet', relativePosition: [-2.5, 0.5, 1.5] },
-      { id: 'outlet', name: 'Nitrified Mixed Liquor', type: 'outlet', relativePosition: [2.5, 0.5, 0] },
-      { id: 'recycle_outlet', name: 'Internal Nitrate Recycle', type: 'recycle_outlet', relativePosition: [0, 0.5, 1.5] }
+      { id: 'outlet', name: 'Nitrified Mixed Liquor', type: 'outlet', relativePosition: [2.5, 0.5, 0] }
     ],
     defaultParams: { internalRecyclePercent: 200, aerobicDo: 2.5, carbonDosingRateMgL: 0 },
     paramDefinitions: [
@@ -865,7 +879,12 @@ export function calculateUnitProcess(
     // -----------------------------------------------------
     case 'primary_clarifier_circular':
     case 'primary_clarifier_rect': {
-      // Surface Overflow Rate (SOR) = Q / Area
+      // ── Load-first solids balance ───────────────────────────────────────
+      // Removal fractions are decided from operating data, then ALL removed
+      // loads are computed from the INCOMING load before the effluent is
+      // mutated:  removedLoad = Qin·Cin − Qeff·Ceff.
+      // Sludge concentration then derives from removed mass ÷ sludge flow —
+      // solids can be neither created nor destroyed by the settling model.
       const area = (def.footprint[0] * 6) * (def.footprint[1] * 6); // rough m2
       const sor = inlet.flowRate / Math.max(10, area); // m/d
       // Metcalf & Eddy empirical primary settling curve: R_tss = t / (a + b*t)
@@ -875,22 +894,36 @@ export function calculateUnitProcess(
       if (sor > 60) tssRemoval *= 0.8; // SOR overload penalty
 
       const bodRemoval = tssRemoval * 0.55; // particulate BOD settling
-      const removedTss = eff.tss * tssRemoval;
-      const removedBod = eff.bod * bodRemoval;
+      const qIn = Math.max(0, inlet.flowRate);
 
-      eff.tss -= removedTss;
-      eff.bod -= removedBod;
-      eff.cod -= removedBod * 1.5;
+      // Incoming loads BEFORE any effluent mutation
+      const inTssKg = loadKgDay(qIn, inlet.tss);
+      const inBodKg = loadKgDay(qIn, inlet.bod);
+      const inCodKg = loadKgDay(qIn, inlet.cod);
+      const inTpKg = loadKgDay(qIn, inlet.tp);
+
+      // Removed masses settle into the sludge blanket
+      const removedTssKg = inTssKg * tssRemoval;
+      const removedBodKg = inBodKg * bodRemoval;
+      const removedCodKg = Math.min(inCodKg, removedBodKg * 1.5);
+      const removedTpKg = inTpKg * 0.10; // particulate P in settling solids
+
+      // Effluent keeps everything that did not settle
+      eff.tss = Math.max(0, inlet.tss * (1 - tssRemoval));
+      eff.bod = Math.max(1, inlet.bod * (1 - bodRemoval));
+      eff.cod = Math.max(10, inlet.cod - (removedCodKg * 1000) / Math.max(1, qIn));
       eff.turbidity *= (1 - tssRemoval * 0.7);
-      eff.tp *= 0.90; // particulate P in settling solids
+      eff.tp = Math.max(0.05, (inTpKg - removedTpKg) * 1000 / Math.max(1, qIn));
 
-      // Primary sludge output (mass-conserving: effluent loses the drawn volume)
+      // Primary sludge output: concentration DERIVED from removed mass
       const sludgeFlow = Math.max(2, inlet.flowRate * 0.015);
       sludge = {
         ...cloneWater(inlet),
         flowRate: sludgeFlow,
-        tss: (removedTss * inlet.flowRate) / sludgeFlow,
-        bod: (removedBod * inlet.flowRate) / sludgeFlow
+        tss: (removedTssKg * 1000) / sludgeFlow,
+        bod: (removedBodKg * 1000) / sludgeFlow,
+        cod: (removedCodKg * 1000) / sludgeFlow,
+        tp: (removedTpKg * 1000) / sludgeFlow
       };
       eff.flowRate = Math.max(0, inlet.flowRate - sludgeFlow);
       sludgeBlanketHeight = 0.35;
@@ -903,20 +936,30 @@ export function calculateUnitProcess(
       const pAir = p.airPressureBar || 5.0;
       const pressureFactor = pAir / 5.0;
       const fogRemoval = Math.min(0.85, 0.70 * pressureFactor);
-      eff.tss *= (1 - fogRemoval);
+
+      // Load-first balance (same discipline as the primary clarifier): the
+      // float sludge concentration derives from the mass removed from the
+      // INCOMING stream — never from the already-reduced effluent.
+      const qIn = Math.max(0, inlet.flowRate);
+      const inTssKg = loadKgDay(qIn, inlet.tss);
+      const inBodKg = loadKgDay(qIn, inlet.bod);
+
+      const removedTssKg = inTssKg * fogRemoval;
+
+      eff.tss = Math.max(0, inlet.tss * (1 - fogRemoval));
       eff.turbidity *= 0.4;
       eff.bod *= 0.75;
       eff.cod *= 0.70;
 
-      // Float sludge / scum stream (mass-conserving split)
+      // Float sludge / scum stream: TSS derived from actually-removed solids
       const floatFlow = Math.max(1, inlet.flowRate * 0.02);
       sludge = {
         ...cloneWater(inlet),
         flowRate: floatFlow,
-        tss: (eff.tss * fogRemoval * inlet.flowRate) / floatFlow,
-        bod: inlet.bod * 0.25
+        tss: (removedTssKg * 1000) / floatFlow,
+        bod: Math.max(0, (inBodKg * 0.25 * 1000) / floatFlow) // 25% of incoming BOD floats
       };
-      eff.flowRate = Math.max(0, inlet.flowRate - floatFlow);
+      eff.flowRate = Math.max(0, qIn - floatFlow);
 
       efficiency = 92;
       powerKw = 15.0 * pressureFactor;
@@ -943,14 +986,19 @@ export function calculateUnitProcess(
       const nitrifiedNh4 = eff.nh4 * nitrifRate;
       eff.nh4 -= nitrifiedNh4;
 
-      // Conventional CAS still removes nitrogen: simultaneous denitrification
-      // inside the flocs plus N assimilated into waste biomass (~20%).
-      const orgN = Math.max(1.0, (inlet.tn - inlet.nh4 - inlet.no3) * 0.25);
-      eff.no3 = (eff.no3 + nitrifiedNh4) * 0.50;
-      eff.tn = eff.nh4 + eff.no3 + orgN;
-
       // Biomass assimilation strips ~25% of phosphorus into the waste sludge
       eff.tp *= 0.75;
+
+      // NITROGEN BOOKKEEPING: nitrification is a CONVERSION (NH4-N removed
+      // joins the NO3 pool); only simultaneous denitrification inside the
+      // flocs (→N₂) and biomass assimilation (~20% of converted N) actually
+      // leave the liquid phase. TN stays derived from components so it can
+      // never contradict them.
+      const casAssimilatedN = Math.max(0, nitrifiedNh4) * 0.20;
+      const casDenitrified = Math.max(0, nitrifiedNh4) * 0.30; // floc denitrification → N₂
+      eff.no3 = Math.max(0, eff.no3 + nitrifiedNh4 - casAssimilatedN - casDenitrified);
+      const casOrgN = Math.max(1.0, (inlet.tn - inlet.nh4 - inlet.no3) * 0.25);
+      eff.tn = eff.nh4 + eff.no3 + casOrgN;
 
       // Biological pathogen removal: adsorption to flocs + protozoan predation
       // give conventional activated sludge ~1.5–2 log indicator-bacteria removal
@@ -970,7 +1018,14 @@ export function calculateUnitProcess(
 
     // -----------------------------------------------------
     case 'a2o_bardenpho': {
-      const irRatio = (p.internalRecyclePercent || 200) / 100;
+      // ── Composite reactor model ─────────────────────────────────────────
+      // The A2O/Bardenpho basin is ONE unit process; the aerobic→anoxic
+      // internal nitrate recycle is INTERNAL hydraulic circulation driven by
+      // the `internalRecyclePercent` operating parameter. It changes reaction
+      // kinetics (more nitrate pumped back to the anoxic zone → more
+      // denitrification) but NEVER net plant throughput: the external outlet
+      // passes exactly the mixed-liquor flow it received (main feed + RAS).
+      const irRatio = Math.max(0, (p.internalRecyclePercent ?? 200) / 100);
       const aeroDo = p.aerobicDo || 2.5;
       const carbonDose = p.carbonDosingRateMgL || 0;
       dissolvedOxygen = aeroDo;
@@ -979,20 +1034,26 @@ export function calculateUnitProcess(
       eff.bod = Math.max(4, eff.bod * 0.04);
       eff.cod = Math.max(18, eff.cod * 0.08);
 
-      // High Nitrification in Aerobic zone (NH4 -> NO3)
+      // NITRIFICATION is a conversion: NH4-N removed appears as NO3-N.
       const nitrifRate = Math.min(0.95, 0.75 + 0.1 * aeroDo);
       const nitrifiedNh4 = eff.nh4 * nitrifRate;
       eff.nh4 -= nitrifiedNh4;
 
-      // High Denitrification in Anoxic zone (NO3 -> N2 gas)
-      // Denitrification efficiency driven by Internal Recycle IR and available Carbon
-      // BUG FIX: raised ceiling & carbon credit so strict TN < 5 mg/L permits are
-      // actually reachable at max internal recycle + methanol dosing.
+      // DENITRIFICATION converts NO3 → N2 gas which legitimately leaves the
+      // liquid phase. Efficiency is driven by how much nitrate-laden liquor
+      // the internal recycle returns to the anoxic zone:
+      //   fraction of influent TKN cycled = IR/(1+IR)
+      // plus methanol-driven denitrification of the main-line nitrate.
       const deNitrifPotential = (irRatio / (1 + irRatio)) + (carbonDose / 40) * 0.35;
       const deNitrifEfficiency = Math.min(0.98, deNitrifPotential);
-      const nitrateTotal = eff.no3 + nitrifiedNh4;
-      eff.no3 = nitrateTotal * (1 - deNitrifEfficiency);
-      eff.tn = eff.nh4 + eff.no3 + 1.2; // residual organic N
+      const nitrateBeforeDenit = eff.no3 + nitrifiedNh4; // converted NH4 joins NO3 pool
+      const denitrifiedN2 = nitrateBeforeDenit * deNitrifEfficiency; // kg N → N2 gas
+      eff.no3 = Math.max(0, nitrateBeforeDenit - denitrifiedN2);
+
+      // Biomass assimilation + residual particulate organic N (~1.2 mg/L).
+      const orgN = 1.2;
+      // TN bookkeeping is derived FROM components — never assigned independently.
+      eff.tn = eff.nh4 + eff.no3 + orgN;
 
       // Enhanced Biological Phosphorus Removal (EBPR)
       const pRemoval = Math.min(0.90, 0.75 + (carbonDose > 5 ? 0.12 : 0));
@@ -1000,15 +1061,11 @@ export function calculateUnitProcess(
 
       eff.do = aeroDo;
       opexDay = def.baseOpexPerDay + (carbonDose * inlet.flowRate * 0.001 * 0.6); // Carbon chemical cost
-      powerKw = def.powerConsumptionKw * (0.8 + 0.2 * irRatio);
+      powerKw = def.powerConsumptionKw * (0.8 + 0.2 * irRatio); // internal-recycle pumping energy
       efficiency = 97;
 
-      // Internal Nitrate Recycle: an explicit, separate liquid stream on its own
-      // port — never to be confused with the nitrified mixed-liquor outlet.
-      const recyclePort = def.ports.find(pp => pp.type === 'recycle_outlet');
-      if (recyclePort) {
-        portStreams[recyclePort.id] = { ...cloneWater(eff), flowRate: inlet.flowRate * irRatio };
-      }
+      // NOTE: no external recycle stream exists. Internal circulation never
+      // leaves this unit, so it cannot create or move net plant flow.
       break;
     }
 
@@ -1021,8 +1078,18 @@ export function calculateUnitProcess(
 
       eff.bod *= (1 - bodRemoval);
       eff.cod *= (1 - bodRemoval * 0.85);
-      eff.nh4 *= 0.35; // Biofilm nitrification
-      eff.no3 += eff.nh4 * 0.6;
+
+      // NITRIFICATION BOOKKEEPING: compute NH4 after first, then derive the
+      // nitrified amount as before−after; NO3 gains exactly that nitrogen.
+      // (Previously NO3 was derived from the ALREADY-reduced NH4.)
+      const nh4After = eff.nh4 * 0.35; // biofilm nitrification leaves 35%
+      const nitrified = Math.max(0, eff.nh4 - nh4After);
+      eff.nh4 = nh4After;
+      eff.no3 += nitrified;
+      // Component-derived TN (organic N passes mostly unconverted through MBBR)
+      const orgNPass = Math.max(1.0, (inlet.tn - inlet.nh4 - inlet.no3) * 0.8);
+      eff.tn = eff.nh4 + eff.no3 + orgNPass;
+
       eff.do = 3.0;
       efficiency = 95;
       break;
@@ -1054,13 +1121,29 @@ export function calculateUnitProcess(
         eff.do = 2.5;
       }
 
-      const wasFlow = Math.max(10, inlet.flowRate * 0.02);
+      // ── WAS from solids retention, not arbitrary numbers ────────────────
+      // The membrane retains essentially ALL incoming biomass; the WAS pump
+      // is what actually removes it. Removed solids mass therefore equals
+      // the incoming solids load (permeate carries ~0), so:
+      //   Qwas × Xwas = Qin·Xin − Qperm·Xperm
+      // with Xwas at typical MBR sludge density (10 g/L).
+      const qInMbr = Math.max(0, inlet.flowRate);
+      const inSolidsKg = loadKgDay(qInMbr, inlet.tss);
+      const permSolidsKg = loadKgDay(eff.flowRate > 0 ? eff.flowRate : qInMbr * 0.98, eff.tss);
+      const wastedSolidsKg = Math.max(0, inSolidsKg - (eff.flowRate > 0 ? permSolidsKg : 0));
+      const mbrWasTss = 10000; // mg/L — typical MBR waste sludge density
+      const wasFlow = Math.max(2, (wastedSolidsKg * 1000) / mbrWasTss);
       sludge = {
         ...cloneWater(inlet),
         flowRate: wasFlow,
-        tss: 10000 // 10,000 mg/L MBR sludge
+        tss: mbrWasTss,
+        bod: Math.max(5, inlet.bod * 0.25),
+        nh4: inlet.nh4 * 0.9 // biomass-bound liquor
       };
-      eff.flowRate = Math.max(0, inlet.flowRate - wasFlow); // mass-conserving WAS draw
+      if (eff.flowRate <= 0) {
+        // No permeate produced: nothing leaves via membranes; keep hydraulics sane.
+        eff.flowRate = Math.max(0, qInMbr - wasFlow);
+      }
       if (!fouled) efficiency = 99;
       break;
     }
@@ -1110,9 +1193,20 @@ export function calculateUnitProcess(
       const qWas = Math.min(wasTarget, Math.max(0, qClar - qForward));
       eff.flowRate = Math.max(0, qForward - qWas); // net plant flow minus real wasting
 
-      // Concentrations: both sludge streams draw from the same thickened
-      // blanket (≈6,000–12,000 mg/L, denser with higher captured load).
-      const blanketTss = Math.min(14000, Math.max(4500, inlet.tss * 1.9));
+      // ── Defensible solids balance ───────────────────────────────────────
+      //   Qfeed·Xfeed ≈ Qeff·Xeff + Qras·Xras + Qwas·Xwas
+      // Effluent carries its escape solids; ALL remaining captured solids go
+      // to the underflow, shared between RAS and WAS at blanket density so
+      // the balance closes by construction (no solids created/destroyed).
+      const effluentSolidsKg = loadKgDay(eff.flowRate, escapeTss);
+      const underflowFlow = Math.max(0, qRas + qWas);
+      const underflowSolidsKg = Math.max(
+        0,
+        loadKgDay(qClar, inlet.tss) - effluentSolidsKg
+      );
+      const blanketTss = underflowFlow > 0.01 && underflowSolidsKg > 0
+        ? Math.min(14000, Math.max(4000, (underflowSolidsKg * 1000) / underflowFlow))
+        : 0;
       const rasStream = { ...cloneWater(inlet), flowRate: qRas, tss: blanketTss };
       const wasStream = {
         ...cloneWater(inlet),
@@ -1225,54 +1319,99 @@ export function calculateUnitProcess(
 
     // -----------------------------------------------------
     case 'reverse_osmosis': {
-      const recovery = (p.recoveryPercent || 75) / 100;
+      // ── RO is a SEPARATION, not destruction ─────────────────────────────
+      // For every conserved constituent:
+      //   Qfeed·Cfeed = Qperm·Cperm + Qrej·Crej
+      // Permeate concentrations come from documented salt/contaminant
+      // passage rates; the REJECT concentration is derived from the mass
+      // left over. No negative or infinite concentrations are possible
+      // because reject flow is strictly positive and mass is clamped ≥ 0.
+      const recovery = Math.min(0.95, Math.max(0.1, (p.recoveryPercent || 75) / 100));
+      const qIn = Math.max(0, inlet.flowRate);
+
       // MEMBRANE SCALING/FOULING (piping consequence): RO spirals require
-      // filtered, low-solids feed (SDI < 3). Piping unpolished water in
-      // scales the membranes — rejection and recovery collapse.
+      // filtered, low-solids feed (SDI < 3). Unpolished feed collapses both
+      // rejection (higher passage) and effective recovery.
       const fouled = inlet.tss > 2 || inlet.turbidity > 3;
+      const passageMult = fouled ? 8 : 1;          // membranes leak when scaled
+      const effRecovery = fouled ? Math.max(0.35, recovery * 0.6) : recovery;
+
+      const permFlow = qIn * effRecovery;
+      const rejFlow = Math.max(0.001 * Math.max(1, qIn), qIn - permFlow);
+
+      // Constituent passage fractions to the permeate (documented surrogates)
+      const passages = {
+        bod: 0.005 * passageMult,
+        cod: 0.010 * passageMult,
+        tss: fouled ? 0.30 : 0.0005,   // solids break through when scaled
+        tn: 0.10 * passageMult,
+        nh4: 0.05 * passageMult,
+        no3: 0.15 * passageMult,       // nitrate passes RO far easier than TSS
+        tp: 0.02 * passageMult,
+        toxic: 0.03 * passageMult
+      };
+
+      // Permeate concentrations from passage × feed concentration
+      const cPerm = {
+        bod: inlet.bod * passages.bod,
+        cod: inlet.cod * passages.cod,
+        tss: inlet.tss * passages.tss,
+        tn: inlet.tn * passages.tn,
+        nh4: inlet.nh4 * passages.nh4,
+        no3: inlet.no3 * passages.no3,
+        tp: inlet.tp * passages.tp
+      };
+      const permToxicIdx = inlet.toxicIndex * passages.toxic;
+
+      // Reject concentration from the REMAINING mass (conservation)
+      const cRejFromPassage = (cFeed: number, cPermVal: number) =>
+        Math.max(0, (qIn * Math.max(0, cFeed) - permFlow * Math.max(0, cPermVal)) / rejFlow);
+
+      const cRej = {
+        bod: cRejFromPassage(inlet.bod, cPerm.bod),
+        cod: cRejFromPassage(inlet.cod, cPerm.cod),
+        tss: cRejFromPassage(inlet.tss, cPerm.tss),
+        tn: cRejFromPassage(inlet.tn, cPerm.tn),
+        nh4: cRejFromPassage(inlet.nh4, cPerm.nh4),
+        no3: cRejFromPassage(inlet.no3, cPerm.no3),
+        tp: cRejFromPassage(inlet.tp, cPerm.tp)
+      };
+      const rejToxicIdx = cRejFromPassage(inlet.toxicIndex, permToxicIdx);
+
+      // Permeate output
+      eff.flowRate = permFlow;
+      eff.bod = Math.min(cPerm.bod, inlet.bod);
+      eff.cod = Math.min(cPerm.cod, inlet.cod);
+      eff.tss = Math.min(cPerm.tss, inlet.tss);
+      eff.turbidity = fouled ? Math.max(1, inlet.turbidity * 0.4) : 0.05;
+      eff.tn = Math.min(cPerm.tn, inlet.tn);
+      eff.nh4 = Math.min(cPerm.nh4, inlet.nh4);
+      eff.no3 = Math.min(cPerm.no3, inlet.no3);
+      eff.tp = Math.min(cPerm.tp, inlet.tp);
+      eff.pathogens = fouled ? inlet.pathogens * 0.01 : 0; // membrane barrier unless scaled
+      eff.toxicIndex = Math.max(0, Math.min(permToxicIdx, inlet.toxicIndex));
+
+      // Brine reject carries ALL the rejected mass
+      sludge = {
+        ...cloneWater(inlet),
+        flowRate: rejFlow,
+        bod: cRej.bod,
+        cod: cRej.cod,
+        tss: cRej.tss,
+        turbidity: Math.max(inlet.turbidity, cRej.tss),
+        tn: cRej.tn,
+        nh4: cRej.nh4,
+        no3: cRej.no3,
+        tp: cRej.tp,
+        pathogens: fouled ? inlet.pathogens * 0.5 : inlet.pathogens, // retained organics hold biofilm
+        toxicIndex: Math.min(rejToxicIdx, 100)
+      };
+
       if (fouled) {
-        const effRecovery = Math.max(0.35, recovery * 0.6);
-        eff.flowRate = inlet.flowRate * effRecovery;
-        eff.bod = Math.max(3, inlet.bod * 0.35);      // partial rejection only
-        eff.cod = Math.max(10, inlet.cod * 0.4);
-        eff.tss = Math.max(0.5, inlet.tss * 0.3);
-        eff.turbidity = Math.max(1, inlet.turbidity * 0.4);
-        eff.tn = Math.max(2, inlet.tn * 0.45);
-        eff.nh4 = Math.max(0.8, inlet.nh4 * 0.45);
-        eff.no3 = Math.max(1.2, inlet.no3 * 0.45);
-        eff.tp = Math.max(0.15, inlet.tp * 0.4);
-        eff.pathogens = inlet.pathogens * 0.01;       // only 2-log
-        eff.toxicIndex = inlet.toxicIndex * 0.5;
         opexDay = def.baseOpexPerDay * 1.6;           // clean-in-place chemicals
         powerKw = def.powerConsumptionKw * 1.25;      // higher pressure drop
-        sludge = {
-          ...cloneWater(inlet),
-          flowRate: inlet.flowRate * (1 - effRecovery),
-          tss: inlet.tss * 3,
-          tp: inlet.tp * 2.5
-        };
         efficiency = 45;
       } else {
-        // High-grade water reuse: 99.5% removal of everything!
-        eff.flowRate = inlet.flowRate * recovery;
-        eff.bod = 0.2;
-        eff.cod = 1.0;
-        eff.tss = 0;
-        eff.turbidity = 0.05;
-        eff.tn = 0.5;
-        eff.nh4 = 0.1;
-        eff.no3 = 0.4;
-        eff.tp = 0.01;
-        eff.pathogens = 0;
-        eff.toxicIndex = 0;
-
-        // Brine reject stream
-        sludge = {
-          ...cloneWater(inlet),
-          flowRate: inlet.flowRate * (1 - recovery),
-          tss: eff.tss * 4,
-          tp: eff.tp * 4
-        };
         efficiency = 100;
       }
       break;
@@ -1294,40 +1433,63 @@ export function calculateUnitProcess(
 
     // -----------------------------------------------------
     case 'sludge_thickener': {
-      // Thickens solids from ~1% to 4% (4x concentration)
-      const thickenedFlow = Math.max(2, inlet.flowRate * 0.25);
+      // ── Dry-solids conservation ─────────────────────────────────────────
+      // Solids in = solids in thickened sludge + solids in supernatant.
+      // Thickened flow is DERIVED from the target concentration:
+      //   Qthick = (capture · Qin·Xin) / XthickTarget
+      const capture = 0.95;                       // 95% of incoming solids captured to underflow
+      const targetThickTss = 40000;               // mg/L ≈ 4% dry solids
+      const qIn = Math.max(0, inlet.flowRate);
+      const inSolidsKg = loadKgDay(qIn, inlet.tss);
+      const thickenedSolidsKg = inSolidsKg * capture;
+      const supSolidsKg = inSolidsKg - thickenedSolidsKg;
+
+      const thickenedFlow = Math.max(0.5, (thickenedSolidsKg * 1000) / targetThickTss);
       sludge = {
         ...cloneWater(inlet),
         flowRate: thickenedFlow,
-        tss: inlet.tss * 3.8
+        tss: thickenedSolidsKg > 0 ? Math.min(targetThickTss, (thickenedSolidsKg * 1000) / thickenedFlow) : 0,
+        bod: inlet.bod * 1.1 // dissolved organics concentrate with the liquor
       };
-      eff.flowRate = inlet.flowRate * 0.75; // Supernatant return
-      eff.tss = inlet.tss * 0.1;
+
+      // Supernatant carries the uncaptured water and residual solids back to the plant head
+      eff.flowRate = Math.max(0, qIn - thickenedFlow);
+      eff.tss = eff.flowRate > 0.01 ? (supSolidsKg * 1000) / eff.flowRate : 0;
       efficiency = 95;
       break;
     }
 
     // -----------------------------------------------------
     case 'anaerobic_digester': {
+      // ── Explicit solids accounting ──────────────────────────────────────
+      //   dry solids in → volatile fraction → VS destroyed → biosolids left
+      //   biogas scales with DESTROYED volatile mass (0.38 Nm³/kg VS).
       const tempC = p.digesterTempC || 37;
       const srt = p.srtDays || 18;
-      // Mesophilic volatile solids destruction
       const tempFactor = (tempC >= 35 && tempC <= 39) ? 1.0 : 0.75;
-      const vsDestruction = Math.min(0.58, (0.40 + 0.01 * (srt - 10)) * tempFactor);
+      const vsDestruction = Math.min(0.58, Math.max(0, (0.40 + 0.01 * (srt - 10)) * tempFactor));
+      const volatileFraction = 0.8; // ~80% of sludge TSS is volatile (biodegradable)
 
-      // Biogas generation (m3/day): ~0.38 m3 biogas per kg COD/TSS destroyed
-      const solidsDestroyedKg = (inlet.flowRate * (inlet.tss * 0.8) * vsDestruction) / 1000;
-      gasProducedM3Day = Math.max(0, solidsDestroyedKg * (def.biogasYieldRatio || 0.38));
-      
-      // Biogas energy CHP: 1 m3 biogas (~65% CH4) ~ 6.0 kWh thermal / 2.2 kWh electric
-      const electricityGeneratedKw = (gasProducedM3Day * 2.2) / 24;
-      powerKw = -electricityGeneratedKw; // Negative power demand!
+      const qIn = Math.max(0, inlet.flowRate);
+      const drySolidsKg = loadKgDay(qIn, inlet.tss);
+      const volatileSolidsKg = drySolidsKg * volatileFraction;
+      const fixedSolidsKg = drySolidsKg - volatileSolidsKg;   // inert — passes through
+      const destroyedVsKg = volatileSolidsKg * vsDestruction;
+      const remainingSolidsKg = fixedSolidsKg + (volatileSolidsKg - destroyedVsKg);
 
-      const digestedSludgeFlow = inlet.flowRate * 0.95;
+      // Biogas from DESTROYED biodegradable material only
+      gasProducedM3Day = Math.max(0, destroyedVsKg * (def.biogasYieldRatio || 0.38));
+
+      // Biogas energy CHP: 1 Nm³ biogas (~65% CH4) ≈ 2.2 kWh electric
+      // (tech bonus multiplier applied by SimulationEngine via TechEffects)
+      powerKw = -(gasProducedM3Day * 2.2) / 24;
+
+      // Digestate: remaining solids leave at feed flow minus small gas/evap losses
+      const digestedSludgeFlow = Math.max(0.5, qIn * 0.95);
       sludge = {
         ...cloneWater(inlet),
         flowRate: digestedSludgeFlow,
-        tss: inlet.tss * (1 - vsDestruction),
+        tss: digestedSludgeFlow > 0 ? (remainingSolidsKg * 1000) / digestedSludgeFlow : 0,
         pathogens: inlet.pathogens * 0.01 // High temperature pathogen destruction (Class B / Class A)
       };
 
@@ -1347,38 +1509,70 @@ export function calculateUnitProcess(
 
     // -----------------------------------------------------
     case 'sludge_dewatering_press': {
-      const cakeFlow = Math.max(1, inlet.flowRate * 0.15);
+      // ── Dry-solids conservation ─────────────────────────────────────────
+      // Feed solids split by capture efficiency into cake and centrate.
+      // Cake flow DERIVES from capture mass ÷ target cake concentration.
+      // Polymer dose changes cost/capture — never creates or destroys solids.
+      const polymerDose = p.polymerDoseKgTon ?? 4.5;
+      const capture = Math.min(0.98, 0.90 + polymerDose * 0.01);  // better dosing → better capture
+      const targetCakeTss = 250000;                                // 25% dry solids
+      const qIn = Math.max(0, inlet.flowRate);
+      const inSolidsKg = loadKgDay(qIn, inlet.tss);
+      const cakeSolidsKg = inSolidsKg * capture;
+      const centrateSolidsKg = inSolidsKg - cakeSolidsKg;
+
+      const cakeFlow = Math.max(0.2, (cakeSolidsKg * 1000) / targetCakeTss);
       sludge = {
         ...cloneWater(inlet),
         flowRate: cakeFlow,
-        tss: 250000 // 25% dry cake solids
+        tss: cakeSolidsKg > 0 ? Math.min(targetCakeTss, (cakeSolidsKg * 1000) / cakeFlow) : 0,
+        nh4: inlet.nh4
       };
-      eff.flowRate = inlet.flowRate * 0.85; // Centrate recycle
-      eff.tss = 800; // Centrate contains some residual solids
-      eff.nh4 = inlet.nh4 + 150; // Centrate is rich in dewatering ammonia
-      efficiency = 96;
+
+      // Centrate: remaining water plus uncaptured fines, rich in released ammonia
+      const centrateFlow = Math.max(0, qIn - cakeFlow);
+      eff.flowRate = centrateFlow;
+      eff.tss = centrateFlow > 0.01 ? (centrateSolidsKg * 1000) / centrateFlow : 0;
+      eff.nh4 = centrateFlow > 0.01
+        ? Math.max(0, (loadKgDay(qIn, inlet.nh4) + inSolidsKg * 0.02) * 1000 / centrateFlow) // released bound N
+        : inlet.nh4;
+      opexDay = def.baseOpexPerDay + polymerDose * 8; // polymer cost scales with dosing
+      efficiency = Math.round(capture * 100);
       break;
     }
 
     // -----------------------------------------------------
     case 'solar_drying_bed': {
+      // ── Drying removes WATER only ───────────────────────────────────────
+      // Dry-solids mass conserved; product flow derives from feed solids
+      // load and the target final solids fraction.
+      const targetFinalTss = 850000; // 85% dry fertilizer
+      const qIn = Math.max(0, inlet.flowRate);
+      const inSolidsKg = loadKgDay(qIn, inlet.tss);
+
+      const productFlow = Math.max(0.1, (inSolidsKg * 1000) / targetFinalTss);
       sludge = {
         ...cloneWater(inlet),
-        flowRate: inlet.flowRate * 0.2,
-        tss: 850000, // 85% dry biosolid fertilizer
+        flowRate: productFlow,
+        tss: inSolidsKg > 0 ? Math.min(targetFinalTss, (inSolidsKg * 1000) / productFlow) : 0,
         pathogens: 0
       };
+      // Evaporated water leaves as vapor — no liquid return stream.
+      eff.flowRate = 0;
       efficiency = 98;
       break;
     }
 
     case 'pump_station': {
-      // PUMP CLOGGING (piping consequence): pumps handling unscreened sewage
-      // suffer rag jamming & impeller wear — more power, more maintenance.
+      // Pure hydraulic pass-through plus PUMP CLOGGING (piping consequence):
+      // pumps handling unscreened sewage suffer rag jamming & impeller wear —
+      // more power, more maintenance.
       if (inlet.tss > 350) {
         powerKw = def.powerConsumptionKw * 1.35;
         opexDay = def.baseOpexPerDay * 2.2;
         efficiency = 70;
+      } else {
+        efficiency = 100;
       }
       break;
     }
@@ -1405,19 +1599,6 @@ export function calculateUnitProcess(
     case 'influent_inlet': {
       // Pure hydraulic node — no quality transformation
       efficiency = 100;
-      break;
-    }
-    case 'pump_station': {
-      // Pure hydraulic pass-through plus PUMP CLOGGING (piping consequence):
-      // pumps handling unscreened sewage suffer rag jamming & impeller wear —
-      // more power, more maintenance.
-      if (inlet.tss > 350) {
-        powerKw = def.powerConsumptionKw * 1.35;
-        opexDay = def.baseOpexPerDay * 2.2;
-        efficiency = 70;
-      } else {
-        efficiency = 100;
-      }
       break;
     }
 
