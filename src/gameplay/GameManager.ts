@@ -5,6 +5,7 @@ import { TECH_TREE_NODES } from './TechTreeData';
 import { UNIT_DEFINITIONS } from '../sim/UnitProcessModels';
 import { emptyWater } from '../sim/WaterStream';
 import { SimulationEngine } from '../sim/SimulationEngine';
+import { TUTORIAL_STEPS } from './TutorialSteps';
 
 export interface NextStepSuggestion {
   unitTypeId: UnitTypeId;
@@ -34,6 +35,8 @@ export interface GameState {
   isNight: boolean;
   suggestion: NextStepSuggestion | null;
   complianceStreakDays: number;
+  tutorialActive: boolean;
+  tutorialStep: number;
 }
 
 export class GameManager {
@@ -133,7 +136,53 @@ export class GameManager {
       sandboxCustomInfluent: { ...level.influentSpec },
       isNight: false,
       suggestion: initialSuggestion,
-      complianceStreakDays: 0
+      complianceStreakDays: 0,
+      tutorialActive: false,
+      tutorialStep: 0
+    };
+  }
+
+  /** Collision/bounds test for a footprint at a given lot */
+  private static fitsAt(
+    units: PlacedUnit[], x: number, y: number, fw: number, fl: number, mapW: number, mapH: number
+  ): boolean {
+    if (x < 0 || y < 0 || x + fw > mapW || y + fl > mapH) return false;
+    return !units.some(u => {
+      const ud = UNIT_DEFINITIONS[u.typeId];
+      if (!ud) return false;
+      const [uw, ul] = (u.rotation === 90 || u.rotation === 270) ? [ud.footprint[1], ud.footprint[0]] : ud.footprint;
+      return x < u.gridX + uw && x + fw > u.gridX && y < u.gridY + ul && y + fl > u.gridY;
+    });
+  }
+
+  /**
+   * Nudges a preferred suggestion position outward (spiral search) until the
+   * footprint actually fits — keeps the green ghost box perfectly aligned
+   * even when the player placed earlier units somewhere unexpected.
+   */
+  public static resolveFreeSpot(
+    units: PlacedUnit[],
+    level: CampaignLevel,
+    prefX: number,
+    prefY: number,
+    fw: number,
+    fl: number
+  ): { x: number; y: number } {
+    const [mapW, mapH] = level.mapSize;
+    if (GameManager.fitsAt(units, prefX, prefY, fw, fl, mapW, mapH)) return { x: prefX, y: prefY };
+    for (let r = 1; r <= 12; r++) {
+      for (let dx = -r; dx <= r; dx++) {
+        for (let dy = -r; dy <= r; dy++) {
+          if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+          const x = prefX + dx;
+          const y = prefY + dy;
+          if (GameManager.fitsAt(units, x, y, fw, fl, mapW, mapH)) return { x, y };
+        }
+      }
+    }
+    return {
+      x: Math.min(Math.max(0, prefX), Math.max(0, mapW - fw)),
+      y: Math.min(Math.max(0, prefY), Math.max(0, mapH - fl))
     };
   }
 
@@ -141,6 +190,21 @@ export class GameManager {
    * Intelligently recommends the next wastewater treatment step for non-engineers
    */
   public static computeNextSuggestion(units: PlacedUnit[], level: CampaignLevel): NextStepSuggestion | null {
+    const raw = GameManager.rawNextSuggestion(units, level);
+    if (!raw) return null;
+    // Align the ghost to a REAL free spot so it never overlaps player-placed units
+    const def = UNIT_DEFINITIONS[raw.unitTypeId];
+    if (!def) return null;
+    const spot = GameManager.resolveFreeSpot(
+      units, level,
+      Math.min(raw.gridX, level.mapSize[0] - def.footprint[0]),
+      Math.min(raw.gridY, level.mapSize[1] - def.footprint[1]),
+      def.footprint[0], def.footprint[1]
+    );
+    return { ...raw, gridX: spot.x, gridY: spot.y };
+  }
+
+  private static rawNextSuggestion(units: PlacedUnit[], level: CampaignLevel): NextStepSuggestion | null {
     const hasType = (t: UnitTypeId) => units.some(u => u.typeId === t);
     const inlet = units.find(u => u.typeId === 'influent_inlet');
     const midY = inlet ? inlet.gridY : Math.floor(level.mapSize[1] / 2) - 1;
@@ -401,8 +465,13 @@ export class GameManager {
     const def = UNIT_DEFINITIONS[typeId];
     if (!def) return { newState: state, success: false, reason: 'Invalid unit type' };
 
+    // Tutorial training grant: the step's required unit is fully funded so
+    // following the guided build never drains the player's real budget.
+    const tutStep = state.tutorialActive ? TUTORIAL_STEPS[state.tutorialStep] : undefined;
+    const tutorialGrant = !!tutStep?.unitTypeId && tutStep.unitTypeId === typeId;
+
     // Cost check
-    if (state.gameMode !== 'sandbox' && state.financials.cash < def.capex) {
+    if (!tutorialGrant && state.gameMode !== 'sandbox' && state.financials.cash < def.capex) {
       return { newState: state, success: false, reason: `Insufficient funds ($${def.capex.toLocaleString()} required)` };
     }
 
@@ -446,7 +515,9 @@ export class GameManager {
       lastOpexActual: def.baseOpexPerDay
     };
 
-    const newCash = state.gameMode === 'sandbox' ? state.financials.cash : state.financials.cash - def.capex;
+    const newCash = state.gameMode === 'sandbox'
+      ? state.financials.cash
+      : (tutorialGrant ? state.financials.cash : state.financials.cash - def.capex);
     const updatedUnits = [...state.units, newUnit];
     const newSuggestion = GameManager.computeNextSuggestion(updatedUnits, state.currentLevel);
 
@@ -472,7 +543,8 @@ export class GameManager {
     }
 
     const def = UNIT_DEFINITIONS[unit.typeId];
-    const refund = def ? Math.round(def.capex * 0.7) : 0;
+    // Tutorial-granted units were never paid for — no refund exploit allowed
+    const refund = (def && !state.tutorialActive) ? Math.round(def.capex * 0.7) : 0;
     const updatedUnits = state.units.filter(u => u.instanceId !== instanceId);
     const newSuggestion = GameManager.computeNextSuggestion(updatedUnits, state.currentLevel);
 

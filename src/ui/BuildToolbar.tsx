@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import {
   MousePointer, Cable, Trash2, RotateCw, Filter,
   Layers, Activity, Sparkles, Recycle, ArrowRightLeft,
-  Info, Star, Zap
+  Info, Star, Zap, Lock
 } from 'lucide-react';
 import { UnitCategory, UnitDefinition, UnitTypeId } from '../types/simulation';
 import { ToolMode } from '../types/graphics';
@@ -22,6 +22,8 @@ interface BuildToolbarProps {
   isSandbox: boolean;
   availableUnitIds: string[];
   suggestedUnitTypeId?: UnitTypeId | null;
+  /** Tutorial lock: only this unit is buildable, 'none' = building blocked entirely */
+  tutorialAllowedUnitId?: UnitTypeId | 'none';
 }
 
 const CATEGORIES: { id: UnitCategory; label: string; icon: React.ReactNode }[] = [
@@ -45,7 +47,8 @@ export const BuildToolbar: React.FC<BuildToolbarProps> = ({
   playerCash,
   isSandbox,
   availableUnitIds,
-  suggestedUnitTypeId
+  suggestedUnitTypeId,
+  tutorialAllowedUnitId
 }) => {
   const [activeCategory, setActiveCategory] = useState<UnitCategory>('preliminary');
   const [hoveredDef, setHoveredDef] = useState<UnitDefinition | null>(null);
@@ -188,15 +191,20 @@ export const BuildToolbar: React.FC<BuildToolbarProps> = ({
             const canAfford = isSandbox || playerCash >= def.capex;
             const isSelected = toolMode === 'place_unit' && selectedUnitTypeId === def.id;
             const isSuggested = suggestedUnitTypeId === def.id;
+            // Tutorial lock: everything except the guided unit is grayed out
+            const tutorialBlocked = tutorialAllowedUnitId !== undefined &&
+              (tutorialAllowedUnitId === 'none' || def.id !== tutorialAllowedUnitId);
+            const disabled = !unlocked || tutorialBlocked;
 
             return (
               <button
                 key={def.id}
-                disabled={!unlocked}
+                disabled={disabled}
+                title={tutorialBlocked ? 'Locked during the tutorial — follow Dr. Rio!' : undefined}
                 onMouseEnter={() => setHoveredDef(def)}
                 onMouseLeave={() => setHoveredDef(null)}
                 onClick={() => {
-                  if (!unlocked) return;
+                  if (disabled) return;
                   SoundManager.playClick();
                   onSetToolMode('place_unit');
                   onSelectUnitTypeId(def.id);
@@ -204,6 +212,8 @@ export const BuildToolbar: React.FC<BuildToolbarProps> = ({
                 className={`group relative flex flex-col items-start p-2.5 rounded-xl min-w-[170px] max-w-[190px] border transition text-left ${
                   !unlocked
                     ? 'opacity-40 bg-slate-950/60 border-slate-800 cursor-not-allowed'
+                    : tutorialBlocked
+                    ? 'opacity-35 grayscale bg-slate-950/60 border-slate-800 cursor-not-allowed'
                     : isSelected
                     ? 'bg-sky-500/20 border-cyan-400 ring-2 ring-cyan-400/50 shadow-lg'
                     : isSuggested
@@ -213,6 +223,13 @@ export const BuildToolbar: React.FC<BuildToolbarProps> = ({
                     : 'bg-slate-900/60 border-rose-900/40 hover:bg-slate-900/80'
                 }`}
               >
+                {/* Tutorial Lock Badge */}
+                {tutorialBlocked && (
+                  <div className="absolute -top-2 left-2 px-1.5 py-0.5 rounded-full bg-slate-700 text-slate-300 text-[9px] font-bold font-mono flex items-center gap-0.5 shadow-md">
+                    <Lock size={9} />
+                    <span>Tutorial</span>
+                  </div>
+                )}
                 {/* Suggested Star Badge */}
                 {isSuggested && (
                   <div className="absolute -top-2 right-2 px-1.5 py-0.5 rounded-full bg-gradient-to-r from-amber-500 to-yellow-400 text-slate-950 text-[9px] font-bold font-mono flex items-center gap-0.5 shadow-md animate-bounce">

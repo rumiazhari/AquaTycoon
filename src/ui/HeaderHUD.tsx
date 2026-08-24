@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import {
   Play, Pause, FastForward, DollarSign, Zap,
-  BookOpen, Map, Volume2, VolumeX,
+  Map, Volume2, VolumeX,
   CheckCircle2, AlertTriangle, Menu, Gauge, GitBranch, Sliders
 } from 'lucide-react';
 import { GameState } from '../gameplay/GameManager';
@@ -15,7 +15,6 @@ interface HeaderHUDProps {
   onOpenLevelModal: () => void;
   onOpenTechTree: () => void;
   onOpenPFD: () => void;
-  onOpenGuide: () => void;
   onOpenSandboxControls: () => void;
   onOpenOperator: () => void;
   onToggleTopDown: () => void;
@@ -28,7 +27,6 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({
   onOpenLevelModal,
   onOpenTechTree,
   onOpenPFD,
-  onOpenGuide,
   onOpenSandboxControls,
   onOpenOperator,
   onToggleTopDown,
@@ -176,7 +174,6 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({
                     { icon: <Map size={14} />, label: 'Stages & Levels', action: onOpenLevelModal },
                     { icon: <GitBranch size={14} />, label: 'Flowsheet (PFD)', action: onOpenPFD },
                     { icon: <Gauge size={14} />, label: 'Tech Tree', action: onOpenTechTree },
-                    { icon: <BookOpen size={14} />, label: 'Engineering Guide', action: onOpenGuide },
                     ...(gameMode === 'sandbox'
                       ? [{ icon: <Sliders size={14} />, label: 'Sandbox Controls', action: onOpenSandboxControls }]
                       : []),

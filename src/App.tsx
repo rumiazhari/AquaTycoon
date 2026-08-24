@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { SceneManager } from './graphics/SceneManager';
 import { GameManager, GameState } from './gameplay/GameManager';
@@ -8,6 +8,7 @@ import { UNIT_DEFINITIONS } from './sim/UnitProcessModels';
 import { generatePipePath, getPortWorldPosition, isConnectionExisting } from './sim/PipeNetwork';
 import { SoundManager } from './audio/SoundManager';
 import { CAMPAIGN_LEVELS } from './gameplay/LevelsData';
+import { TUTORIAL_STEPS, TUTORIAL_PIPE_CHAIN } from './gameplay/TutorialSteps';
 
 // UI Components
 import { HeaderHUD } from './ui/HeaderHUD';
@@ -17,11 +18,10 @@ import { PlantFlowDiagram } from './ui/PlantFlowDiagram';
 import { LevelModal } from './ui/LevelModal';
 import { TechTreeModal } from './ui/TechTreeModal';
 import { SandboxControls } from './ui/SandboxControls';
-import { TutorialGuideModal } from './ui/TutorialGuideModal';
+import { TutorialPromptModal, TutorialCoach } from './ui/TutorialUI';
 import { VictoryModal } from './ui/VictoryModal';
-import { NextStepGuide } from './ui/NextStepGuide';
 import { OperatorConsole } from './ui/OperatorConsole';
-import { FixAction, findFreeSpot, collectViolations } from './sim/AdvisoryEngine';
+import { FixAction, findFreeSpot } from './sim/AdvisoryEngine';
 
 import {
   ZoomIn, ZoomOut, RotateCcw, RotateCw,
@@ -65,9 +65,38 @@ export const App: React.FC = () => {
   const [levelModal, setLevelModal]           = useState(false);
   const [techModal, setTechModal]             = useState(false);
   const [pfdModal, setPfdModal]               = useState(false);
-  const [guideModal, setGuideModal]           = useState(false);
   const [sandboxModal, setSandboxModal]       = useState(false);
   const [operatorOpen, setOperatorOpen]       = useState(false);
+  const [askTutorial, setAskTutorial]         = useState(true);
+
+  // ── Tutorial state (derived) ──────────────────────────────────────────────
+  const tutorialActive = gameState.tutorialActive;
+  const tutStep = TUTORIAL_STEPS[gameState.tutorialStep] ?? null;
+  // During the tutorial only the current step's unit is buildable ('none' = no building)
+  const tutorialAllowedUnitId: UnitTypeId | 'none' | undefined =
+    tutorialActive ? (tutStep?.unitTypeId ?? 'none') : undefined;
+
+  const startTutorial = useCallback(() => {
+    setAskTutorial(false);
+    setGameState(prev => ({ ...prev, tutorialActive: true, tutorialStep: 0 }));
+    setSelectedUnitTypeId(null);
+    setToolMode('select');
+    SoundManager.playClick();
+    setToast('Tutorial started — Dr. Rio Clearwater is waiting bottom-left!');
+  }, []);
+
+  const declineTutorial = useCallback(() => {
+    setAskTutorial(false);
+    setToast('Free building unlocked — you veteran, you.');
+  }, []);
+
+  const cancelTutorial = useCallback(() => {
+    setGameState(prev => ({ ...prev, tutorialActive: false }));
+    sceneRef.current?.terrainGrid.setBuildRestriction(null);
+    setToolMode(m => (m === 'connect_pipe' ? 'select' : m));
+    setToast('Tutorial cancelled — full freedom unlocked!');
+    SoundManager.playClick();
+  }, []);
 
   // ── Pointer tracking ─────────────────────────────────────────────────────────
   const pointerDown    = useRef(false);
@@ -220,14 +249,27 @@ export const App: React.FC = () => {
           const rot = rotationRef.current;
           const [fw, fl] = (rot === 90 || rot === 270) ? [def.footprint[1], def.footprint[0]] : def.footprint;
           const [mapW, mapH] = gsRef.current.currentLevel.mapSize;
-          const inBounds = tile.x >= 0 && tile.y >= 0 && tile.x + fw <= mapW && tile.y + fl <= mapH;
-          const overlaps = gsRef.current.units.some(u => {
-            const ud = UNIT_DEFINITIONS[u.typeId];
-            if (!ud) return false;
-            const [uw, ul] = (u.rotation === 90 || u.rotation === 270) ? [ud.footprint[1], ud.footprint[0]] : ud.footprint;
-            return tile.x < u.gridX + uw && tile.x + fw > u.gridX && tile.y < u.gridY + ul && tile.y + fl > u.gridY;
-          });
-          sm.terrainGrid.setGhostPreview(tile.x, tile.y, fw, fl, inBounds && !overlaps, true);
+          const gs = gsRef.current;
+          let valid = tile.x >= 0 && tile.y >= 0 && tile.x + fw <= mapW && tile.y + fl <= mapH;
+          if (valid) {
+            valid = !gs.units.some(u => {
+              const ud = UNIT_DEFINITIONS[u.typeId];
+              if (!ud) return false;
+              const [uw, ul] = (u.rotation === 90 || u.rotation === 270) ? [ud.footprint[1], ud.footprint[0]] : ud.footprint;
+              return tile.x < u.gridX + uw && tile.x + fw > u.gridX && tile.y < u.gridY + ul && tile.y + fl > u.gridY;
+            });
+          }
+          // Tutorial: red ghost when hovering outside the guided lot
+          if (valid && gs.tutorialActive) {
+            const step = TUTORIAL_STEPS[gs.tutorialStep];
+            const sug = gs.suggestion;
+            if (step?.unitTypeId && sug &&
+                !(tile.x >= sug.gridX && tile.x < sug.gridX + def.footprint[0] &&
+                  tile.y >= sug.gridY && tile.y < sug.gridY + def.footprint[1])) {
+              valid = false;
+            }
+          }
+          sm.terrainGrid.setGhostPreview(tile.x, tile.y, fw, fl, valid, true);
         } else {
           sm.terrainGrid.setGhostPreview(0, 0, 1, 1, true, false);
         }
@@ -337,10 +379,28 @@ export const App: React.FC = () => {
       }
 
     } else if (mode === 'place_unit' && typeId && tile) {
+      const tutStepNow = TUTORIAL_STEPS[gs.tutorialStep];
+      // Tutorial enforcement: only the guided unit, only on the guided lot
+      if (gs.tutorialActive) {
+        if (!tutStepNow?.unitTypeId || tutStepNow.unitTypeId !== typeId) {
+          SoundManager.playWarning();
+          setToast(tutStepNow
+            ? `Dr. Rio: "Not yet! ${tutStepNow.title} — follow my lead!"`
+            : 'Dr. Rio: "Stay the course, rookie!"');
+          return;
+        }
+        const sDef = UNIT_DEFINITIONS[typeId];
+        const sug = gs.suggestion;
+        if (sug && !(tile.x >= sug.gridX && tile.x < sug.gridX + sDef.footprint[0] &&
+                     tile.y >= sug.gridY && tile.y < sug.gridY + sDef.footprint[1])) {
+          SoundManager.playWarning();
+          setToast('Dr. Rio: "Only on the glowing green lot, rookie!"');
+          return;
+        }
+      }
       const result = GameManager.placeUnit(gs, typeId, tile.x, tile.y, rotation);
       if (result.success) {
         SoundManager.playPlace();
-        setGameState(result.newState);
         pushHistory(gs);
         sm.syncUnits(result.newState.units);
         if (result.newState.suggestion) {
@@ -349,7 +409,14 @@ export const App: React.FC = () => {
           sm.showNextStepGhost(null, 0, 0);
         }
         const def = UNIT_DEFINITIONS[typeId];
-        setToast(`Placed ${def.name}! Now connect pipes or continue adding units.`);
+        const tutorialAdvance = gs.tutorialActive && tutStepNow?.unitTypeId === typeId;
+        if (tutorialAdvance) {
+          setGameState({ ...result.newState, tutorialStep: result.newState.tutorialStep + 1 });
+          setToast(`${def.name} built — covered by the training grant ($0)!`);
+        } else {
+          setGameState(result.newState);
+          setToast(`Placed ${def.name}! Now connect pipes or continue adding units.`);
+        }
       } else {
         SoundManager.playWarning();
         setToast(result.reason ?? 'Cannot place here.');
@@ -462,7 +529,9 @@ export const App: React.FC = () => {
         if (next.suggestion) {
           sm.showNextStepGhost(next.suggestion.unitTypeId, next.suggestion.gridX, next.suggestion.gridY);
         }
-        setToast('Unit demolished — 70% refund applied.');
+        setToast(gs.tutorialActive
+          ? 'Unit demolished. (No refund during tutorial — training grant units.)'
+          : 'Unit demolished — 70% refund applied.');
       }
     }
   };
@@ -487,6 +556,48 @@ export const App: React.FC = () => {
       if (simIntervalRef.current) clearInterval(simIntervalRef.current);
     };
   }, []);
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // TUTORIAL — build-zone lock + pipe-chain progression
+  // ─────────────────────────────────────────────────────────────────────────────
+  const suggKey = gameState.suggestion
+    ? `${gameState.suggestion.unitTypeId}:${gameState.suggestion.gridX}:${gameState.suggestion.gridY}`
+    : '';
+
+  // Dim every lot outside the tutorial's allowed rectangle during build steps
+  useEffect(() => {
+    const sm = sceneRef.current;
+    if (!sm) return;
+    const gs = gsRef.current;
+    const step = TUTORIAL_STEPS[gs.tutorialStep];
+    if (gs.tutorialActive && step?.unitTypeId) {
+      const def = UNIT_DEFINITIONS[step.unitTypeId];
+      sm.terrainGrid.setBuildRestriction({
+        x: gs.suggestion?.gridX ?? 0,
+        y: gs.suggestion?.gridY ?? 0,
+        w: def.footprint[0],
+        h: def.footprint[1],
+      });
+    } else {
+      sm.terrainGrid.setBuildRestriction(null);
+    }
+  }, [tutorialActive, gameState.tutorialStep, suggKey]);
+
+  // Advance the piping step once the guided chain is fully connected
+  useEffect(() => {
+    const gs = gsRef.current;
+    if (!gs.tutorialActive) return;
+    const step = TUTORIAL_STEPS[gs.tutorialStep];
+    if (!step?.requiresPipes) return;
+    const typeById = new Map(gs.units.map(u => [u.instanceId, u.typeId] as const));
+    const linked = (fromType: string, toType: string) =>
+      gs.pipes.some(p => typeById.get(p.fromUnitId) === fromType && typeById.get(p.toUnitId) === toType);
+    if (TUTORIAL_PIPE_CHAIN.every(([a, b]) => linked(a, b))) {
+      setGameState(prev => ({ ...prev, tutorialStep: prev.tutorialStep + 1 }));
+      setToolMode('select');
+      setToast('Pipes connected — Dr. Rio is proud!');
+    }
+  }, [gameState.pipes, gameState.tutorialStep, tutorialActive]);
 
   // ─────────────────────────────────────────────────────────────────────────────
   // KEYBOARD SHORTCUTS
@@ -539,24 +650,6 @@ export const App: React.FC = () => {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
-
-  // ─────────────────────────────────────────────────────────────────────────────
-  // SELECT SUGGESTION HANDLER
-  // ─────────────────────────────────────────────────────────────────────────────
-  const handleStartPiping = useCallback(() => {
-    setToolMode('connect_pipe');
-    setOperatorOpen(false);
-    SoundManager.playClick();
-    setToast('Pipes mode: click a unit to pick its output port, then click the target. Click the SAME unit to switch ports.');
-  }, []);
-
-  const handleSelectSuggestion = (typeId: UnitTypeId, gridX: number, gridY: number) => {
-    setSelectedUnitTypeId(typeId);
-    setToolMode('place_unit');
-    sceneRef.current?.cameraController.focusOn(gridX, gridY);
-    const def = UNIT_DEFINITIONS[typeId];
-    setToast(`Selected: ${def.name} ($${def.capex.toLocaleString()}) — Click on the green lot to build!`);
-  };
 
   // ─────────────────────────────────────────────────────────────────────────────
   // OPERATOR CONSOLE — APPLY FIX (the systematic tuning loop)
@@ -649,14 +742,6 @@ export const App: React.FC = () => {
 
   const selectedUnit = gameState.units.find(u => u.instanceId === gameState.selectedUnitId) ?? null;
 
-  // Cheap live violation labels for the guide teaser (no simulation needed)
-  const issueLabels = useMemo(
-    () => gameState.finalEffluent.flowRate > 10
-      ? collectViolations(gameState.finalEffluent, gameState.currentLevel.standards).map(v => v.label)
-      : [],
-    [gameState.finalEffluent, gameState.currentLevel.standards]
-  );
-
   // ─────────────────────────────────────────────────────────────────────────────
   // RENDER
   // ─────────────────────────────────────────────────────────────────────────────
@@ -668,17 +753,6 @@ export const App: React.FC = () => {
         ref={containerRef}
         className="absolute inset-0"
         style={{ cursor: 'grab' }}
-      />
-
-      {/* ── Next Step Guide (Top-Left) ────────────────────────────────────── */}
-      <NextStepGuide
-        suggestion={gameState.suggestion}
-        onSelectSuggestion={handleSelectSuggestion}
-        onStartPiping={handleStartPiping}
-        unitsCount={gameState.units.length}
-        pipesCount={gameState.pipes.length}
-        issuesSummary={issueLabels}
-        onOpenOperator={() => setOperatorOpen(true)}
       />
 
       {/* ── Toast Banner ──────────────────────────────────────────────────── */}
@@ -772,7 +846,6 @@ export const App: React.FC = () => {
         onOpenLevelModal={() => setLevelModal(true)}
         onOpenTechTree={() => setTechModal(true)}
         onOpenPFD={() => setPfdModal(true)}
-        onOpenGuide={() => setGuideModal(true)}
         onOpenSandboxControls={() => setSandboxModal(true)}
         onOpenOperator={() => setOperatorOpen(true)}
         onToggleTopDown={handleToggleTopDown}
@@ -808,6 +881,7 @@ export const App: React.FC = () => {
         isSandbox={gameState.gameMode === 'sandbox'}
         availableUnitIds={gameState.currentLevel.availableUnits}
         suggestedUnitTypeId={gameState.suggestion?.unitTypeId}
+        tutorialAllowedUnitId={tutorialAllowedUnitId}
       />
 
       {/* ── Unit Inspector ──────────────────────────────────────────────────── */}
@@ -861,7 +935,6 @@ export const App: React.FC = () => {
           onClose={() => setSandboxModal(false)}
         />
       )}
-      {guideModal && <TutorialGuideModal onClose={() => setGuideModal(false)} />}
       {operatorOpen && (
         <OperatorConsole
           gameState={gameState}
@@ -878,6 +951,28 @@ export const App: React.FC = () => {
             setGameState(prev => ({ ...prev, levelVictoryModalOpen: false }));
           }}
           onContinuePlaying={() => setGameState(prev => ({ ...prev, levelVictoryModalOpen: false }))}
+        />
+      )}
+
+      {/* ── Tutorial: startup prompt + in-game coach ─────────────────────────── */}
+      {askTutorial && !tutorialActive && (
+        <TutorialPromptModal onAccept={startTutorial} onDecline={declineTutorial} />
+      )}
+      {tutorialActive && tutStep && (
+        <TutorialCoach
+          step={tutStep}
+          index={gameState.tutorialStep}
+          total={TUTORIAL_STEPS.length}
+          onCancel={cancelTutorial}
+          onOpenPipes={() => { setToolMode('connect_pipe'); setOperatorOpen(false); }}
+          onAdvance={() => setGameState(prev => ({ ...prev, tutorialStep: prev.tutorialStep + 1 }))}
+          onSelectUnit={typeId => {
+            setSelectedUnitTypeId(typeId);
+            setToolMode('place_unit');
+            const sug = gsRef.current.suggestion;
+            if (sug) sceneRef.current?.cameraController.focusOn(sug.gridX, sug.gridY);
+            setToast(`${UNIT_DEFINITIONS[typeId].name} selected — click the glowing green lot!`);
+          }}
         />
       )}
     </div>

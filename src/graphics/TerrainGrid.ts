@@ -31,6 +31,15 @@ const TOWER_COLORS     = [0x94a3b8, 0xa8b3c5, 0x7d8aa0, 0xb0bac9];
 const CONIFER_GREENS   = [0x2d6a34, 0x275e2d, 0x35753c, 0x1f5426];
 const BROADLEAF_GREENS = [0x4a8f3c, 0x579c46, 0x3f7d33, 0x6aa84f];
 
+// River palette: desaturated day blue ↔ dark night blue (unlit material is
+// immune to scene lights, so the day/night blend is done manually)
+const RIVER_DAY   = new THREE.Color(0x4383b2);
+const RIVER_NIGHT = new THREE.Color(0x16283a);
+const ARROW_DAY   = new THREE.Color(0xa8d8ee);
+const ARROW_NIGHT = new THREE.Color(0x24384a);
+const FOAM_DAY    = new THREE.Color(0xf2f6f8);
+const FOAM_NIGHT  = new THREE.Color(0x3a4a58);
+
 // Cached material helper + shadowed box builder for environment pieces
 const envMatCache = new Map<string, THREE.MeshStandardMaterial>();
 function std(color: number, roughness = 0.85, metalness = 0.05): THREE.MeshStandardMaterial {
@@ -50,6 +59,20 @@ function tbox(w: number, h: number, d: number, mat: THREE.Material): THREE.Mesh 
 }
 
 interface Placed { x: number; z: number; r: number; }
+
+type TrafficMode = 'cruise' | 'overtake' | 'return';
+
+/** A single road vehicle with car-following / overtaking AI state */
+interface TrafficVehicle {
+  group: THREE.Group;
+  dir: 1 | -1;
+  baseSpeed: number;
+  speed: number;
+  halfLen: number;
+  laneOffset: number;   // signed lateral offset from road centre for this vehicle's home lane
+  mode: TrafficMode;    // cruise | passing on the opposing lane | merging back home
+  overtakeTime: number; // seconds spent in the opposing lane (forces an abort)
+}
 
 /** Per-scenario world generation rules */
 interface BiomeConfig {
@@ -141,8 +164,15 @@ export class TerrainGrid {
   private lampBulbMat: THREE.MeshStandardMaterial | null = null;
   private windowMat: THREE.MeshStandardMaterial | null = null;
   private siteLights: THREE.SpotLight[] = [];
+  private lampLights: THREE.SpotLight[] = [];
+  private lampPoolMat: THREE.MeshBasicMaterial | null = null;
+  private restrictionGroup: THREE.Group | null = null;
+  private restrictionRectKey: string = '';
   private flowParticles: THREE.InstancedMesh | null = null;
   private flowData: { t: number; u: number; speed: number; scale: number }[] = [];
+  private waterMat: THREE.MeshBasicMaterial | null = null;
+  private arrowMat: THREE.MeshBasicMaterial | null = null;
+  private ringMat: THREE.MeshBasicMaterial | null = null;
 
   constructor(mapWidth: number = 24, mapDepth: number = 20) {
     this.group = new THREE.Group();
@@ -196,14 +226,146 @@ export class TerrainGrid {
       this.flowParticles.instanceMatrix.needsUpdate = true;
     }
 
-    // ── Traffic: vehicles cruise along the road and across the bridge ──
+    // ── Traffic: car-following, queueing & safe overtaking AI ──────────
     if (this.traffic.length > 0) {
       const xMin = -this.padX - 14;
       const xMax = this.W + this.padX + 14;
-      for (const v of this.traffic) {
-        let x = v.group.position.x + v.dir * v.speed * dt;
-        if (x > xMax) x = xMin;
-        if (x < xMin) x = xMax;
+      const vs = this.traffic;
+      const dts = Math.max(dt, 1e-4);
+      const CORRIDOR_TOL = 1.75; // lateral half-width of a lane corridor
+
+      /** Nearest vehicle ahead of `me` in the corridor centred at zCentre (ANY direction) */
+      const aheadInCorridor = (me: TrafficVehicle, zCentre: number) => {
+        let leader: TrafficVehicle | null = null;
+        let gap = Infinity;
+        let oncoming = false;
+        for (const o of vs) {
+          if (o === me) continue;
+          if (Math.abs(o.group.position.z - zCentre) > CORRIDOR_TOL) continue;
+          const dx = (o.group.position.x - me.group.position.x) * me.dir;
+          const g = dx - (me.halfLen + o.halfLen);
+          if (g >= gap) continue;
+          if (dx <= -(me.halfLen + o.halfLen) * 0.5) continue; // fully behind us
+          gap = g;
+          leader = o;
+          oncoming = o.dir !== me.dir;
+        }
+        return { leader, gap, oncoming };
+      };
+
+      /** True when no oncoming vehicle is approaching the corridor within the windows */
+      const oncomingClear = (me: TrafficVehicle, zCentre: number, aheadWin: number, backWin: number) => {
+        for (const o of vs) {
+          if (o.dir === me.dir) continue;
+          if (Math.abs(o.group.position.z - zCentre) > CORRIDOR_TOL) continue;
+          const rel = (o.group.position.x - me.group.position.x) * me.dir;
+          if (rel > -backWin && rel < aheadWin) return false;
+        }
+        return true;
+      };
+
+      /** Car-following target speed for one corridor (also brakes for head-on obstacles) */
+      const followTarget = (me: TrafficVehicle, info: { leader: TrafficVehicle | null; gap: number; oncoming: boolean }, base: number) => {
+        if (!info.leader) return base;
+        const { gap, leader, oncoming } = info;
+        if (oncoming) {
+          // Head-on obstacle in our corridor → brake hard and STOP, never creep
+          if (gap < 5) return 0;
+          return gap < 16 ? Math.min(base, Math.max(0, (gap - 4) * 0.9)) : base;
+        }
+        const desiredGap = 2.2 + me.speed * 0.55;
+        if (gap < 0.6) return 0; // temporary stop behind queued traffic
+        if (gap < desiredGap) return Math.min(base, Math.max(0, leader.speed * (gap / desiredGap)));
+        return base;
+      };
+
+      for (const v of vs) {
+        const zRoad = this.zRoad;
+        const laneZ = zRoad + v.laneOffset;
+        const overtakeZ = zRoad - v.laneOffset;
+        const baseYaw = v.dir === 1 ? 0 : Math.PI;
+
+        // ── Lateral manoeuvres (smooth lane changes with a touch of yaw) ──
+        let z = v.group.position.z;
+        let yawOffset = 0;
+        if (v.mode === 'overtake') {
+          const dz = overtakeZ - z;
+          z += Math.sign(dz) * Math.min(Math.abs(dz), 3.2 * dts);
+          yawOffset = -v.dir * 0.14 * Math.sign(dz);
+        } else if (v.mode === 'return') {
+          const dz = laneZ - z;
+          z += Math.sign(dz) * Math.min(Math.abs(dz), 2.8 * dts);
+          yawOffset = -v.dir * 0.12 * Math.sign(dz);
+          if (Math.abs(dz) < 0.05) { z = laneZ; v.mode = 'cruise'; }
+        }
+        v.group.position.z = z;
+        v.group.rotation.y += (baseYaw + yawOffset - v.group.rotation.y) * Math.min(1, dts * 8);
+
+        // ── Corridor sensing: home lane + the lane we are moving into ──
+        const home = aheadInCorridor(v, laneZ);
+        const pass = aheadInCorridor(v, overtakeZ);
+        const committedPass = Math.abs(z - overtakeZ) < 1.4;
+        const committedHome = Math.abs(z - laneZ) < 1.4;
+
+        let target = v.baseSpeed;
+        if (v.mode === 'cruise') {
+          target = followTarget(v, home, target);
+        } else if (v.mode === 'overtake') {
+          target = followTarget(v, pass, target);
+          if (!committedPass) target = Math.min(target, followTarget(v, home, v.baseSpeed));
+        } else {
+          target = followTarget(v, home, target);
+          if (!committedHome) target = Math.min(target, followTarget(v, pass, v.baseSpeed));
+        }
+
+        // ── Overtake initiation: stuck behind a measurably slower vehicle ──
+        if (v.mode === 'cruise' && home.leader && !home.oncoming &&
+            home.leader.speed < v.baseSpeed - 0.8 && home.gap < 2.2 + v.speed * 0.55) {
+          const passBlocked =
+            (pass.leader !== null && (pass.oncoming ? pass.gap < 32 : pass.gap < 8)) ||
+            !oncomingClear(v, overtakeZ, 30, 8);
+          if (!passBlocked) {
+            v.mode = 'overtake'; // opposing lane clear → pull out and pass
+            v.overtakeTime = 0;
+          } else {
+            target = Math.min(target, home.leader.speed); // measured slow-down behind the slow vehicle
+          }
+        }
+
+        // ── Overtake progression: ALWAYS finish the manoeuvre ──────────────
+        // A vehicle never stays in the opposing lane: it merges back once it
+        // has passed, on oncoming danger, or when the pass simply takes too
+        // long (anti-deadlock / anti-jam guarantee).
+        if (v.mode === 'overtake') {
+          v.overtakeTime += dts;
+          const passed = !home.leader || home.gap > v.halfLen + home.leader.halfLen + 4.5;
+          const oncomingDanger = pass.oncoming && pass.gap < 24;
+          const passJamAhead = pass.leader !== null && !pass.oncoming && pass.leader.speed < 2;
+          const takingTooLong = v.overtakeTime > 6;
+          // Room behind us in the home lane? (rel > 0 → o is behind us)
+          let rearFree = true;
+          for (const o of vs) {
+            if (o === v || o.dir !== v.dir) continue;
+            if (Math.abs(o.group.position.z - laneZ) > CORRIDOR_TOL) continue;
+            const rel = (v.group.position.x - o.group.position.x) * v.dir;
+            if (rel > 0 && rel < v.halfLen + o.halfLen + 3.5) { rearFree = false; break; }
+          }
+          if (rearFree && (passed || oncomingDanger || passJamAhead || takingTooLong)) {
+            v.mode = 'return';
+            v.overtakeTime = 0;
+          }
+          // If danger and we cannot return yet, followTarget(pass) brakes hard
+          // until the rear clears, then the next frame completes the merge.
+        }
+
+        // ── Longitudinal integration with acceleration/braking limits ──
+        const rate = target > v.speed ? 4.5 : 13;
+        v.speed += Math.max(-rate * dts, Math.min(rate * dts, target - v.speed));
+        if (v.speed < 0) v.speed = 0;
+
+        let x = v.group.position.x + v.dir * v.speed * dts;
+        if (x > xMax) { x = xMin; v.mode = 'cruise'; v.group.position.z = zRoad + v.laneOffset; }
+        if (x < xMin) { x = xMax; v.mode = 'cruise'; v.group.position.z = zRoad + v.laneOffset; }
         v.group.position.x = x;
       }
     }
@@ -231,11 +393,21 @@ export class TerrainGrid {
 
     if (this.lampBulbMat) this.lampBulbMat.emissiveIntensity = lerpN(0.05, 2.4, nightFactor);
     if (this.windowMat) this.windowMat.emissiveIntensity = lerpN(0.05, 1.15, nightFactor);
-    // Site floodlights switch on at dusk
+    // River is unlit — blend its palette manually so it darkens at night
+    if (this.waterMat) this.waterMat.color.copy(RIVER_DAY).lerp(RIVER_NIGHT, nightFactor);
+    if (this.arrowMat) this.arrowMat.color.copy(ARROW_DAY).lerp(ARROW_NIGHT, nightFactor);
+    if (this.ringMat) this.ringMat.color.copy(FOAM_DAY).lerp(FOAM_NIGHT, nightFactor);
+    // Site corner floodlights switch on at dusk (with real shadows)
     for (const light of this.siteLights) {
-      light.intensity = nightFactor * 2.6;
-      light.visible = nightFactor > 0.03;
+      light.intensity = nightFactor * 320;
+      light.visible = nightFactor > 0.02;
     }
+    // Street lamps: warm light pools + real spotlights near the plant, night only
+    for (const light of this.lampLights) {
+      light.intensity = nightFactor * 90;
+      light.visible = nightFactor > 0.02;
+    }
+    if (this.lampPoolMat) this.lampPoolMat.opacity = nightFactor * 0.75;
   }
 
   public setHoverTile(x: number, y: number, visible: boolean = true) {
@@ -375,8 +547,15 @@ export class TerrainGrid {
     this.lampBulbMat = null;
     this.windowMat = null;
     this.siteLights = [];
+    this.lampLights = [];
+    this.lampPoolMat = null;
+    this.restrictionGroup = null;
+    this.restrictionRectKey = '';
     this.flowParticles = null;
     this.flowData = [];
+    this.waterMat = null;
+    this.arrowMat = null;
+    this.ringMat = null;
     this.traffic = [];
   }
 
@@ -386,12 +565,19 @@ export class TerrainGrid {
     const w = this.W;
     const d = this.D;
 
-    // Visual floodlight masts at the four corners of the plant
+    // Visual floodlight masts standing EXACTLY on the four corners of the
+    // plant slab (slightly inset so the base sits on the concrete).
     const mastMat = std(0x6b7480, 0.6, 0.4);
     const headMat = new THREE.MeshStandardMaterial({
       color: 0xfff8e0, emissive: 0xfff2c4, emissiveIntensity: 0.05,
     });
-    const corners: [number, number][] = [[-1.5, -1.5], [w + 1.5, -1.5], [-1.5, d + 1.5], [w + 1.5, d + 1.5]];
+    const inset = 0.45;
+    const corners: [number, number][] = [
+      [inset, inset],
+      [w - inset, inset],
+      [inset, d - inset],
+      [w - inset, d - inset],
+    ];
     for (const [cx, cz] of corners) {
       const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.13, 7.5, 8), mastMat);
       mast.position.set(cx, 3.75, cz);
@@ -407,19 +593,36 @@ export class TerrainGrid {
       this.envGroup.add(head);
     }
 
-    // Real SpotLights (one per corner) so the whole plant is readable at night
+    // Real SpotLights (one per corner) with SHADOW CASTING so the whole plant
+    // is readable at night — pure light, no visible cone meshes.
     for (const [cx, cz] of corners) {
-      const spot = new THREE.SpotLight(0xffe9b8, 0, 90, 1.05, 0.55, 1.0);
+      const spot = new THREE.SpotLight(0xffe9b8, 0, 95, 1.05, 0.55, 1.35);
       spot.position.set(cx, 7.3, cz);
       spot.target.position.set(cx < w / 2 ? w * 0.35 : w * 0.65, 0, cz < d / 2 ? d * 0.35 : d * 0.65);
+      spot.castShadow = true;
+      spot.shadow.mapSize.set(1024, 1024);
+      spot.shadow.camera.near = 1;
+      spot.shadow.camera.far = 120;
+      spot.shadow.bias = -0.0004;
       this.envGroup.add(spot);
       this.envGroup.add(spot.target);
       this.siteLights.push(spot);
     }
-    // Gate floodlight
-    const gateSpot = new THREE.SpotLight(0xffe9b8, 0, 40, 0.9, 0.6, 1.0);
-    gateSpot.position.set(w / 2, 5.5, d + 3);
-    gateSpot.target.position.set(w / 2, 0, d - 2);
+
+    // Gate floodlight — mounted on a short mast atop the welcome sign post,
+    // aiming into the plant yard (no floating lights over the road)
+    const gateMastMat = std(0x6b7480, 0.6, 0.4);
+    const gateMast = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.08, 2.4, 8), gateMastMat);
+    gateMast.position.set(w / 2, 3.7, d + 0.35);
+    gateMast.castShadow = true;
+    this.envGroup.add(gateMast);
+
+    const gateSpot = new THREE.SpotLight(0xffe9b8, 0, 42, 0.9, 0.6, 1.3);
+    gateSpot.position.set(w / 2, 4.8, d + 0.35);
+    gateSpot.target.position.set(w / 2, 0, d - 4);
+    gateSpot.castShadow = true;
+    gateSpot.shadow.mapSize.set(512, 512);
+    gateSpot.shadow.bias = -0.0004;
     this.envGroup.add(gateSpot);
     this.envGroup.add(gateSpot.target);
     this.siteLights.push(gateSpot);
@@ -535,10 +738,8 @@ export class TerrainGrid {
     // roughly riverHW*1.55, so this width keeps the plane tucked inside the
     // banks with zero exposed bed — pure cartoon blue edge to edge.
     const waterGeo = mkRibbon(this.riverHW * 1.52, this.waterY);
-    const water = new THREE.Mesh(
-      waterGeo,
-      new THREE.MeshBasicMaterial({ color: 0x2ea8f0, side: THREE.DoubleSide })
-    );
+    this.waterMat = new THREE.MeshBasicMaterial({ color: 0x4383b2, side: THREE.DoubleSide });
+    const water = new THREE.Mesh(waterGeo, this.waterMat);
     water.frustumCulled = false;
     water.renderOrder = 2;
     this.envGroup.add(water);
@@ -556,10 +757,10 @@ export class TerrainGrid {
     arrowShape.closePath();
     const arrowGeo = new THREE.ShapeGeometry(arrowShape);
     arrowGeo.rotateX(-Math.PI / 2);
-    const arrowMat = new THREE.MeshBasicMaterial({
-      color: 0x90e0ff, transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthWrite: false,
+    this.arrowMat = new THREE.MeshBasicMaterial({
+      color: 0xa8d8ee, transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthWrite: false,
     });
-    this.flowParticles = new THREE.InstancedMesh(arrowGeo, arrowMat, N_ARROWS);
+    this.flowParticles = new THREE.InstancedMesh(arrowGeo, this.arrowMat, N_ARROWS);
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2, 0, 0));
     const one = new THREE.Vector3(1, 1, 1);
@@ -693,57 +894,55 @@ export class TerrainGrid {
     }
     this.envGroup.add(roadGroup);
 
-    // Bridge where the road crosses the river
+    // ── River crossing: the road runs straight over a causeway ──────────
+    // No separate bridge deck (it used to z-fight with the road surface).
+    // Instead: a support causeway tucked UNDER the road, safety railings on
+    // both sides across the water, and pillars standing in the river.
     const cx = this.riverCenterX(zR);
-    const span = this.riverHW * 2 + 9;
-    const bridgeGroup = new THREE.Group();
+    const span = this.riverHW * 2 + 8;
+    const crossingGroup = new THREE.Group();
 
-    const deckMat = new THREE.MeshStandardMaterial({ color: 0x6b7280, roughness: 0.85 });
-    const deck = new THREE.Mesh(new THREE.BoxGeometry(span, 0.6, ROAD_W), deckMat);
-    deck.position.set(cx, -0.2, zR);
-    deck.castShadow = true;
-    bridgeGroup.add(deck);
-    // Bridge asphalt overlay so lanes continue seamlessly
-    const bridgeRoad = new THREE.Mesh(new THREE.PlaneGeometry(span, ROAD_W), asphaltMat);
-    bridgeRoad.rotation.x = -Math.PI / 2;
-    bridgeRoad.position.set(cx, 0.1, zR);
-    bridgeGroup.add(bridgeRoad);
-    const bridgeLineMat = lineMat;
-    for (const s of [-0.14, 0.14]) {
-      const line = new THREE.Mesh(new THREE.PlaneGeometry(span, 0.12), bridgeLineMat);
-      line.rotation.x = -Math.PI / 2;
-      line.position.set(cx, 0.11, zR + s);
-      bridgeGroup.add(line);
-    }
+    // Causeway support under the road (top sits just below the asphalt plane)
+    const causewayMat = new THREE.MeshStandardMaterial({ color: 0x5d6672, roughness: 0.9 });
+    const causeway = new THREE.Mesh(new THREE.BoxGeometry(span, 1.1, ROAD_W + 0.8), causewayMat);
+    causeway.position.set(cx, -0.53, zR);
+    causeway.castShadow = true;
+    crossingGroup.add(causeway);
 
+    // Safety railings on both sides across the water
     const railMat = new THREE.MeshStandardMaterial({ color: 0x9aa5b1, metalness: 0.5, roughness: 0.5 });
     for (const s of [-1, 1]) {
+      const railZ = zR + s * (ROAD_W / 2 + 0.35);
       const rail = new THREE.Mesh(new THREE.BoxGeometry(span, 0.09, 0.09), railMat);
-      rail.position.set(cx, 0.82, zR + s * (ROAD_W / 2 + 0.55));
-      bridgeGroup.add(rail);
+      rail.position.set(cx, 0.82, railZ);
+      crossingGroup.add(rail);
       const railLow = new THREE.Mesh(new THREE.BoxGeometry(span, 0.07, 0.07), railMat);
-      railLow.position.set(cx, 0.5, zR + s * (ROAD_W / 2 + 0.55));
-      bridgeGroup.add(railLow);
-      for (let px = -span / 2 + 1; px <= span / 2 - 1; px += 2.4) {
+      railLow.position.set(cx, 0.5, railZ);
+      crossingGroup.add(railLow);
+      for (let px = -span / 2 + 0.6; px <= span / 2 - 0.6; px += 2.2) {
         const post = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.85, 0.09), railMat);
-        post.position.set(cx + px, 0.42, zR + s * (ROAD_W / 2 + 0.55));
-        bridgeGroup.add(post);
+        post.position.set(cx + px, 0.42, railZ);
+        crossingGroup.add(post);
       }
     }
+
+    // Support pillars standing in the river
     const pillarMat = new THREE.MeshStandardMaterial({ color: 0x575f6b, roughness: 0.9 });
-    for (const px of [-span * 0.28, span * 0.28]) {
-      const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.62, 3.6, 10), pillarMat);
-      pillar.position.set(cx + px, -1.5, zR);
-      bridgeGroup.add(pillar);
+    for (const px of [-span * 0.3, 0, span * 0.3]) {
+      for (const s of [-1, 1]) {
+        const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.52, 3.4, 10), pillarMat);
+        pillar.position.set(cx + px, -1.55, zR + s * (ROAD_W / 2 - 1.2));
+        crossingGroup.add(pillar);
+      }
     }
-    this.envGroup.add(bridgeGroup);
+    this.envGroup.add(crossingGroup);
 
     this._buildTraffic();
   }
 
   // ══════════════════ ROAD TRAFFIC (cars & trucks) ════════════════════
 
-  private traffic: { group: THREE.Group; dir: 1 | -1; speed: number }[] = [];
+  private traffic: TrafficVehicle[] = [];
 
   private _buildTraffic() {
     const zR = this.zRoad;
@@ -801,7 +1000,7 @@ export class TerrainGrid {
       const g = isTruck ? makeTruck() : makeCar();
       const dir: 1 | -1 = rng() > 0.5 ? 1 : -1;
       const lane = dir === 1 ? -1.55 : 1.55; // right-hand traffic
-      const speed = (isTruck ? 7 : 10) + rng() * 6;
+      const baseSpeed = (isTruck ? 7 : 10) + rng() * 6;
       const x = lerpN(-this.padX, this.W + this.padX, rng());
       g.position.set(x, 0.06, zR + lane);
       g.rotation.y = dir === 1 ? 0 : Math.PI;
@@ -810,7 +1009,16 @@ export class TerrainGrid {
         if (mm.isMesh) mm.castShadow = true;
       });
       this.envGroup.add(g);
-      this.traffic.push({ group: g, dir, speed });
+      this.traffic.push({
+        group: g,
+        dir,
+        baseSpeed,
+        speed: baseSpeed,
+        halfLen: isTruck ? 2.0 : 0.95,
+        laneOffset: lane,
+        mode: 'cruise',
+        overtakeTime: 0,
+      });
     }
   }
 
@@ -1029,11 +1237,10 @@ export class TerrainGrid {
     const rocks = new THREE.InstancedMesh(rockGeo, new THREE.MeshStandardMaterial({ color: 0x7d7f83, roughness: 0.95 }), N_ROCK);
     rocks.castShadow = true;
     const ringGeo = new THREE.RingGeometry(0.42, 0.56, 20);
-    const rings = new THREE.InstancedMesh(
-      ringGeo,
-      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.8, side: THREE.DoubleSide, depthWrite: false }),
-      N_ROCK_IN
-    );
+    this.ringMat = new THREE.MeshBasicMaterial({
+      color: 0xf2f6f8, transparent: true, opacity: 0.8, side: THREE.DoubleSide, depthWrite: false,
+    });
+    const rings = new THREE.InstancedMesh(ringGeo, this.ringMat, N_ROCK_IN);
     let nR = 0;
     let nF = 0;
     for (let tries = 0; tries < N_ROCK * 14 && nR < N_ROCK; tries++) {
@@ -1634,7 +1841,8 @@ export class TerrainGrid {
     const zR = this.zRoad;
     const poleGeo = new THREE.CylinderGeometry(0.06, 0.08, 3.0, 6);
     poleGeo.translate(0, 1.5, 0);
-    const armGeo = new THREE.BoxGeometry(0.9, 0.07, 0.07);
+    // Arm extends along Z (toward the road centre), centred 0.85 from the pole
+    const armGeo = new THREE.BoxGeometry(0.07, 0.07, 1.7);
     const bulbGeo = new THREE.SphereGeometry(0.14, 8, 8);
 
     const poleMat = new THREE.MeshStandardMaterial({ color: 0x4b5563, roughness: 0.6, metalness: 0.4 });
@@ -1644,13 +1852,16 @@ export class TerrainGrid {
       emissiveIntensity: 0.05,
     });
 
+    // All lamps stand on the SOUTH verge of the road (the north side is the
+    // plant slab) and never in the river. Bulb arms reach over the road edge.
+    const LAMP_Z = zR + 4.6;         // pole position (grass verge)
+    const BULB_Z = zR + 4.6 - 1.65;  // arm tip, just over the road edge
     const spots: { x: number; side: number }[] = [];
     const xMin = -this.padX + 6;
     const xMax = this.W + this.padX - 6;
-    let idx = 0;
     for (let x = xMin; x <= xMax; x += 11) {
-      spots.push({ x, side: idx % 2 === 0 ? -1 : 1 });
-      idx++;
+      if (Math.abs(x - this.riverCenterX(LAMP_Z)) < this.riverHW * 1.55 + 1.2) continue; // in the river
+      spots.push({ x, side: 1 });
     }
 
     const poles = new THREE.InstancedMesh(poleGeo, poleMat, spots.length);
@@ -1665,16 +1876,18 @@ export class TerrainGrid {
     const vOne = new THREE.Vector3(1, 1, 1);
 
     spots.forEach((sp, i) => {
-      const y = Math.max(0, this.terrainHeight(sp.x, zR + sp.side * 4.6));
-      eul.set(0, sp.side > 0 ? 0 : Math.PI, 0);
+      const y = Math.max(0, this.terrainHeight(sp.x, LAMP_Z));
+      eul.set(0, 0, 0);
       q.setFromEuler(eul);
-      vPos.set(sp.x, y, zR + sp.side * 4.6);
+      vPos.set(sp.x, y, LAMP_Z);
       m.compose(vPos, q, vOne);
       poles.setMatrixAt(i, m);
-      vPos.set(sp.x + sp.side * 0.45, y + 2.95, zR + sp.side * 4.6);
+      // Arm reaches FROM the pole TOWARD the road centre (along −side·Z)
+      vPos.set(sp.x, y + 2.95, zR + sp.side * (4.6 - 0.85));
       m.compose(vPos, q, vOne);
       arms.setMatrixAt(i, m);
-      vPos.set(sp.x + sp.side * 0.85, y + 2.88, zR + sp.side * 4.6);
+      // Bulb hangs at the arm tip, just over the road edge
+      vPos.set(sp.x, y + 2.86, zR + sp.side * (4.6 - 1.65));
       m.compose(vPos, q, vOne);
       bulbs.setMatrixAt(i, m);
     });
@@ -1684,6 +1897,140 @@ export class TerrainGrid {
     this.envGroup.add(poles);
     this.envGroup.add(arms);
     this.envGroup.add(bulbs);
+
+    // ── Warm light pool on the road under EVERY lamp (additive decal) ──
+    const poolCanvas = document.createElement('canvas');
+    poolCanvas.width = 128; poolCanvas.height = 128;
+    const pctx = poolCanvas.getContext('2d');
+    if (pctx) {
+      const grad = pctx.createRadialGradient(64, 64, 4, 64, 64, 62);
+      grad.addColorStop(0, 'rgba(255,226,168,0.95)');
+      grad.addColorStop(0.45, 'rgba(255,214,140,0.45)');
+      grad.addColorStop(1, 'rgba(255,214,140,0)');
+      pctx.fillStyle = grad;
+      pctx.fillRect(0, 0, 128, 128);
+    }
+    const poolTex = new THREE.CanvasTexture(poolCanvas);
+    poolTex.colorSpace = THREE.SRGBColorSpace;
+    this.lampPoolMat = new THREE.MeshBasicMaterial({
+      map: poolTex,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    const poolGeo = new THREE.PlaneGeometry(7.5, 5.2);
+    const pools = new THREE.InstancedMesh(poolGeo, this.lampPoolMat, spots.length);
+    const poolQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2, 0, 0));
+    spots.forEach((sp, i) => {
+      vPos.set(sp.x, 0.098, zR + 1.5); // pool centred on the southbound lane
+      m.compose(vPos, poolQ, vOne);
+      pools.setMatrixAt(i, m);
+    });
+    pools.instanceMatrix.needsUpdate = true;
+    pools.renderOrder = 20;
+    this.envGroup.add(pools);
+
+    // ── Real SpotLights for lamps near the plant & crossing (night only) ──
+    // They add true dynamic lighting/shadows where the player is looking;
+    // every distant lamp is already visibly lit by its bulb + light pool.
+    this.lampLights = [];
+    spots.forEach(sp => {
+      if (Math.abs(sp.x - this.W / 2) > this.W / 2 + 40) return; // central zone only
+      const y = Math.max(0, this.terrainHeight(sp.x, LAMP_Z));
+      const bx = sp.x;
+      const by = y + 2.8;
+      const bz = BULB_Z;
+
+      const light = new THREE.SpotLight(0xffe2a8, 0, 22, 1.05, 0.6, 1.45);
+      light.position.set(bx, by, bz);
+      light.target.position.set(bx, 0, bz - sp.side * 1.7); // pool of light on the road lane
+      this.envGroup.add(light);
+      this.envGroup.add(light.target);
+      this.lampLights.push(light);
+    });
+  }
+
+  // ════════════ TUTORIAL BUILD-RESTRICTION OVERLAY ════════════════════
+
+  /**
+   * Dims every lot outside the tutorial's allowed rectangle so players must
+   * follow the guided build spot. Pass null to clear the restriction.
+   */
+  public setBuildRestriction(rect: { x: number; y: number; w: number; h: number } | null) {
+    const key = rect ? `${rect.x},${rect.y},${rect.w},${rect.h}` : '';
+    if (key === this.restrictionRectKey) return;
+    this.restrictionRectKey = key;
+
+    if (this.restrictionGroup) {
+      this.slabGroup.remove(this.restrictionGroup);
+      this.restrictionGroup.traverse(o => {
+        const mesh = o as THREE.Mesh;
+        if (mesh.geometry) mesh.geometry.dispose();
+        const mat = mesh.material as THREE.Material | undefined;
+        if (mat && !Array.isArray(mat)) mat.dispose();
+      });
+      this.restrictionGroup = null;
+    }
+    if (!rect) return;
+
+    const W = this.W;
+    const D = this.D;
+    const m = 0.22; // breathing margin around the allowed lot
+    const ax = rect.x - m;
+    const az = rect.y - m;
+    const aw = rect.w + m * 2;
+    const ah = rect.h + m * 2;
+
+    const g = new THREE.Group();
+
+    // Dark veil over the whole plant slab with a hole for the allowed lot.
+    // ShapeGeometry is built in XY then rotated -90° about X → world Z = -shapeY.
+    const shape = new THREE.Shape();
+    shape.moveTo(-1.4, 1.4);
+    shape.lineTo(W + 1.4, 1.4);
+    shape.lineTo(W + 1.4, -(D + 1.4));
+    shape.lineTo(-1.4, -(D + 1.4));
+    shape.closePath();
+    const hole = new THREE.Path();
+    hole.moveTo(ax, -az);
+    hole.lineTo(ax + aw, -az);
+    hole.lineTo(ax + aw, -(az + ah));
+    hole.lineTo(ax, -(az + ah));
+    hole.closePath();
+    shape.holes.push(hole);
+
+    const veilGeo = new THREE.ShapeGeometry(shape);
+    const veilMat = new THREE.MeshBasicMaterial({
+      color: 0x050a13,
+      transparent: true,
+      opacity: 0.66,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const veil = new THREE.Mesh(veilGeo, veilMat);
+    veil.rotation.x = -Math.PI / 2;
+    veil.position.y = 0.075;
+    veil.renderOrder = 30;
+    g.add(veil);
+
+    // Glowing border around the allowed lot
+    const bpts = [
+      new THREE.Vector3(ax, 0.09, az),
+      new THREE.Vector3(ax + aw, 0.09, az),
+      new THREE.Vector3(ax + aw, 0.09, az + ah),
+      new THREE.Vector3(ax, 0.09, az + ah),
+      new THREE.Vector3(ax, 0.09, az),
+    ];
+    const border = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints(bpts),
+      new THREE.LineBasicMaterial({ color: 0x4ade80, transparent: true, opacity: 0.95 })
+    );
+    border.renderOrder = 31;
+    g.add(border);
+
+    this.restrictionGroup = g;
+    this.slabGroup.add(g);
   }
 
   private _buildMountains() {
