@@ -1206,6 +1206,14 @@ export const App: React.FC = () => {
               );
               sceneRef.current?.syncUnits(ng);
             }}
+            onUpdateCommissioning={(id, next) => {
+              setGameState(prev => ({
+                ...prev,
+                units: prev.units.map(un =>
+                  un.instanceId === id ? { ...un, commissioning: next } : un
+                ),
+              }));
+            }}
           />
         );
       })()}

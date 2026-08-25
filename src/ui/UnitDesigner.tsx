@@ -16,6 +16,7 @@
 import React, { useMemo, useState } from 'react';
 import { X, Ruler, Sliders, Activity, DollarSign, Wrench, Calculator } from 'lucide-react';
 import { PlacedUnit } from '../types/simulation';
+import type { CommissioningState } from '../design/UnitBlueprint';
 import { UNIT_DEFINITIONS } from '../sim/UnitProcessModels';
 import { SoundManager } from '../audio/SoundManager';
 import {
@@ -43,6 +44,8 @@ export interface UnitDesignerProps {
   unit: PlacedUnit;
   onClose: () => void;
   onUpdateBlueprint: (unitId: string, next: PlacedUnit['blueprint']) => void;
+  /** Writes the placed unit's runtime commissioning state (seed-sludge choice). */
+  onUpdateCommissioning?: (unitId: string, next: CommissioningState) => void;
 }
 
 type Tab = 'design' | 'operate' | 'diagnostics' | 'economics' | 'maintenance';
@@ -50,7 +53,7 @@ type Tab = 'design' | 'operate' | 'diagnostics' | 'economics' | 'maintenance';
 const fmt = (v: number | undefined, d = 1) => (v === undefined || Number.isNaN(v) ? '—' : v.toFixed(d));
 const money = (v: number) => `$${Math.round(v).toLocaleString()}`;
 
-export const UnitDesigner: React.FC<UnitDesignerProps> = ({ unit, onClose, onUpdateBlueprint }) => {
+export const UnitDesigner: React.FC<UnitDesignerProps> = ({ unit, onClose, onUpdateBlueprint, onUpdateCommissioning }) => {
   const def = UNIT_DEFINITIONS[unit.typeId];
   if (!def || !unit.blueprint) {
     return (
@@ -64,6 +67,20 @@ export const UnitDesigner: React.FC<UnitDesignerProps> = ({ unit, onClose, onUpd
   const [bp, setBp] = useState(unit.blueprint);
   const bpRef = React.useRef(bp);
   bpRef.current = bp;
+
+  // Seed-sludge choice (backlog #2): lives on the placed unit's RUNTIME
+  // commissioning state — NOT the blueprint (GameManager seeds by default at
+  // placement; unchecking here re-routes the unit onto the natural-growth
+  // commissioning ramp consumed by stepCasRuntime).
+  const seededWithSludge = unit.commissioning?.seededWithSludge ?? true;
+  const toggleSeeded = (checked: boolean) => {
+    const next: CommissioningState = {
+      phase: unit.commissioning?.phase ?? 'empty',
+      daysInPhase: unit.commissioning?.daysInPhase ?? 0,
+      seededWithSludge: checked,
+    };
+    onUpdateCommissioning?.(unit.instanceId, next);
+  };
 
   const commit = (next: typeof bp) => {
     setBp(next);
@@ -93,6 +110,23 @@ export const UnitDesigner: React.FC<UnitDesignerProps> = ({ unit, onClose, onUpd
           </button>
         ))}
       </div>
+
+      {/* Seed sludge toggle: controls whether the unit starts with seeded biomass
+          (immediate near-design performance) or unseeded (commissioning ramp to stable). */}
+      {unit.typeId === 'activated_sludge_cas' && (
+        <div className="flex items-center gap-2 mb-3 text-[10px] font-mono">
+          <input
+            type="checkbox"
+            checked={seededWithSludge}
+            onChange={e => toggleSeeded(e.target.checked)}
+            className="bg-slate-800 border border-slate-700 rounded w-4 h-4 text-teal-400 focus-visible:outline focus-visible:ring-2"
+          />
+          <span>
+            {seededWithSludge
+              ? 'Seed sludge: reactor commissioned with imported biomass — near-design performance immediately'
+              : 'Unseeded: culture must grow from scratch (~3-week commissioning ramp at reduced performance)'}</span>
+        </div>
+      )}
 
       {/* Issue banner */}
       {issues.length > 0 && (
