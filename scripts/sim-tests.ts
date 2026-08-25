@@ -13,6 +13,7 @@ import {
   getUnitWorldCenter
 } from '../src/sim/PipeNetwork';
 import type { PipeConnection, PlacedUnit } from '../src/types/simulation';
+import { OvertakeController } from '../src/graphics/OvertakeController';
 
 let failures = 0;
 const assert = (cond: boolean, msg: string) => {
@@ -1135,6 +1136,129 @@ const obj = (state: any, id: string) => state.currentLevel.objectives.find((o: a
   const flowOk = sX.finalEffluent.flowRate >= 10000;
   assert(obj(sX, 'obj_volume').achieved === flowOk,
     `X. L5 obj_volume tracks CURRENT throughput (${sX.finalEffluent.flowRate.toFixed(0)} m³/d → achieved=${obj(sX, 'obj_volume').achieved})`);
+}
+
+// ── Test Z: Live effluent/financial objectives UNLATCH; completion LATCHES ─────
+// Regression for the "objective achieved flag flips back to false when plant
+// conditions deteriorate" behavior — operational objectives reflect CURRENT
+// state every tick (no per-objective latching), while isLevelComplete is
+// permanent once all are met.
+{
+  const gsZ = GameManager.createInitialState(0, true); // sandbox → we can shock the influent
+  let s: any = { ...gsZ, simSpeed: 5 as const };
+  const place = (type: UnitTypeId, x: number, y: number, params?: Record<string, number>) => {
+    const r = GameManager.placeUnit(s, type, x, y);
+    if (!r.success) { console.error('place fail:', type, r.reason); return null; }
+    s = r.newState;
+    const u = s.units[s.units.length - 1];
+    if (params) Object.assign(u.customParams, params);
+    return u as PlacedUnit;
+  };
+  const scr = place('bar_screen', 5, 20)!;
+  const grt = place('grit_chamber', 8, 20)!;
+  const pri = place('primary_clarifier_circular', 11, 9)!;
+  const cas = place('activated_sludge_cas', 15, 9, { doSetpoint: 2.5 })!;
+  const clr = place('secondary_clarifier', 18, 12)!;
+  const uv = place('uv_disinfection', 21, 10)!;
+  const outfall = s.units.find((u: any) => u.typeId === 'effluent_outfall')!.instanceId;
+  s.pipes = [
+    mkPipe('z1', 'inlet_0', 'outlet', scr.instanceId, 'inlet'),
+    mkPipe('z2', scr.instanceId, 'outlet', grt.instanceId, 'inlet'),
+    mkPipe('z3', grt.instanceId, 'outlet', pri.instanceId, 'inlet'),
+    mkPipe('z4', pri.instanceId, 'outlet', cas.instanceId, 'inlet'),
+    mkPipe('z5', cas.instanceId, 'outlet', clr.instanceId, 'inlet'),
+    mkPipe('z6', clr.instanceId, 'outlet', uv.instanceId, 'inlet'),
+    mkPipe('z7', uv.instanceId, 'outlet', outfall, 'inlet'),
+    mkPipe('z8', clr.instanceId, 'sludge_outlet', cas.instanceId, 'ras_inlet', 'ras')
+  ];
+  // Run to steady state — the conventional train should hit BOD < 25.
+  for (let i = 0; i < 400; i++) s = GameManager.tick(s, 0.5);
+  assert(obj(s, 'obj_bod').achieved === true,
+    `Z1. Live objective unlatch — BOD met at steady state (bod=${s.finalEffluent.bod.toFixed(1)} ≤ 25)`);
+  assert(obj(s, 'obj_profit').achieved === true,
+    `Z2. Live objective unlatch — profit positive at steady state ($${s.financials.netDailyProfit.toFixed(0)}/d)`);
+
+  // Shock the influent: spike BOD massively → effluent BOD climbs above target.
+  s.sandboxCustomInfluent = { ...s.sandboxCustomInfluent, bod: 5000, cod: 4000, tss: 2500 };
+  for (let i = 0; i < 400; i++) s = GameManager.tick(s, 0.5);
+  assert(obj(s, 'obj_bod').achieved === false,
+    `Z3. Live objective UNLATCHED — BOD deteriorated above 25 (bod=${s.finalEffluent.bod.toFixed(1)})`);
+
+  // Restore influent → BOD recovers → objective true again (re-achievable, not sticky).
+  s.sandboxCustomInfluent = { ...gsZ.currentLevel.influentSpec };
+  for (let i = 0; i < 400; i++) s = GameManager.tick(s, 0.5);
+  assert(obj(s, 'obj_bod').achieved === true,
+    `Z4. Live objective re-achievable after recovery (bod=${s.finalEffluent.bod.toFixed(1)} ≤ 25)`);
+
+  // ── Completion latch: ALL objectives valid simultaneously → isLevelComplete
+  // latches permanently even if conditions later deteriorate.
+  // Reset to a clean steady-state plant.
+  let sC: any = { ...gsZ, simSpeed: 5 as const };
+  const placeC = (type: UnitTypeId, x: number, y: number, params?: Record<string, number>) => {
+    const r = GameManager.placeUnit(sC, type, x, y);
+    if (!r.success) { console.error('place fail:', type, r.reason); return null; }
+    sC = r.newState;
+    const u = sC.units[sC.units.length - 1];
+    if (params) Object.assign(u.customParams, params);
+    return u as PlacedUnit;
+  };
+  const scrC = placeC('bar_screen', 5, 20)!;
+  const grtC = placeC('grit_chamber', 8, 20)!;
+  const priC = placeC('primary_clarifier_circular', 11, 9)!;
+  const casC = placeC('activated_sludge_cas', 15, 9, { doSetpoint: 2.5 })!;
+  const clrC = placeC('secondary_clarifier', 18, 12)!;
+  const uvC = placeC('uv_disinfection', 21, 10)!;
+  const outfallC = sC.units.find((u: any) => u.typeId === 'effluent_outfall')!.instanceId;
+  sC.pipes = [
+    mkPipe('zC1', 'inlet_0', 'outlet', scrC.instanceId, 'inlet'),
+    mkPipe('zC2', scrC.instanceId, 'outlet', grtC.instanceId, 'inlet'),
+    mkPipe('zC3', grtC.instanceId, 'outlet', priC.instanceId, 'inlet'),
+    mkPipe('zC4', priC.instanceId, 'outlet', casC.instanceId, 'inlet'),
+    mkPipe('zC5', casC.instanceId, 'outlet', clrC.instanceId, 'inlet'),
+    mkPipe('zC6', clrC.instanceId, 'outlet', uvC.instanceId, 'inlet'),
+    mkPipe('zC7', uvC.instanceId, 'outlet', outfallC, 'inlet'),
+    mkPipe('zC8', clrC.instanceId, 'sludge_outlet', casC.instanceId, 'ras_inlet', 'ras')
+  ];
+  for (let i = 0; i < 400; i++) sC = GameManager.tick(sC, 0.5);
+  const allMet = sC.currentLevel.objectives.every((o: any) => o.achieved);
+  assert(allMet, 'Z5. All Level 1 objectives valid simultaneously → complete');
+  assert(sC.isLevelComplete, 'Z6. isLevelComplete latches true on all-met');
+  // Deteriorate AFTER completion — completion must STAY latched.
+  sC.sandboxCustomInfluent = { ...sC.sandboxCustomInfluent, bod: 5000, cod: 4000, tss: 2500 };
+  for (let i = 0; i < 400; i++) sC = GameManager.tick(sC, 0.5);
+  assert(obj(sC, 'obj_bod').achieved === false, 'Z7. Post-completion: live BOD objective still unlatched (can flip false)');
+  assert(sC.isLevelComplete === true, 'Z8. isLevelComplete STAYS latched true despite deterioration');
+}
+
+// ── Test AA: Overtake reservation controller (pure, no WebGL) ──────────────────
+{
+  // 1. vehicle A acquires reservation
+  const oc = new OvertakeController();
+  const A = { id: 1, dir: 1, state: 'cruise' as const, overtakeTime: 0, cooldown: 0, inHomeLane: true };
+  assert(oc.acquireOvertakeReservation(A) === true && oc.isReservationHeldBy(1), 'AA1. vehicle A acquires road-wide reservation');
+  // 2. vehicle B same direction cannot acquire
+  const B = { id: 2, dir: 1, state: 'cruise' as const, overtakeTime: 0, cooldown: 0, inHomeLane: true };
+  assert(oc.acquireOvertakeReservation(B) === false && !oc.isReservationHeldBy(2), 'AA2. vehicle B (same dir) cannot acquire while A holds');
+  // 3. vehicle C opposite direction cannot acquire
+  const C = { id: 3, dir: -1, state: 'cruise' as const, overtakeTime: 0, cooldown: 0, inHomeLane: true };
+  assert(oc.acquireOvertakeReservation(C) === false && !oc.isReservationHeldBy(3), 'AA3. vehicle C (opposite dir) cannot acquire — single road-wide lock');
+  // 4. A retains reservation through prepare / overtake / return (no one may begin)
+  A.state = 'prepare'; assert(oc.canBeginOvertake(B) === false, 'AA4. B cannot begin while A in prepare (retained)');
+  A.state = 'overtake'; assert(oc.canBeginOvertake(C) === false, 'AA4b. C cannot begin while A in overtake (retained)');
+  A.state = 'return';   assert(oc.isReservationHeldBy(1), 'AA4c. A still holds through return');
+  // 5. reservation releases after A reaches cooldown / home lane
+  A.state = 'cooldown'; A.inHomeLane = true;
+  oc.releaseOvertakeReservation(1);
+  assert(oc.activeId === null, 'AA5. reservation released after A reaches cooldown/home lane');
+  // 6. another vehicle may acquire afterward
+  assert(oc.acquireOvertakeReservation(B) === true && oc.isReservationHeldBy(2), 'AA6. B may acquire after release');
+  // Safety: releasing when not the holder is a no-op
+  assert(oc.releaseOvertakeReservation(999) === false, 'AA7. release by non-holder is refused (no stale-lock injection)');
+  // canBeginOvertake rejects already-manoeuvring and cooldown vehicles
+  const D = { id: 4, dir: 1, state: 'prepare' as const, overtakeTime: 0, cooldown: 0, inHomeLane: false };
+  const E = { id: 5, dir: 1, state: 'cruise' as const, overtakeTime: 0, cooldown: 3, inHomeLane: true };
+  assert(oc.canBeginOvertake(D) === false, 'AA8. canBeginOvertake=false for a vehicle already manoeuvring');
+  assert(oc.canBeginOvertake(E) === false, 'AA9. canBeginOvertake=false while vehicle cooldown > 0');
 }
 
 // ── Test Y: Level 5 completion is campaign completion (no wrap to Level 1) ────

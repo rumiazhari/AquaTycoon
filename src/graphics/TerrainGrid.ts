@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { LevelBiome } from '../types/game';
+import { OvertakeController, OvertakeVehicle as OvertakeVehicleState } from './OvertakeController';
 
 /**
  * Realistic 3D environment surrounding the plant site:
@@ -35,8 +36,8 @@ const BROADLEAF_GREENS = [0x4a8f3c, 0x579c46, 0x3f7d33, 0x6aa84f];
 // immune to scene lights, so the day/night blend is done manually)
 const RIVER_DAY   = new THREE.Color(0x4383b2);
 const RIVER_NIGHT = new THREE.Color(0x16283a);
-const ARROW_DAY   = new THREE.Color(0xa8d8ee);
-const ARROW_NIGHT = new THREE.Color(0x24384a);
+const FLOW_STREAK_DAY   = new THREE.Color(0xa8d8ee);
+const FLOW_STREAK_NIGHT = new THREE.Color(0x24384a);
 const FOAM_DAY    = new THREE.Color(0xf2f6f8);
 const FOAM_NIGHT  = new THREE.Color(0x3a4a58);
 
@@ -64,6 +65,7 @@ type TrafficMode = 'cruise' | 'prepare' | 'overtake' | 'return' | 'cooldown';
 
 /** A single road vehicle with car-following / overtaking AI state */
 interface TrafficVehicle {
+  id: number;                 // stable id — never an array index (list may reorder)
   group: THREE.Group;
   dir: 1 | -1;
   baseSpeed: number;
@@ -172,8 +174,17 @@ export class TerrainGrid {
   private flowParticles: THREE.InstancedMesh | null = null;
   private flowData: { t: number; u: number; speed: number; scale: number }[] = [];
   private waterMat: THREE.MeshBasicMaterial | null = null;
-  private arrowMat: THREE.MeshBasicMaterial | null = null;
+  private flowStreakMat: THREE.MeshBasicMaterial | null = null;
   private ringMat: THREE.MeshBasicMaterial | null = null;
+  /** Road-wide persistent overtake reservation (one per road, BOTH directions). */
+  private overtakeController: OvertakeController = new OvertakeController();
+  private nextVehicleId: number = 1;
+  /** Shoreline / bank foam: InstancedMesh + per-instance anim metadata. */
+  private foamParticles: THREE.InstancedMesh | null = null;
+  private foamData: { t: number; u: number; w: number; phase: number }[] = [];
+  private foamMat: THREE.MeshBasicMaterial | null = null;
+  /** River-rock positions (surface-breakers) collected during _buildForests, consumed by _buildRiver foam. */
+  private riverRockPositions: { x: number; z: number; s: number }[] = [];
 
   constructor(mapWidth: number = 24, mapDepth: number = 20) {
     this.group = new THREE.Group();
@@ -227,6 +238,31 @@ export class TerrainGrid {
       this.flowParticles.instanceMatrix.needsUpdate = true;
     }
 
+    // ── River shoreline foam: subtle longitudinal drift + pulsing shimmer ──
+    if (this.foamParticles && this.foamData.length > 0) {
+      const m2 = new THREE.Matrix4();
+      const pos2 = new THREE.Vector3();
+      const q2 = new THREE.Quaternion();
+      const scl2 = new THREE.Vector3();
+      for (let i = 0; i < this.foamParticles.count; i++) {
+        const f = this.foamData[i];
+        this.foamParticles.getMatrixAt(i, m2);
+        m2.decompose(pos2, q2, scl2);
+        // Longitudinal drift: nudge the segment slightly upstream/downstream
+        // over time so the foam appears to breathe with the current.
+        const drift = Math.sin(elapsed * 0.7 + f.phase) * 0.06;
+        // Recompose only position + a pulsing opacity via color alpha scaling.
+        pos2.x += drift * 0.08;
+        pos2.z += drift;
+        // Pulsation: scale the quad slightly and vary its effective brightness.
+        const pulse = 1.0 + Math.sin(elapsed * 1.9 + f.phase * 0.5) * 0.12;
+        scl2.set(f.w * pulse, 1, scl2.z);
+        m2.compose(pos2, q2, scl2);
+        this.foamParticles.setMatrixAt(i, m2);
+      }
+      this.foamParticles.instanceMatrix.needsUpdate = true;
+    }
+
     // ── Traffic: car-following, queueing & safe overtaking AI ──────────
     if (this.traffic.length > 0) {
       const xMin = -this.padX - 14;
@@ -234,7 +270,6 @@ export class TerrainGrid {
       const vs = this.traffic;
       const dts = Math.max(dt, 1e-4);
       const CORRIDOR_TOL = 1.75; // lateral half-width of a lane corridor
-      const overtakeLock: { [d: number]: number | null } = { 1: null, [-1]: null }; // ONE active overtake per direction
 
       /** Nearest vehicle ahead of `me` in the corridor centred at zCentre (ANY direction) */
       const aheadInCorridor = (me: TrafficVehicle, zCentre: number) => {
@@ -280,6 +315,21 @@ export class TerrainGrid {
         if (gap < desiredGap) return Math.min(base, Math.max(0, leader.speed * (gap / desiredGap)));
         return base;
       };
+
+      // ── Overtake reservation: persistent road-wide lock ─────────────────
+      // Reconciled once per tick BEFORE per-vehicle AI so every vehicle below
+      // sees an authoritative reservation state. The lock is CLASS state on
+      // this.overtakeController — it is NEVER recreated per-frame, which was
+      // the root cause of the original "multiple overlapping overtakes" bug.
+      const ot = this.overtakeController;
+      // Reconcile using a lightweight adapter: TrafficVehicle → OvertakeVehicle
+      // (mode→state, position→inHomeLane). The controller stays pure / WebGL-free.
+      const otView = (v: TrafficVehicle): OvertakeVehicleState => ({
+        id: v.id, dir: v.dir, state: v.mode, overtakeTime: v.overtakeTime,
+        cooldown: v.cooldown,
+        inHomeLane: Math.abs(v.group.position.z - (this.zRoad + v.laneOffset)) < 0.06,
+      });
+      ot.reconcile(vs.map(otView));
 
       for (const v of vs) {
         const zRoad = this.zRoad;
@@ -330,16 +380,11 @@ export class TerrainGrid {
           if (!committedHome) target = Math.min(target, followTarget(v, pass, v.baseSpeed));
         }
 
-        // ── Overtake reservation lock: ONE active manoeuvre per direction ──
-        // The whole road is a single two-lane conflict zone per direction, so
-        // only one vehicle may hold the corridor at a time.
-        const myIdx = vs.indexOf(v);
-        const lockHolder = overtakeLock[v.dir];
-        const iHoldLock = lockHolder === myIdx;
-
         // ── Overtake initiation: stuck behind a measurably slower vehicle ──
-        if ((v.mode === 'cruise' || v.mode === 'cooldown') && v.cooldown <= 0 &&
-            !iHoldLock && lockHolder === null &&
+        // The road-wide reservation gates this: no vehicle — same direction
+        // (no "overtaking the overtaker") or opposite direction — may begin
+        // while another vehicle holds the reservation.
+        if (ot.canBeginOvertake(otView(v)) &&
             home.leader && !home.oncoming &&
             home.leader.speed < v.baseSpeed - 0.8 && home.gap < 2.2 + v.speed * 0.55) {
           const passBlocked =
@@ -348,7 +393,7 @@ export class TerrainGrid {
           if (!passBlocked) {
             v.mode = 'prepare';       // reserve the corridor before pulling out
             v.overtakeTime = 0;
-            overtakeLock[v.dir] = myIdx; // acquire the single-slot lock
+            ot.acquireOvertakeReservation(otView(v)); // acquire road-wide lock
           } else {
             target = Math.min(target, home.leader.speed); // measured slow-down behind the slow vehicle
           }
@@ -378,13 +423,12 @@ export class TerrainGrid {
           // If danger and we cannot return yet, followTarget(pass) brakes hard
           // until the rear clears, then the next frame completes the merge.
         }
-        // Release the lock when back in the home lane (return → cooldown above)
-        if (v.mode === 'cooldown' && overtakeLock[v.dir] === myIdx) {
-          overtakeLock[v.dir] = null;
-        }
-        // Safety: never leave a stale lock on wrap-around respawn
-        if ((v.mode === 'cruise' || v.mode === 'cooldown') && overtakeLock[v.dir] === myIdx) {
-          overtakeLock[v.dir] = null;
+        // Release the road-wide reservation once the holder is fully back in
+        // its home lane AND has entered cooldown (the manoeuvre is complete).
+        // The controller's reconcile() also clears stale holders each tick, so
+        // a vehicle that wraps/resets/leaves the list never leaves a dead lock.
+        if (v.mode === 'cooldown' && ot.isReservationHeldBy(v.id)) {
+          ot.releaseOvertakeReservation(v.id);
         }
 
         // ── Longitudinal integration with acceleration/braking limits ──
@@ -393,8 +437,8 @@ export class TerrainGrid {
         if (v.speed < 0) v.speed = 0;
 
         let x = v.group.position.x + v.dir * v.speed * dts;
-        if (x > xMax) { x = xMin; v.mode = 'cruise'; v.cooldown = 0; v.group.position.z = zRoad + v.laneOffset; overtakeLock[v.dir] = null; }
-        if (x < xMin) { x = xMax; v.mode = 'cruise'; v.cooldown = 0; v.group.position.z = zRoad + v.laneOffset; overtakeLock[v.dir] = null; }
+        if (x > xMax) { x = xMin; v.mode = 'cruise'; v.cooldown = 0; v.group.position.z = zRoad + v.laneOffset; ot.releaseOvertakeReservation(v.id); }
+        if (x < xMin) { x = xMax; v.mode = 'cruise'; v.cooldown = 0; v.group.position.z = zRoad + v.laneOffset; ot.releaseOvertakeReservation(v.id); }
         v.group.position.x = x;
       }
     }
@@ -424,8 +468,9 @@ export class TerrainGrid {
     if (this.windowMat) this.windowMat.emissiveIntensity = lerpN(0.05, 1.15, nightFactor);
     // River is unlit — blend its palette manually so it darkens at night
     if (this.waterMat) this.waterMat.color.copy(RIVER_DAY).lerp(RIVER_NIGHT, nightFactor);
-    if (this.arrowMat) this.arrowMat.color.copy(ARROW_DAY).lerp(ARROW_NIGHT, nightFactor);
+    if (this.flowStreakMat) this.flowStreakMat.color.copy(FLOW_STREAK_DAY).lerp(FLOW_STREAK_NIGHT, nightFactor);
     if (this.ringMat) this.ringMat.color.copy(FOAM_DAY).lerp(FOAM_NIGHT, nightFactor);
+    if (this.foamMat) this.foamMat.color.copy(FOAM_DAY).lerp(FOAM_NIGHT, nightFactor);
     // Site corner floodlights switch on at dusk (with real shadows)
     for (const light of this.siteLights) {
       light.intensity = nightFactor * 320;
@@ -544,6 +589,9 @@ export class TerrainGrid {
       this._buildBushTrees(rng);
     }
     if (this.cfg.farmPlots > 0) this._buildFarmFields(rng);
+    // Shoreline foam is built AFTER the forests so river-rock positions (collected
+    // inside _buildForests) are available for the rock-break-surface foam arcs.
+    this._buildRiverFoam(-this.padZ, this.D + this.padZ, rng);
     this._buildVillage(rng);
     this._buildTown(rng);
     if (this.cfg.factories > 0) this._buildFactories(rng);
@@ -746,9 +794,18 @@ export class TerrainGrid {
     this.flowParticles = null;
     this.flowData = [];
     this.waterMat = null;
-    this.arrowMat = null;
+    this.flowStreakMat = null;
     this.ringMat = null;
+    // Shoreline foam disposal
+    this.foamParticles = null;
+    this.foamData = [];
+    this.foamMat = null;
+    this.riverRockPositions = [];
     this.traffic = [];
+    // Persistent overtake reservation must be wiped on level/map change so a
+    // new map starts with no stale road-wide lock.
+    this.overtakeController.reset();
+    this.nextVehicleId = 1;
   }
 
   // ══════════════ SITE FLOODLIGHTING (night visibility) ═══════════════
@@ -940,8 +997,9 @@ export class TerrainGrid {
     water.frustumCulled = false;
     water.renderOrder = 2;
     this.envGroup.add(water);
-// Stylized elongated flow streaks riding the current downstream (+Z direction)
-    const N_ARROWS = Math.round((zMax - zMin) / 2.2);
+
+    // ── Stylized elongated flow streaks riding the current (+Z direction) ──
+    const N_FLOW_STREAKS = Math.round((zMax - zMin) / 2.2);
     // Slim rounded line-dash shape (long axis = Z / flow direction), baked flat
     const dashShape = new THREE.Shape();
     const dw = 0.07;   // half-width of the streak
@@ -951,27 +1009,132 @@ export class TerrainGrid {
     dashShape.lineTo(dw, dl);
     dashShape.lineTo(-dw, dl);
     dashShape.closePath();
-    const arrowGeo = new THREE.ShapeGeometry(dashShape);
-    arrowGeo.rotateX(-Math.PI / 2); // lie flat on the water, long axis along Z
-    this.arrowMat = new THREE.MeshBasicMaterial({
-      color: 0xa8d8ee, transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthWrite: false,
+    const flowStreakGeo = new THREE.ShapeGeometry(dashShape);
+    flowStreakGeo.rotateX(-Math.PI / 2); // lie flat on the water, long axis along Z
+    this.flowStreakMat = new THREE.MeshBasicMaterial({
+      color: FLOW_STREAK_DAY, transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthWrite: false,
     });
-    this.flowParticles = new THREE.InstancedMesh(arrowGeo, this.arrowMat, N_ARROWS);
+    this.flowParticles = new THREE.InstancedMesh(flowStreakGeo, this.flowStreakMat, N_FLOW_STREAKS);
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2, 0, 0));
     const one = new THREE.Vector3(1, 1, 1);
     const pos = new THREE.Vector3();
-    for (let i = 0; i < N_ARROWS; i++) {
+    for (let i = 0; i < N_FLOW_STREAKS; i++) {
       this.flowData.push({ t: rngFleck(), u: (rngFleck() - 0.5) * 5.6, speed: 0.75 + rngFleck() * 0.5, scale: 1.0 + rngFleck() * 1.0 });
       pos.set(this.riverCenterX(this.flowData[i].t * (zMax - zMin) + zMin), this.waterY + 0.04, 0);
       m.compose(pos, q, one);
       this.flowParticles.setMatrixAt(i, m);
     }
     this.flowParticles.instanceMatrix.needsUpdate = true;
+    this.flowParticles.renderOrder = 3;
     this.envGroup.add(this.flowParticles);
   }
 
-  // ══════════════════ PLANT SLAB, GRID & LOT MARKERS ═══════════════════
+  /**
+   * Cartoon shoreline foam.
+   *
+   * White irregular foam strips are placed near BOTH river banks, sampled along
+   * Z. At each sampled Z the bank X is derived from the river centreline:
+   *
+   *   leftBankX  ≈ riverCenterX(z) - (riverHW + foamBankOffset)
+   *   rightBankX ≈ riverCenterX(z) + (riverHW + foamBankOffset)
+   *
+   * To avoid a perfect continuous white line we use deterministic randomness
+   * to introduce gaps, varying length, lateral jitter, width and opacity.
+   * Small curved foam arcs are also spawned around river-rock positions that
+   * already broke the surface (collected during _buildForests), so we never
+   * do an expensive per-frame scene search.
+   *
+   * All geometry/anim metadata is stored once; tick() only nudges opacities
+   * and UV offsets for a subtle shimmer + longitudinal drift.
+   */
+  private _buildRiverFoam(zMin: number, zMax: number, rng: () => number) {
+    const foamBankOffset = 0.55;   // how far outside the bank the foam sits
+    // Short elongated quad shape (a "streak segment"). Baked flat on the water.
+    const foamShape = new THREE.Shape();
+    const fw = 0.08; // half-width
+    const fl = 0.55; // half-length
+    foamShape.moveTo(-fw, -fl);
+    foamShape.lineTo(fw, -fl);
+    foamShape.lineTo(fw, fl);
+    foamShape.lineTo(-fw, fl);
+    foamShape.closePath();
+    const foamGeo = new THREE.ShapeGeometry(foamShape);
+    foamGeo.rotateX(-Math.PI / 2);
+    this.foamMat = new THREE.MeshBasicMaterial({
+      color: FOAM_DAY,
+      transparent: true,
+      opacity: 0.82,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.NormalBlending,
+    });
+
+    // Sample density: ~one candidate every 1.6 units of river length.
+    const nSamples = Math.ceil((zMax - zMin) / 1.6);
+    // Pre-size: bank streaks (2 banks × samples × ~1.4 kept) + rock arcs.
+    const nRockArcs = this.riverRockPositions.length;
+    const maxFoam = Math.max(16, Math.round(nSamples * 2 * 1.4) + nRockArcs);
+    this.foamParticles = new THREE.InstancedMesh(foamGeo, this.foamMat, maxFoam);
+    this.foamParticles.renderOrder = 4; // above water + flow streaks
+    this.foamParticles.frustumCulled = false;
+
+    const m = new THREE.Matrix4();
+    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2, 0, 0));
+    const pos = new THREE.Vector3();
+    let nFoam = 0;
+
+    const y = this.waterY + 0.02; // just above the water ribbon
+
+    for (let i = 0; i < nSamples && nFoam < maxFoam; i++) {
+      // Stratified Z sampling with a little per-sample jitter.
+      const z = zMin + ((zMax - zMin) * (i + 0.5)) / nSamples;
+      // Deterministic "gap" dice: ~30% of sample positions are skipped entirely.
+      if (rng() < 0.30) continue;
+
+      const cx = this.riverCenterX(z);
+      const span = zMax - zMin;
+
+      for (const side of [-1, 1]) {
+        if (nFoam >= maxFoam) break;
+        // Skip the bank streak occasionally so the foam reads as broken strips.
+        if (rng() < 0.18) continue;
+        const bankX = cx + side * (this.riverHW + foamBankOffset);
+        // Lateral jitter + length/width/opacity variation via deterministic RNG.
+        const jx = bankX + (rng() - 0.5) * 0.35;
+        const jz = z + (rng() - 0.5) * 1.1;
+        const segLen = 0.7 + rng() * 0.9;
+        const segW = 0.35 + rng() * 0.45;
+        const alpha = 0.45 + rng() * 0.38;
+        m.compose(pos.set(jx, y, jz), q, new THREE.Vector3(segW, 1, segLen));
+        this.foamParticles.setMatrixAt(nFoam, m);
+        this.foamParticles.setColorAt(nFoam, new THREE.Color(FOAM_DAY.getHex()).multiplyScalar(alpha));
+        this.foamData.push({ t: (jz - zMin) / span, u: (jx - cx) / (this.riverHW + foamBankOffset), w: segW, phase: i * 0.7 });
+        nFoam++;
+      }
+    }
+
+    // Rock-break-surface foam arcs (already collected positions, no scene search).
+    for (const rock of this.riverRockPositions) {
+      if (nFoam >= maxFoam) break;
+      // A small curved arc — built as a short rotated quad with a slight yaw.
+      const arcLen = 0.5 + rng() * 0.5;
+      const arcW = 0.22 + rng() * 0.22;
+      const yaw = (rng() - 0.5) * Math.PI;
+      const arcQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2, 0, yaw));
+      const ry = this.waterY + 0.03;
+      m.compose(pos.set(rock.x, ry, rock.z), arcQ, new THREE.Vector3(arcW, 1, arcLen));
+      this.foamParticles.setMatrixAt(nFoam, m);
+      this.foamParticles.setColorAt(nFoam, new THREE.Color(FOAM_DAY.getHex()).multiplyScalar(0.7));
+      this.foamData.push({ t: (rock.z - zMin) / (zMax - zMin), u: 0, w: arcW, phase: nFoam * 0.9 });
+      nFoam++;
+    }
+
+    this.foamParticles.count = nFoam;
+    this.foamParticles.instanceMatrix.needsUpdate = true;
+    if (this.foamParticles.instanceColor) this.foamParticles.instanceColor.needsUpdate = true;
+    this.envGroup.add(this.foamParticles);
+  }
 
   private _buildPlantSite() {
     const w = this.W;
@@ -1206,6 +1369,7 @@ export class TerrainGrid {
       });
       this.envGroup.add(g);
       this.traffic.push({
+        id: this.nextVehicleId++,  // stable id — never an array index
         group: g,
         dir,
         baseSpeed,
@@ -1462,6 +1626,9 @@ export class TerrainGrid {
         vPos.set(x, this.waterY - 0.06, z); vScl.set(s, s, s);
         m.compose(vPos, q, vScl);
         rings.setMatrixAt(nF++, m);
+        // Record for shoreline foam arcs (built once in _buildRiverFoam — no
+        // per-frame scene search needed later).
+        this.riverRockPositions.push({ x, z, s });
       }
       nR++;
     }
