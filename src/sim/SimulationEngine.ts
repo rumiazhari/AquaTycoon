@@ -301,7 +301,15 @@ export class SimulationEngine {
         targetUnit.lastPowerKwActual = Number.isFinite(result.powerKw) ? result.powerKw : 0;
         targetUnit.lastOpexActual = Number.isFinite(result.opexDay) ? result.opexDay : 0;
         targetUnit.efficiencyRating = Math.round(result.efficiency);
-        targetUnit.sludgeBlanketHeightPercent = result.sludgeBlanketHeight;
+        // sludgeBlanketHeight is a 0..1 FRACTION in ProcessResult; the unit
+        // field is named …Percent and every reader (UnitDesigner, clarifier
+        // process model) divides it by 100 — so store REAL percent here.
+        // (Historically the raw fraction was stored, making blankets read
+        // ~0.5% and permanently disabling the overload feedback.)
+        targetUnit.sludgeBlanketHeightPercent =
+          typeof result.sludgeBlanketHeight === 'number' && Number.isFinite(result.sludgeBlanketHeight)
+            ? Math.max(0, Math.min(98, result.sludgeBlanketHeight * 100))
+            : undefined;
         targetUnit.dissolvedOxygenActual =
           result.dissolvedOxygen !== undefined && Number.isFinite(result.dissolvedOxygen)
             ? result.dissolvedOxygen : undefined;

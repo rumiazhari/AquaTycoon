@@ -1258,45 +1258,35 @@ export function calculateUnitProcess(
       const qClar = Math.max(0, inlet.flowRate);
       const qForward = qClar / (1 + r);
 
-      // ── Engineered clarifier (Prompt §I): real SOR/SLR/blanket from the
-      //    actual designed geometry. When the unit carries a blueprint the
-      //    design dictates the escape TSS; otherwise the legacy 144 m²
-      //    assumption is used so old saves still tick through. ──
+      // ── Escape TSS + blanket: DESIGNED GEOMETRY IS AUTHORITATIVE (§I).
+      //    With a blueprint, SOR/SLR/blanket dynamics come from the real plan
+      //    area and dictate the escape concentration. Regression fix (backlog
+      //    #1 investigation): this result used to be recomputed unconditionally
+      //    below from qForward/144, silently discarding it — custom clarifier
+      //    sizing never reached the effluent and the blanket never followed
+      //    the design, even though the UnitDesigner quoted the engineered
+      //    numbers. Legacy saves without a blueprint keep the hardcoded
+      //    144 m² ladder so old trains tick through unchanged. ──
+      let escapeTss: number;
       if (unit.blueprint) {
         const state = unit as PlacedUnit;
-        if (state.sludgeBlanketHeightPercent === undefined) {
-          state.sludgeBlanketHeightPercent = 25;
-        }
         const load = evaluateClarifierLoad(
           unit.blueprint.design.geometry,
           qForward,
           Math.max(800, inlet.tss),
           qClar,
-          state.sludgeBlanketHeightPercent / 100
+          Math.max(0, Math.min(0.98, (state.sludgeBlanketHeightPercent ?? 25) / 100))
         );
-        state.sludgeBlanketHeightPercent = Math.round(load.blanketLevelFraction * 100);
-        // Escape TSS reflects the settled-supernatant quality under load.
-        const escapeTss = load.escapeTssMgL;
-        eff.tss = escapeTss;
-        eff.turbidity = Math.max(1.2, escapeTss * 0.8);
+        escapeTss = load.escapeTssMgL;
+        // Persisted via result.sludgeBlanketHeight → unit.sludgeBlanketHeightPercent
+        // in SimulationEngine (single write path; no direct state mutation here).
+        sludgeBlanketHeight = load.blanketLevelFraction;
       } else {
-        // Legacy hardcoded 144 m² surface.
-        const sor = qForward / 144;
-        const escapeTss = sor < 16 ? 5 : sor < 24 ? 8 : sor < 32 ? 12 : sor < 45 ? 20 : 30;
-        eff.tss = escapeTss;
-        eff.turbidity = Math.max(1.2, escapeTss * 0.8);
+        // Legacy hardcoded 144 m² surface (standard 12x12m footprint).
+        const sorLegacy = qForward / 144;
+        escapeTss = sorLegacy < 16 ? 5 : sorLegacy < 24 ? 8 : sorLegacy < 32 ? 12 : sorLegacy < 45 ? 20 : 30;
+        sludgeBlanketHeight = (sorLegacy > 40) ? 0.75 : 0.3;
       }
-
-      // Surface overflow rate loads on the FORWARD (overflow) flow only — the
-      // underflow recirculates and does not load the clarifier surface.
-      const sor = qForward / 144; // standard 12x12m footprint
-
-      // Final settling tanks capture >99% of solids even from dense mixed
-      // liquor: effluent TSS is governed by an ESCAPE concentration that
-      // grows with surface overflow rate (solids carryover), not by a fixed
-      // percentage of a 5,000 mg/L liquor. Calibrated so a well-designed
-      // clarifier at reasonable SOR meets a 20-30 mg/L permit with margin.
-      const escapeTss = sor < 16 ? 5 : sor < 24 ? 8 : sor < 32 ? 12 : sor < 45 ? 20 : 30;
       eff.tss = escapeTss;
       eff.turbidity = Math.max(1.2, escapeTss * 0.8);
       // Particulate BOD settles with the floc; soluble BOD stays suspended.
@@ -1349,7 +1339,6 @@ export function calculateUnitProcess(
         portStreams['was_outlet'] = wasStream;
       }
       sludge = rasStream;
-      sludgeBlanketHeight = (sor > 40) ? 0.75 : 0.3;
       efficiency = Math.round(solidsCaptureFrac * 100);
       break;
     }

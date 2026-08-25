@@ -19,6 +19,7 @@ import {
 import { blueprintFromTemplate } from '../src/design/UnitBlueprint';
 import { casDesignPoint, stepCasRuntime } from '../src/sim/processes/ActivatedSludge';
 import { evaluateClarifierLoad } from '../src/sim/processes/Clarifier';
+import { SimulationEngine } from '../src/sim/SimulationEngine';
 import { stepEqualization, initEqStorage } from '../src/sim/processes/Equalization';
 import {
   pathLengthM,
@@ -37,6 +38,7 @@ import { PIPE_MATERIALS, BLOWER_MODELS, PUMP_MODELS } from '../src/design/catalo
 import { resolveTrainTopology } from '../src/ui/TrainTopology';
 import { GameManager } from '../src/gameplay/GameManager';
 import type { PlacedUnit, WaterQuality } from '../src/types/simulation';
+import type { GameFinancials } from '../src/types/game';
 import { UNIT_DEFINITIONS } from '../src/sim/UnitProcessModels';
 import { evaluatePermitCriteria } from '../src/sim/PermitEngine';
 import type { TreatmentStandard } from '../src/types/simulation';
@@ -180,6 +182,87 @@ function wq(over: Partial<WaterQuality>): WaterQuality {
   const peak = evaluateClarifierLoad(u.blueprint!.design.geometry, 9000, 3200, 9000 * 1.75, 0.25);
   assert(peak.sorM3M2Day > load.sorM3M2Day && peak.overloaded, `CLAR. peak flow overloads small clarifier (SOR ${peak.sorM3M2Day.toFixed(1)}, overloaded=${peak.overloaded})`);
   assert(peak.blanketLevelFraction >= load.blanketLevelFraction, `CLAR. blanket rises under overload (${(peak.blanketLevelFraction * 100).toFixed(0)}% ≥ ${(load.blanketLevelFraction * 100).toFixed(0)}%)`);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CLARIFIER WIRING — designed geometry reaches lastOutletQuality (backlog #1)
+// The solver must carry the ENGINEERED escape TSS + blanket into the unit's
+// lastOutletQuality (what the PFD probe reads). Regression guard: the wired
+// result used to be recomputed from the hardcoded qForward/144 ladder,
+// discarding the design — every clarifier settled at the same TSS.
+// ‐══════════════════════════════════════════════════════════════════════════
+{
+  const std = GameManager.createInitialState(0, true).currentLevel.standards;
+  const fin: GameFinancials = {
+    cash: 1e6, dailyRevenue: 0, dailyOpex: 0, dailyPowerCost: 0, dailyChemicalCost: 0,
+    dailySludgeDisposalCost: 0, dailyBiogasRevenue: 0, dailyFines: 0,
+    totalTreatedM3: 0, netDailyProfit: 0,
+  };
+  // Deliberate contrast (areas are PER-TRAIN — planAreaM2 semantics shared
+  // with the CLAR section above): Ø30 m tank = 707 m² stays BELOW the solids-
+  // loading limit at this feed, Ø8 m tank = 50 m² is far OVER it. Same
+  // hydraulics, wildly different settling duty.
+  const feed = wq({ flowRate: 4550, tss: 850, bod: 220, cod: 480, tn: 42, nh4: 26, tp: 8, pathogens: 1e7 });
+
+  const mkPlain = (id: string, typeId: string): PlacedUnit => ({
+    instanceId: id, typeId, gridX: 0, gridY: 0, rotation: 0, volume: 0,
+    customParams: {}, active: true, efficiencyRating: 100,
+    lastInletQuality: emptyWater(), lastOutletQuality: emptyWater(),
+    lastPowerKwActual: 0, lastOpexActual: 0,
+  });
+
+  const runNet = (clar: PlacedUnit, steps: number): PlacedUnit => {
+    let units: PlacedUnit[] = [
+      mkPlain('inf', 'influent_inlet'), clar, mkPlain('out', 'effluent_outfall'), mkPlain('sink', 'effluent_outfall'),
+    ];
+    const pipes = [
+      { id: 'p1', fromUnitId: 'inf', fromPortId: 'outlet', toUnitId: clar.instanceId, toPortId: 'inlet', pathPoints: [] as number[][], flowRate: 0, quality: emptyWater(), pipeType: 'liquid' as const },
+      { id: 'p2', fromUnitId: clar.instanceId, fromPortId: 'outlet', toUnitId: 'out', toPortId: 'inlet', pathPoints: [] as number[][], flowRate: 0, quality: emptyWater(), pipeType: 'liquid' as const },
+      { id: 'p3', fromUnitId: clar.instanceId, fromPortId: 'sludge_outlet', toUnitId: 'sink', toPortId: 'inlet', pathPoints: [] as number[][], flowRate: 0, quality: emptyWater(), pipeType: 'liquid' as const },
+    ];
+    let res = SimulationEngine.stepSimulation(units, pipes as any, feed, std, fin, 0.5);
+    for (let i = 1; i < steps; i++) {
+      res = SimulationEngine.stepSimulation(res.updatedUnits, pipes as any, feed, std, fin, 0.5);
+    }
+    return res.updatedUnits.find(u => u.instanceId === clar.instanceId)!;
+  };
+
+  // 1+2. Outlet-quality propagation: the PFD/UI probe field is populated with
+  //      real solved values after the network converges (no more zeros).
+  const bigDef = mkBlueprintUnit('secondary_clarifier', 9, 0);
+  bigDef.blueprint!.design.geometry.diameterM = 30;
+  const big = runNet(bigDef, 4);
+  assert(!!big && big.lastOutletQuality.flowRate > 100,
+    `CLARW. clarifier lastOutletQuality carries real flow (${big.lastOutletQuality.flowRate.toFixed(0)} m³/d) — UI probe no longer zeros`);
+  assert(Number.isFinite(big.lastOutletQuality.tss) && big.lastOutletQuality.tss > 0,
+    `CLARW. outlet TSS populated (${big.lastOutletQuality.tss.toFixed(1)} mg/L), not zero/NaN`);
+
+  // 3. Engineered sizing actually discriminates effluent quality now.
+  const smallDef = mkBlueprintUnit('secondary_clarifier', 9, 6);
+  smallDef.blueprint!.design.geometry.diameterM = 8;
+  smallDef.blueprint!.design.geometry.numberOfParallelTrains = 1;
+  const small = runNet(smallDef, 4);
+  assert(small.lastOutletQuality.tss > big.lastOutletQuality.tss * 1.5,
+    `CLARW. undersized clarifier escapes far more solids (${small.lastOutletQuality.tss.toFixed(1)} vs ${big.lastOutletQuality.tss.toFixed(1)} mg/L) — design reaches the effluent`);
+
+  // 4. Hydraulics are geometry-independent at equal RAS settings.
+  const flowGap = Math.abs(small.lastOutletQuality.flowRate - big.lastOutletQuality.flowRate)
+    / Math.max(1, big.lastOutletQuality.flowRate);
+  assert(flowGap < 0.02, `CLARW. same forward flow either way (Δ=${(flowGap * 100).toFixed(2)}%)`);
+
+  // 5. Blanket follows the design too (overloaded tank → rising blanket).
+  assert(
+    typeof small.sludgeBlanketHeightPercent === 'number'
+    && typeof big.sludgeBlanketHeightPercent === 'number'
+    && (small.sludgeBlanketHeightPercent as number) > (big.sludgeBlanketHeightPercent as number) + 20,
+    `CLARW. blanket tracks load (${small.sludgeBlanketHeightPercent}% vs ${big.sludgeBlanketHeightPercent}%)`
+  );
+
+  // 6. Legacy saves without a blueprint keep the hardcoded 144 m² ladder
+  //    exactly (qForward = 4550/1.75 = 2600 → SOR ≈18 → second-rung 8 mg/L).
+  const legacy = runNet(mkPlain('clg', 'secondary_clarifier'), 4);
+  assert(Math.abs(legacy.lastOutletQuality.tss - 8) < 1e-6,
+    `CLARW. blueprint-less legacy clarifier still settles via 144 m² ladder (${legacy.lastOutletQuality.tss.toFixed(1)} mg/L)`);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
