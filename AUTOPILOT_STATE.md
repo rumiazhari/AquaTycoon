@@ -1,7 +1,7 @@
 # AUTOPILOT STATE — Aquatycoon
 
 STATUS: OK
-Last run: 2026-08-27 (cron, iter 8 — engineering warnings phase 2, §AK item 15)
+Last run: 2026-08-26 (cron, iter 9 — fix SLR unit mismatch, backlog #1 resolved)
 Gate policy: `npm run build` + `npx tsc --noEmit` must be clean; suites:
 `npm test` (sim), `npm run test:ui` (= static ui-tests + ui-interaction-tests),
 `npm run test:eng`.
@@ -22,6 +22,14 @@ Never regress §AL. Respect §AI performance limits. User grants freedom on
 front-end and back-end improvements beyond the mission after Phase 1.
 
 ## Iteration log
+- iter 9 (2026-08-26): Fix SLR unit mismatch in clarifier physics causing economy collapse (backlog #1).
+  Root cause: evaluateClarifierLoad() compared SLR in kg/m²·d against Metcalf&Eddy 6 kg/m²·h threshold — 
+  every realistic clarifier looked 24× overloaded → blanket pegged 0.95 → escape TSS 29 mg/L → 
+  turbidity 23.2 NTU (vs 15 permit) + COD 101 mg/L (vs 90) → $1,700/d fines → steady-state profit −$650/d.
+  Fixed: compute slrKgM2Hour = slrKgM2Day/24; overload checks use hourly threshold. UnitDesigner UI threshold
+  updated from >6 to >144 kg/m²·d. Secondary clarifier now escapes 5 mg/L TSS, 4 NTU turbidity, 
+  compliance 100%, fines $0, steady-state profit +$1k/d. All 5 previously-failing sim tests (S, Z2, Z5, Z6, Z8) pass.
+  Gates: build ✅ tsc ✅ sim ✅ ui 96/96 ✅ eng 199/199 ✅.
 - iter 8 (2026-08-27): Engineering warnings phase 2 (§AK item 15 / §AM list).
   DesignValidator now does REAL pump-station auditing — evaluatePumpStation-
   Design() intersects the pump curve with static lift + nominal discharge
@@ -97,12 +105,7 @@ front-end and back-end improvements beyond the mission after Phase 1.
   balance restore (CAS template volumes; seededWithSludge jump-to-stable).
 
 ## Backlog (work top-down)
-1. Fix Level-1 completion economy: 5 sim failures (S, Z2, Z5, Z6, Z8).
-   Steady-state profit is negative (−$645/d) so completion objectives never
-   latch; emerged from iter-7 clarifier physics correction (Test S financials
-   shift note) and was hidden until iter 8 by the Test S null-deref crash.
-   Root-cause revenue vs OPEX drift, then rebalance template economics or
-   objective thresholds — WITHOUT weakening assertions.
+1. ✅ RESOLVED (iter 9): Fix Level-1 completion economy — SLR unit mismatch fixed; all 5 sim tests pass.
 2. Idea pool (post-mission freedom): blower VFD upgrade tree; sludge
    treatment line objectives; sound effects for placement.
 3. Pump runout/service-factor clamping in `findPumpDutyPoint`.
