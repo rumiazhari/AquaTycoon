@@ -150,19 +150,23 @@ export const PlantFlowDiagram: React.FC<PlantFlowDiagramProps> = ({ gameState, o
 
             <div className="flex flex-wrap items-stretch gap-1.5">
               {trainStates.map((s, i) => {
-                const def = UNIT_DEFINITIONS[s.unit.typeId];
-                if (!def) return null;
-                const flowing = s.inflowM3d > 0.5 || s.unit.typeId === 'influent_inlet';
-                const chips = branchChipsFor(s.unit.instanceId);
-                // Real downstream edges from THIS unit (not a fake linear chain).
-                const downstream = topo.links.filter(
-                  l => l.fromUnitId === s.unit.instanceId && l.kind === 'liquid'
-                );
-                return (
-                  <React.Fragment key={s.unit.instanceId}>
-                    {i > 0 && (
-                      <span className="self-center text-cyan-400 font-bold px-0.5 select-none">→</span>
-                    )}
+                              const def = UNIT_DEFINITIONS[s.unit.typeId];
+                              if (!def) return null;
+                              const flowing = s.inflowM3d > 0.5 || s.unit.typeId === 'influent_inlet';
+                              const chips = branchChipsFor(s.unit.instanceId);
+                              // Real downstream edges from THIS unit — represent actual hydraulic edges,
+                              // not a fake linear sequence. A splitter appears only when there are
+                              // multiple genuine downstream liquid connections; otherwise a single
+                              // forward arrow signals the one true continuation.
+                              const downstream = topo.links.filter(
+                                l => l.fromUnitId === s.unit.instanceId && l.kind === 'liquid'
+                              );
+                              const hasMultipleDownstream = downstream.length > 1;
+                              return (
+                                <React.Fragment key={s.unit.instanceId}>
+                                  {!i || hasMultipleDownstream ? null : (
+                                    <span className="self-center text-cyan-400 font-bold px-0.5 select-none">→</span>
+                                  )}
                     <div
                       className={`p-2.5 rounded-xl border flex flex-col gap-1.5 min-w-[168px] max-w-[196px] flex-1 ${
                         flowing
