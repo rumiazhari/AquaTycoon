@@ -4,6 +4,7 @@ import {
 } from '../types/simulation';
 import { calculateUnitProcess, EnvironmentFactors, ProcessResult } from './UnitProcessModels';
 import { cloneWater, emptyWater, mixWaterStreams } from './WaterStream';
+import { evaluatePermitCriteria } from './PermitEngine';
 import { evaluateTechEffects } from './TechEffects';
 
 export interface SimulationStepResult {
@@ -377,26 +378,17 @@ export class SimulationEngine {
       : (totalGreenGenerationKw > 0 ? 100 : 0);
 
     // 5. Compliance Check against Environmental Standards
-    // Every applicable permit criterion is evaluated and counted; the score
-    // denominator derives from the criteria actually checked (never hardcoded).
+    // SINGLE SOURCE OF TRUTH (Prompt §A3): the criteria live ONLY in
+    // PermitEngine — this engine, the HUD, Operator Console, PFD and advisories
+    // all consume the same evaluator. No duplicated formula sets.
+    const permitCriteria = evaluatePermitCriteria(eff, standards);
     const violations: string[] = [];
     let criteriaChecked = 0;
     if (hasFlow) {
-      const check = (fails: boolean, msg: string) => {
+      for (const cr of permitCriteria) {
         criteriaChecked++;
-        if (fails) violations.push(msg);
-      };
-      check(eff.bod > standards.maxBod, `BOD (${eff.bod.toFixed(1)} > ${standards.maxBod} mg/L)`);
-      check(eff.cod > standards.maxCod, `COD (${eff.cod.toFixed(1)} > ${standards.maxCod} mg/L)`);
-      check(eff.tss > standards.maxTss, `TSS (${eff.tss.toFixed(1)} > ${standards.maxTss} mg/L)`);
-      check(eff.tn > standards.maxTn, `TN (${eff.tn.toFixed(1)} > ${standards.maxTn} mg/L)`);
-      check(eff.nh4 > standards.maxNh4, `Ammonia (${eff.nh4.toFixed(1)} > ${standards.maxNh4} mg/L NH4-N)`);
-      check(eff.tp > standards.maxTp, `TP (${eff.tp.toFixed(2)} > ${standards.maxTp} mg/L)`);
-      check(eff.pathogens > standards.maxPathogens, `Pathogens (${eff.pathogens.toFixed(0)} > ${standards.maxPathogens} CFU)`);
-      check(eff.do < standards.minDo, `DO (${eff.do.toFixed(1)} < ${standards.minDo} mg/L)`);
-      check(eff.ph < standards.minPh, `pH too low (${eff.ph.toFixed(2)} < ${standards.minPh})`);
-      check(eff.ph > standards.maxPh, `pH too high (${eff.ph.toFixed(2)} > ${standards.maxPh})`);
-      check(eff.turbidity > standards.maxTurbidity, `Turbidity (${eff.turbidity.toFixed(1)} > ${standards.maxTurbidity} NTU)`);
+        if (!cr.pass) violations.push(cr.engineMessage);
+      }
     } else {
       violations.push('No treated effluent flow reaching outfall!');
     }

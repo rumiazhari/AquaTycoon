@@ -8,6 +8,9 @@ import { SimulationEngine } from '../sim/SimulationEngine';
 import { analyzeActiveLiquidPath, hasActiveProcessTypeOnPath } from './PlantTopology';
 import { TUTORIAL_STEPS } from './TutorialSteps';
 import { REAL_SECONDS_PER_GAME_DAY, INITIAL_GAME_TIME_DAYS, getDayNightFactor } from './GameTime';
+import { resolveFootprint } from '../sim/UnitDimensions';
+import { isEngineerable, workingVolumeM3 } from '../design/Geometry';
+import { blueprintFromTemplate } from '../design/UnitBlueprint';
 
 export interface NextStepSuggestion {
   unitTypeId: UnitTypeId;
@@ -481,7 +484,7 @@ export class GameManager {
       state.currentLevel.tariffPerM3,
       0.15,
       45,
-      { daylight, wind },
+      { daylight, wind, dtDays: simDeltaDays },
       // Unlocked tech ids drive centralized passive bonuses (e.g. CHP +20%)
       new Set(state.techTree.filter(t => t.unlocked).map(t => t.id))
     );
@@ -667,18 +670,23 @@ export class GameManager {
       return { newState: state, success: false, reason: `Insufficient funds ($${def.capex.toLocaleString()} required)` };
     }
 
-    // Boundary check
-    const [w, l] = rotation === 90 || rotation === 270 ? [def.footprint[1], def.footprint[0]] : def.footprint;
+    // Boundary check — engineered units use their real blueprint footprint.
+    const tmpForBounds: PlacedUnit = {
+      instanceId: '_tmp', typeId, gridX, gridY, rotation,
+      volume: def.footprint[0] * def.footprint[1] * 144,
+      customParams: {}, active: true, efficiencyRating: 100,
+      lastInletQuality: emptyWater(), lastOutletQuality: emptyWater(),
+      lastPowerKwActual: 0, lastOpexActual: 0,
+    };
+    const [w, l] = resolveFootprint(tmpForBounds, rotation);
     const [mapW, mapH] = state.currentLevel.mapSize;
     if (gridX < 0 || gridY < 0 || gridX + w > mapW || gridY + l > mapH) {
       return { newState: state, success: false, reason: 'Out of grid boundary' };
     }
 
-    // Overlap check
+    // Overlap check — uses each unit's resolved footprint (engineered-aware).
     const isOverlapping = state.units.some(u => {
-      const uDef = UNIT_DEFINITIONS[u.typeId];
-      if (!uDef) return false;
-      const [uw, ul] = u.rotation === 90 || u.rotation === 270 ? [uDef.footprint[1], uDef.footprint[0]] : uDef.footprint;
+      const [uw, ul] = resolveFootprint(u);
       return (
         gridX < u.gridX + uw &&
         gridX + w > u.gridX &&
@@ -691,20 +699,38 @@ export class GameManager {
       return { newState: state, success: false, reason: 'Tile lot already occupied' };
     }
 
+    // Engineerable families start with a blueprint from the template default
+    // geometry so the new architecture is live from the first placement; the
+    // player refines it afterwards in the Unit Designer (Prompt §C/D).
+    const blueprint = isEngineerable(typeId)
+      ? blueprintFromTemplate(typeId) ?? undefined
+      : undefined;
+
     const newUnit: PlacedUnit = {
       instanceId: `unit_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       typeId,
       gridX,
       gridY,
       rotation,
-      volume: (w * 6) * (l * 6) * 4.0, // m3 nominal
+      volume: blueprint
+        ? workingVolumeM3(blueprint.design.geometry)
+        : (w * 6) * (l * 6) * 4.0, // m3 nominal
+      // Contractor hands over a SEEDED, commissioned reactor (seed sludge
+      // trucked in at startup — standard practice), so engineered units
+      // perform near-design from the first flow instead of taking the
+      // multi-week unseeded culture-growth ramp. Only CAS consumes this
+      // today; other engineerable families ignore it.
+      commissioning: blueprint
+        ? { phase: 'empty' as const, daysInPhase: 0, seededWithSludge: true }
+        : undefined,
       customParams: { ...def.defaultParams },
       active: true,
       efficiencyRating: 100,
       lastInletQuality: emptyWater(),
       lastOutletQuality: emptyWater(),
       lastPowerKwActual: def.powerConsumptionKw,
-      lastOpexActual: def.baseOpexPerDay
+      lastOpexActual: def.baseOpexPerDay,
+      ...(blueprint ? { blueprint } : {}),
     };
 
     const newCash = state.gameMode === 'sandbox'

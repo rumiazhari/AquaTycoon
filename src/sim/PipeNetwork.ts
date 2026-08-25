@@ -1,5 +1,6 @@
 import { PipeConnection, PlacedUnit, UnitDefinition, UnitPort } from '../types/simulation';
 import { UNIT_DEFINITIONS } from './UnitProcessModels';
+import { localPortOffset } from '../design/Geometry';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Authoritative rotated-footprint / port-position geometry.
@@ -35,7 +36,15 @@ export function getPortWorldPosition(
   const port = def.ports.find((p: UnitPort) => p.id === portId);
   if (!port) return getUnitWorldCenter(unit);
 
-  const [relX, relY, relZ] = port.relativePosition;
+  // Engineered units (those carrying a blueprint) derive the port LOCAL
+  // offset from their real geometry (so a 30×15 m basin has its inlet/outlet
+  // at the actual wall), overriding the template's default relativePosition.
+  // Units without a blueprint keep their template port positions untouched.
+  const local = unit.blueprint ? localPortOffset(unit.blueprint.design.geometry, portId) : null;
+
+  const [relX, relY, relZ] = local
+    ? local
+    : (port.relativePosition as [number, number, number]);
   const rotRad = (unit.rotation * Math.PI) / 180;
   const cos = Math.cos(rotRad);
   const sin = Math.sin(rotRad);

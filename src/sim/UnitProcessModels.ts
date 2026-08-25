@@ -1,6 +1,10 @@
 import { GasStream, PlacedUnit, UnitDefinition, UnitTypeId, WaterQuality } from '../types/simulation';
 import { cloneWater, emptyWater } from './WaterStream';
 import { loadKgDay } from './MassBalance';
+import { freshCommissioning } from '../design/UnitBlueprint';
+import { stepCasRuntime } from './processes/ActivatedSludge';
+import { evaluateClarifierLoad } from './processes/Clarifier';
+import { stepEqualization } from './processes/Equalization';
 
 export interface ProcessResult {
   /** Main treated liquid effluent ('outlet' port). Kept for UI compatibility. */
@@ -780,6 +784,13 @@ export interface EnvironmentFactors {
   daylight: number;
   /** 0.15–1.0 wind resource factor — drives turbine output */
   wind: number;
+  /**
+   * Simulated days elapsed this tick (fractional). Enables true dynamic
+   * process state (biomass growth, commissioning, storage integration).
+   * Legacy callers omit it → treated as a steady-state snapshot (dt=0):
+   * dynamic states are READ but never advanced.
+   */
+  dtDays?: number;
 }
 
 /**
@@ -868,6 +879,30 @@ export function calculateUnitProcess(
 
     // -----------------------------------------------------
     case 'equalization_basin': {
+      // ── Engineered equalization (Prompt §J): real dynamic mixed-storage
+      //    with mass conservation when the unit has a blueprint. The
+      //    traditional tox-damping fallback remains for legacy saves. ──
+      if (unit.blueprint) {
+        if (!unit.eqStorage) {
+          unit.eqStorage = { storedVolumeM3: 0, constituentMassKg: {} };
+        }
+        const eq = stepEqualization(
+          unit,
+          inlet,
+          env?.dtDays ?? 0,
+          p.eqOutflowTargetM3h
+        );
+        // Persist the new storage state on the unit itself.
+        unit.eqStorage = {
+          storedVolumeM3: eq.storedVolumeM3,
+          constituentMassKg: unit.eqStorage.constituentMassKg,
+        };
+        Object.assign(eff, eq.effluent);
+        eff.flowRate = eq.outflowM3d;
+        efficiency = eq.overflowed ? 80 : 100;
+        opexDay = eq.outflowM3d * 0.02; // pumping energy
+        break;
+      }
       // Damps peak toxic index and stabilizes pH towards neutral 7.2
       eff.toxicIndex *= 0.75;
       eff.ph = 7.2 + (eff.ph - 7.2) * 0.6;
@@ -968,6 +1003,66 @@ export function calculateUnitProcess(
 
     // -----------------------------------------------------
     case 'activated_sludge_cas': {
+      // ── Engineered runtime (Prompt §F/G/H): only when a blueprint is
+      //    present AND the unit has been commissioned. Until then the legacy
+      //    snapshot path keeps old saves/tests stable. ──
+      if (unit.blueprint) {
+        if (!unit.commissioning) {
+          // First engineered tick: seed the commissioning state machine.
+          unit.commissioning = freshCommissioning();
+          unit.biomassKg = 0;
+        }
+        const dtDays = env?.dtDays ?? 0;
+        // Advance phase clock with whatever time elapsed.
+        unit.commissioning = {
+          ...unit.commissioning,
+          daysInPhase: unit.commissioning.daysInPhase + Math.max(0, dtDays),
+        };
+        const casStep = stepCasRuntime(unit, {
+          inlet: { ...inlet },
+          controls: {
+            doSetpointMgL: p.doSetpoint ?? 2.0,
+            wasRateM3d: p.wasPurgeRateM3d ?? 60,
+          },
+          dtDays,
+          commissioning: unit.commissioning,
+          biomassKg: unit.biomassKg ?? 0,
+        });
+        // Persist dynamic state back to the unit.
+        unit.commissioning = casStep.commissioning;
+        unit.biomassKg = casStep.newBiomassKg;
+        unit.srtDays = casStep.srtDays;
+        if (!unit.condition) {
+          unit.condition = {
+            conditionIndex: 1.0,
+            operatingHours: 0,
+            diffuserFoulingFactor: 1.0,
+            lastMaintenanceDay: 0,
+            nextServiceDay: 90,
+          };
+        }
+        // Slow diffuser fouling based on actual OTE demand vs capacity.
+        if (casStep.diagnostics.oxygenLimited) {
+          unit.condition.diffuserFoulingFactor = Math.max(
+            0.7,
+            unit.condition.diffuserFoulingFactor - 0.005 * Math.max(1, dtDays * 24)
+          );
+        }
+
+        Object.assign(eff, casStep.effluent);
+        dissolvedOxygen = casStep.actualDoMgL;
+        mlss = casStep.diagnostics.mlssMgL;
+        svi = casStep.diagnostics.oxygenLimited ? 175 : 105;
+        powerKw = casStep.powerKw;
+        efficiency = Math.round((1 - casStep.diagnostics.ourKgO2Day /
+          Math.max(1e-6, casStep.diagnostics.suppliedKgO2Day)) * 100);
+        // Failure surfaces as a real warning the player can fix.
+        if (casStep.diagnostics.oxygenLimited && dtDays > 0) {
+          opexDay = (p.wasPurgeRateM3d ?? 60) * 0.12; // chemical augmentation
+        }
+        break;
+      }
+      // Legacy snapshot path (no blueprint attached — e.g. legacy saved game).
       const doTarget = p.doSetpoint || 2.0;
       dissolvedOxygen = doTarget;
       // Monod kinetics: μ = μ_max * S / (Ks + S) * DO / (K_DO + DO)
@@ -1162,6 +1257,35 @@ export function calculateUnitProcess(
       const r = Math.max(0, (p.rasRecycleRatioPercent ?? 75) / 100);
       const qClar = Math.max(0, inlet.flowRate);
       const qForward = qClar / (1 + r);
+
+      // ── Engineered clarifier (Prompt §I): real SOR/SLR/blanket from the
+      //    actual designed geometry. When the unit carries a blueprint the
+      //    design dictates the escape TSS; otherwise the legacy 144 m²
+      //    assumption is used so old saves still tick through. ──
+      if (unit.blueprint) {
+        const state = unit as PlacedUnit;
+        if (state.sludgeBlanketHeightPercent === undefined) {
+          state.sludgeBlanketHeightPercent = 25;
+        }
+        const load = evaluateClarifierLoad(
+          unit.blueprint.design.geometry,
+          qForward,
+          Math.max(800, inlet.tss),
+          qClar,
+          state.sludgeBlanketHeightPercent / 100
+        );
+        state.sludgeBlanketHeightPercent = Math.round(load.blanketLevelFraction * 100);
+        // Escape TSS reflects the settled-supernatant quality under load.
+        const escapeTss = load.escapeTssMgL;
+        eff.tss = escapeTss;
+        eff.turbidity = Math.max(1.2, escapeTss * 0.8);
+      } else {
+        // Legacy hardcoded 144 m² surface.
+        const sor = qForward / 144;
+        const escapeTss = sor < 16 ? 5 : sor < 24 ? 8 : sor < 32 ? 12 : sor < 45 ? 20 : 30;
+        eff.tss = escapeTss;
+        eff.turbidity = Math.max(1.2, escapeTss * 0.8);
+      }
 
       // Surface overflow rate loads on the FORWARD (overflow) flow only — the
       // underflow recirculates and does not load the clarifier surface.

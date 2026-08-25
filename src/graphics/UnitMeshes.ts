@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { PlacedUnit } from '../types/simulation';
 import { UNIT_DEFINITIONS } from '../sim/UnitProcessModels';
+import { resolveDimensions } from '../sim/UnitDimensions';
 
 /**
  * Procedural 3D models for every WWTP unit, modeled after real plants:
@@ -119,7 +120,10 @@ export class UnitMeshBuilder {
     const def = UNIT_DEFINITIONS[unit.typeId];
     if (!def) return group;
 
-    const [w, l] = def.footprint;
+    // Resolve real dimensions: engineered blueprint geometry when present,
+    // otherwise the legacy template footprint. w,l are GRID CELLS.
+    const { footprintCells } = resolveDimensions(unit);
+    const [w, l] = footprintCells;
 
     // Concrete foundation pad
     const pad = box(w - 0.08, 0.16, l - 0.08, CONCRETE_DARK());

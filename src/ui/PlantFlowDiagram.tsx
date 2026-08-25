@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import { X, GitBranch, ShieldCheck, AlertTriangle } from 'lucide-react';
 import { GameState } from '../gameplay/GameManager';
 import { UNIT_DEFINITIONS } from '../sim/UnitProcessModels';
+import type { UnitTypeId } from '../types/simulation';
 import { permitRows } from '../sim/PermitEngine';
 import {
   resolveTrainTopology,
@@ -153,6 +154,10 @@ export const PlantFlowDiagram: React.FC<PlantFlowDiagramProps> = ({ gameState, o
                 if (!def) return null;
                 const flowing = s.inflowM3d > 0.5 || s.unit.typeId === 'influent_inlet';
                 const chips = branchChipsFor(s.unit.instanceId);
+                // Real downstream edges from THIS unit (not a fake linear chain).
+                const downstream = topo.links.filter(
+                  l => l.fromUnitId === s.unit.instanceId && l.kind === 'liquid'
+                );
                 return (
                   <React.Fragment key={s.unit.instanceId}>
                     {i > 0 && (
@@ -194,6 +199,14 @@ export const PlantFlowDiagram: React.FC<PlantFlowDiagramProps> = ({ gameState, o
                         </div>
                       )}
                     </div>
+
+                    {/* A real splitter fans OUT to multiple units, NOT a linear chain. */}
+                    {downstream.length > 1 && (
+                      <div className="flex flex-col items-center text-slate-500 text-[9px] font-mono py-0.5">
+                        <span>├─ Train A → {UNIT_DEFINITIONS[downstream[0].toUnitId as UnitTypeId]?.name ?? downstream[0].toUnitId}</span>
+                        <span>└─ Train B → {UNIT_DEFINITIONS[downstream[1].toUnitId as UnitTypeId]?.name ?? downstream[1].toUnitId}</span>
+                      </div>
+                    )}
                   </React.Fragment>
                 );
               })}

@@ -4,21 +4,25 @@ import type { UnitTypeId } from '../types/simulation';
 /**
  * ToolStateLogic — pure, testable tool-mode / unit-selection transition logic.
  *
- * THE BUG THIS ENFORCES AWAY: BuildToolbar called onSetToolMode('select') and
- * then onSelectUnitTypeId(null), but App's onSelectUnitTypeId handler
- * unconditionally ran setToolMode('place_unit') — so React batching left the
- * canvas in `toolMode='place_unit'` with `selectedUnitTypeId=null`: the Pipes/
- * Inspect/Demolish button LOOKED selected while every click did nothing.
- *
- * Rule set (Prompt 3.4.2 P0):
- *  - onSelectUnitTypeId(null) must NEVER switch into 'place_unit'.
- *  - Only a NON-null type selection enters 'place_unit'.
- *  - Tool buttons atomically leave placement AND clear the stale build unit.
+ * INVARIANT (enforced HERE at the state level, not by callback ordering):
+ *   toolMode === 'place_unit'  ⇒  selectedUnitTypeId !== null
+ * The state 'place_unit' with a null unit type is structurally unreachable —
+ * any action that would create it resolves cleanly to 'select' instead.
  */
 
 export interface ToolInteractionState {
   toolMode: ToolMode;
   selectedUnitTypeId: UnitTypeId | null;
+}
+
+/** The invariant itself — exported so tests and dev assertions share it. */
+export function toolStateInvariantValid(s: ToolInteractionState): boolean {
+  return s.toolMode !== 'place_unit' || s.selectedUnitTypeId !== null;
+}
+
+/** Defensive normalizer: repairs any legacy/violating state on load. */
+export function normalizeToolState(s: ToolInteractionState): ToolInteractionState {
+  return toolStateInvariantValid(s) ? s : { toolMode: 'select', selectedUnitTypeId: null };
 }
 
 /**
@@ -33,26 +37,35 @@ export function reduceToolSelection(
     | { type: 'select_unit_type'; typeId: UnitTypeId | null }
     | { type: 'cancel_placement' }
 ): ToolInteractionState {
-  switch (action.type) {
-    case 'set_tool_mode': {
-      // Any explicit global-tool choice clears a stale placement unit so the
-      // toolbar highlight, cursor, and canvas behavior all agree.
-      return { toolMode: action.mode, selectedUnitTypeId: null };
-    }
-
-    case 'select_unit_type': {
-      if (action.typeId === null) {
-        // Clearing the build unit NEVER forces place_unit: it simply leaves
-        // placement. If we weren't placing, nothing changes at all.
-        return prev.toolMode === 'place_unit'
-          ? { ...prev, selectedUnitTypeId: null }
-          : prev;
+  const next: ToolInteractionState = (() => {
+    switch (action.type) {
+      case 'set_tool_mode': {
+        // Any explicit global-tool choice clears a stale placement unit so the
+        // toolbar highlight, cursor, and canvas behavior all agree.
+        return { toolMode: action.mode, selectedUnitTypeId: null };
       }
-      // A real unit selection always means "I intend to place this".
-      return { toolMode: 'place_unit', selectedUnitTypeId: action.typeId };
-    }
 
-    case 'cancel_placement':
-      return { toolMode: 'select', selectedUnitTypeId: null };
+      case 'select_unit_type': {
+        if (action.typeId === null) {
+          // Clearing the build unit while placing leaves placement entirely
+          // (to 'select') — the invalid place_unit∧null combination is
+          // resolved here rather than ever existing.
+          return prev.toolMode === 'place_unit'
+            ? { toolMode: 'select', selectedUnitTypeId: null }
+            : prev;
+        }
+        // A real unit selection always means "I intend to place this".
+        return { toolMode: 'place_unit', selectedUnitTypeId: action.typeId };
+      }
+
+      case 'cancel_placement':
+        return { toolMode: 'select', selectedUnitTypeId: null };
+    }
+  })();
+
+  // Belt-and-braces: the invariant holds for EVERY reachable state.
+  if (!toolStateInvariantValid(next)) {
+    return { toolMode: 'select', selectedUnitTypeId: null };
   }
+  return next;
 }

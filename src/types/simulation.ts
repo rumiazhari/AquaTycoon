@@ -134,6 +134,22 @@ export interface PlacedUnit {
   dissolvedOxygenActual?: number;
   mlssActual?: number; // mg/L Mixed Liquor Suspended Solids
   sviActual?: number;  // mL/g Sludge Volume Index
+  // ── Engineered-asset layers (Prompt §B) — present on customizable units ──
+  /** Physical design: geometry + construction material. */
+  blueprint?: import('../design/UnitBlueprint').UnitBlueprint;
+  /** Commissioning progression (biological reactors). */
+  commissioning?: import('../design/UnitBlueprint').CommissioningState;
+  /** Dynamic biomass inventory (CAS): total kg of MLSS in the reactor volume. */
+  biomassKg?: number;
+  /** Last computed SRT (days), derived — never a setpoint copy. */
+  srtDays?: number;
+  /** Equalization dynamic storage state (mixed-tank volumes). */
+  eqStorage?: {
+    storedVolumeM3: number;
+    constituentMassKg: Record<string, number>; // per WaterQuality key
+  };
+  /** Asset condition/maintenance state. */
+  condition?: import('../design/UnitBlueprint').AssetCondition;
 }
 
 export interface PipeConnection {
@@ -148,6 +164,21 @@ export interface PipeConnection {
   gasFlowRate?: number;       // gas payload, only on 'gas' pipes
   gasCh4Fraction?: number;
   pipeType: 'liquid' | 'sludge' | 'ras' | 'gas' | 'chemical' | 'recycle';
+  // ── Hydraulic design (Prompt §K) — engineered pipes carry real hydraulics ──
+  /** Nominal internal diameter (m). Undefined = legacy unsized pipe. */
+  diameterM?: number;
+  /** PIPE_MATERIALS key. */
+  materialId?: string;
+  startInvertM?: number; // elevation of pipe invert at the FROM end (m)
+  endInvertM?: number;   // at the TO end (m)
+  /** Sum of minor-loss coefficients (bends, valves, entrances). */
+  minorLossK?: number;
+  /** Derived/cached: path length (m), headloss (m), velocity (m/s). */
+  cachedHydraulics?: {
+    lengthM: number;
+    velocityMs: number;
+    headlossM: number;
+  };
 }
 
 export interface TreatmentStandard {

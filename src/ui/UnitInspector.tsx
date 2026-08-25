@@ -13,13 +13,15 @@ interface UnitInspectorProps {
   onClose: () => void;
   onUpdateParams: (unitId: string, paramKey: string, value: number) => void;
   onDemolish: (unitId: string) => void;
+  onOpenDesigner?: (unitId: string) => void;
 }
 
 export const UnitInspector: React.FC<UnitInspectorProps> = ({
   unit,
   onClose,
   onUpdateParams,
-  onDemolish
+  onDemolish,
+  onOpenDesigner
 }) => {
   const def = UNIT_DEFINITIONS[unit.typeId];
   if (!def) return null;
@@ -232,6 +234,17 @@ export const UnitInspector: React.FC<UnitInspectorProps> = ({
               );
             })}
           </div>
+        )}
+
+        {/* Engineerable → open the Designer instead of slider-only inspector */}
+        {unit.blueprint && onOpenDesigner && (
+          <button
+            onClick={() => { SoundManager.playClick(); onOpenDesigner(unit.instanceId); }}
+            className="flex items-center justify-center gap-2 p-2.5 rounded-xl bg-teal-500/10 hover:bg-teal-500/20 border border-teal-500/30 text-teal-200 text-xs font-bold transition"
+          >
+            <Gauge size={14} />
+            <span>Open Unit Designer</span>
+          </button>
         )}
 
         {/* Demolish Button */}

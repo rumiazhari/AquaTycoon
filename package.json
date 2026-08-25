@@ -8,7 +8,8 @@
     "build": "tsc && vite build",
     "test": "tsx scripts/sim-tests.ts",
     "test:ui": "tsx scripts/ui-tests.tsx",
-    "test:all": "npm test && npm run test:ui",
+    "test:eng": "tsx scripts/eng-tests.ts",
+    "test:all": "npm test && npm run test:ui && npm run test:eng",
     "build:launcher": "node scripts/make-launcher.mjs",
     "build:all": "npm run build && npm run build:launcher",
     "preview": "vite preview"

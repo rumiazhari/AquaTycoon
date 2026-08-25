@@ -653,6 +653,8 @@ export class TerrainGrid {
     const outsideZ = z < -6 || z > this.zRoad + 8;
     return outsideX || outsideZ;
   }
+  // Re-enabled when an outer scenery ring returns. The N_PATCH scatter decal
+  // pass that previously called it was removed in Prompt §A1.
 
   /**
    * Task 9 + 10: procedurally enrich large empty regions with grass/dirt
@@ -667,37 +669,12 @@ export class TerrainGrid {
     const vPos = new THREE.Vector3();
     const vScl = new THREE.Vector3();
 
-    // ── A. Ground tone breakup decals (large flat quads hugging terrain) ──
-    const N_PATCH = 260;
-    const patchGeo = new THREE.CircleGeometry(1, 7);
-    patchGeo.rotateX(-Math.PI / 2);
-    const patchMat = new THREE.MeshStandardMaterial({ roughness: 0.98, transparent: true, opacity: 0.55 });
-    const patches = new THREE.InstancedMesh(patchGeo, patchMat, N_PATCH);
-    let nP = 0;
-    for (let tries = 0; tries < N_PATCH * 6 && nP < N_PATCH; tries++) {
-      const x = lerpN(-this.padX, this.W + this.padX, rng());
-      const z = lerpN(-this.padZ, this.D + this.padZ, rng());
-      if (this._isOuterBand(x, z)) continue;
-      if (!this._natureAllowed(x, z)) continue;
-      if (Math.abs(z - this.zRoad) < NATURE_ROAD_CLEARANCE) continue; // §12: shared clearance
-      if (Math.abs(x - this.riverCenterX(z)) < this.riverHW + 4) continue;
-      const y = this.terrainHeight(x, z);
-      if (y < -0.5) continue;
-      const s = 2.2 + rng() * 5.5;
-      eul.set(0, rng() * Math.PI * 2, 0);
-      q.setFromEuler(eul);
-      vPos.set(x, y + 0.05 + nP * 0.0006, z); vScl.set(s, 1, s * (0.6 + rng() * 0.7));
-      m.compose(vPos, q, vScl);
-      // Alternate between dry-dirt and richer grass tones
-      col.setHex(rng() > 0.45 ? 0x9a8a55 : 0x55803c).offsetHSL(0, (rng() - 0.5) * 0.06, (rng() - 0.5) * 0.08);
-      patches.setColorAt(nP, col);
-      patches.setMatrixAt(nP++, m);
-    }
-    patches.count = nP;
-    patches.instanceMatrix.needsUpdate = true;
-    if (patches.instanceColor) patches.instanceColor.needsUpdate = true;
-    patches.receiveShadow = true;
-    this.envGroup.add(patches);
+    // ── A. Ground tone breakup: REMOVED (Prompt §A1). ──
+    // The old system scattered ~260 large flat transparent CircleGeometry(1,7)
+    // quads whose Y came from terrainHeight() at their CENTER only — on slopes
+    // their edges floated in mid-air as visible yellow/green sheets, and the
+    // +nP*0.0006 elevation creep raised later instances up to ~0.15 m. Ground
+    // variation now comes solely from the terrain's own vertex-color noise.
 
     // ── B. Shrub/rock clusters in open brown areas ──
     const rockGeo = new THREE.DodecahedronGeometry(0.35, 0);
@@ -712,6 +689,7 @@ export class TerrainGrid {
     for (let tries = 0; tries < N_CLUST * 10 && (nR < N_CLUST * 2 || nS < N_CLUST * 2); tries++) {
       const x = lerpN(-this.padX, this.W + this.padX, rng());
       const z = lerpN(-this.padZ, this.D + this.padZ, rng());
+      if (this._isOuterBand(x, z)) continue; // keep scatter inside the playable envelope
       if (!this._natureAllowed(x, z)) continue;
       if (Math.abs(z - this.zRoad) < NATURE_ROAD_CLEARANCE) continue; // §12: shared clearance
       if (Math.abs(x - this.riverCenterX(z)) < this.riverHW + 3.5) continue;

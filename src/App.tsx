@@ -27,6 +27,7 @@ import { HeaderHUD } from './ui/HeaderHUD';
 import { BuildToolbar } from './ui/BuildToolbar';
 import { UnitInspector } from './ui/UnitInspector';
 import { PlantFlowDiagram } from './ui/PlantFlowDiagram';
+import { UnitDesigner } from './ui/UnitDesigner';
 import { LevelModal } from './ui/LevelModal';
 import { TechTreeModal } from './ui/TechTreeModal';
 import { SandboxControls } from './ui/SandboxControls';
@@ -137,6 +138,7 @@ export const App: React.FC = () => {
   const [levelModal, setLevelModal]           = useState(false);
   const [techModal, setTechModal]             = useState(false);
   const [pfdModal, setPfdModal]               = useState(false);
+  const [designerModalId, setDesignerModalId] = useState<string | null>(null);
   const [sandboxModal, setSandboxModal]       = useState(false);
   const [operatorOpen, setOperatorOpen]       = useState(false);
   const [askTutorial, setAskTutorial]         = useState(true);
@@ -1177,13 +1179,36 @@ export const App: React.FC = () => {
             sceneRef.current?.syncPipes(next.pipes);
             setToast('Unit demolished.');
           }}
+          onOpenDesigner={id => setDesignerModalId(id)}
         />
       )}
 
-      {/* ── Modals ─────────────────────────────────────────────────────────── */}
+      {/* ── Unit Designer (engineered assets) ─────────────────────────────── */}
       {pfdModal && (
         <PlantFlowDiagram gameState={gameState} onClose={() => setPfdModal(false)} />
       )}
+      {designerModalId && (() => {
+        const u = gameState.units.find(x => x.instanceId === designerModalId);
+        if (!u) return null;
+        return (
+          <UnitDesigner
+            unit={u}
+            onClose={() => setDesignerModalId(null)}
+            onUpdateBlueprint={(id, next) => {
+              setGameState(prev => ({
+                ...prev,
+                units: prev.units.map(un =>
+                  un.instanceId === id && next ? { ...un, blueprint: next } : un
+                ),
+              }));
+              const ng = gameState.units.map(un =>
+                un.instanceId === id && next ? { ...un, blueprint: next } : un
+              );
+              sceneRef.current?.syncUnits(ng);
+            }}
+          />
+        );
+      })()}
       {levelModal && (
         <LevelModal
           currentLevelId={gameState.currentLevel.id}
