@@ -8,7 +8,7 @@ import { GameState } from '../gameplay/GameManager';
 import { SimulationSpeed } from '../types/game';
 import { formatGameClock } from '../gameplay/GameTime';
 import { SoundManager } from '../audio/SoundManager';
-import { collectViolations } from '../sim/AdvisoryEngine';
+import { permitViolations, isPermitCompliant, PERMIT_LABEL } from '../sim/PermitEngine';
 
 interface HeaderHUDProps {
   gameState: GameState;
@@ -39,11 +39,19 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({
 
   const { financials, overallStats, currentLevel, simSpeed, gameTimeDays, gameMode } = gameState;
 
-  // Headline water-quality status (cheap — no simulation)
-  const violations = gameState.finalEffluent.flowRate > 10
-    ? collectViolations(gameState.finalEffluent, currentLevel.standards)
+  // Headline water-quality status — THE authoritative PermitEngine verdict
+  // (same evaluator as the Operator Console, PFD table and victory logic).
+  // Cheap: pure arithmetic over the already-computed final effluent.
+  const hasOutfallFlow = gameState.finalEffluent.flowRate > 10;
+  const violations = hasOutfallFlow
+    ? permitViolations(gameState.finalEffluent, currentLevel.standards)
     : [];
-  const compliant = violations.length === 0 && gameState.overallStats.complianceScore >= 80;
+  // No outfall flow means the permit is trivially un-met (nothing treated is
+  // being discharged) — the chip must never show a false "WATER CLEAN ✓".
+  const compliant =
+    hasOutfallFlow &&
+    isPermitCompliant(gameState.finalEffluent, currentLevel.standards) &&
+    gameState.overallStats.complianceScore >= 80;
 
   const toggleMute = () => {
     const nextMute = !isMuted;
@@ -60,7 +68,7 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({
   return (
     <header className="absolute top-0 left-0 right-0 z-20 flex flex-col items-center pointer-events-none">
       {/* Single simplified navbar */}
-      <div className="w-full flex items-center justify-between px-4 py-2 bg-cyber-card/90 border-b border-slate-700/60 shadow-xl pointer-events-auto gap-3">
+        <div className="w-full flex items-center justify-between px-4 py-2 bg-cyber-card/90 border-b border-slate-700/60 shadow-xl pointer-events-auto gap-x-3 gap-y-1 flex-wrap lg:flex-nowrap">
 
         {/* Left: Brand + money + day */}
         <div className="flex items-center gap-3 min-w-0">
@@ -121,10 +129,18 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({
           )}
           <div className="text-left leading-tight">
             <div className={`text-xs font-extrabold font-mono ${compliant ? 'text-emerald-300' : 'text-rose-300'}`}>
-              {compliant ? 'WATER CLEAN ✓' : `${violations.length} VIOLATION${violations.length > 1 ? 'S' : ''}`}
+              {compliant
+                ? 'WATER CLEAN ✓'
+                : !hasOutfallFlow
+                ? 'NO OUTFALL FLOW'
+                : `${violations.length} VIOLATION${violations.length > 1 ? 'S' : ''}`}
             </div>
             <div className="text-[9px] font-mono text-slate-400 hidden sm:block">
-              {compliant ? 'All limits met' : `Exceeds: ${violations.slice(0, 3).map(v => v.label).join(', ')}${violations.length > 3 ? '…' : ''}`}
+              {compliant
+                ? 'All limits met'
+                : !hasOutfallFlow
+                ? 'No treated outfall flow'
+                : `Exceeds: ${violations.slice(0, 3).map(v => PERMIT_LABEL[v.key]).join(', ')}${violations.length > 3 ? '…' : ''}`}
             </div>
           </div>
         </button>

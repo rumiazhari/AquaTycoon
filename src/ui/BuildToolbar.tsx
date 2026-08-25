@@ -151,8 +151,11 @@ export const BuildToolbar: React.FC<BuildToolbarProps> = ({
             </button>
           </div>
 
-          {/* Category Tabs — separate shrinking region, cannot cover mode buttons */}
-          <div className="flex items-center gap-1 overflow-x-auto flex-1 min-w-0 justify-end scrollbar-thin">
+          {/* Category Tabs — separate shrinking region, cannot cover mode buttons.
+              justify-start + snap keeps first tabs reachable when overflowing;
+              `justify-end` previously pushed leading tabs out of the scroll
+              window on narrow screens (unreachable without scrolling). */}
+          <div className="flex items-center gap-1 overflow-x-auto flex-1 min-w-0 scrollbar-thin">
             {CATEGORIES.map(cat => (
               <button
                 key={cat.id}
@@ -160,14 +163,15 @@ export const BuildToolbar: React.FC<BuildToolbarProps> = ({
                   SoundManager.playClick();
                   setActiveCategory(cat.id);
                 }}
-                className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold transition whitespace-nowrap ${
+                className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold transition whitespace-nowrap shrink-0 snap-start ${
                   activeCategory === cat.id
                     ? 'bg-slate-800 text-sky-400 border border-sky-500/40 shadow-inner'
                     : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
                 }`}
               >
                 {cat.icon}
-                <span>{cat.label}</span>
+                <span className="hidden xl:inline">{cat.label}</span>
+                <span className="xl:hidden">{cat.label.split('. ')[1] ?? cat.label}</span>
               </button>
             ))}
           </div>

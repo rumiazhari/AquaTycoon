@@ -1,10 +1,11 @@
 import React from 'react';
 import { 
   X, Zap, Activity, Trash2, Gauge, 
-  Droplets, Flame, Sliders, CheckCircle2 
+  Droplets, Flame, Sliders, CheckCircle2, AlertTriangle
 } from 'lucide-react';
 import { PlacedUnit } from '../types/simulation';
 import { UNIT_DEFINITIONS } from '../sim/UnitProcessModels';
+import { deriveUnitStatus, fmtMetric } from './UnitStatus';
 import { SoundManager } from '../audio/SoundManager';
 
 interface UnitInspectorProps {
@@ -26,6 +27,9 @@ export const UnitInspector: React.FC<UnitInspectorProps> = ({
   const inlet = unit.lastInletQuality;
   const outlet = unit.lastOutletQuality;
   const hasFlow = inlet && inlet.flowRate > 0.1;
+
+  // Truthful hydraulic status — never a manufactured healthy-looking value.
+  const status = deriveUnitStatus(unit);
 
   const refund = Math.round(def.capex * 0.7);
 
@@ -68,7 +72,7 @@ export const UnitInspector: React.FC<UnitInspectorProps> = ({
   };
 
   return (
-    <div className="absolute top-16 right-4 z-20 w-96 bg-cyber-card/95 border border-slate-700/90 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[82vh] animate-in fade-in slide-in-from-right-4 duration-200">
+    <div className="absolute top-16 right-4 z-20 w-[min(24rem,calc(100vw-2rem))] bg-cyber-card/95 border border-slate-700/90 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[82vh] animate-in fade-in slide-in-from-right-4 duration-200">
       
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 bg-slate-900 border-b border-slate-700/80">
@@ -99,8 +103,18 @@ export const UnitInspector: React.FC<UnitInspectorProps> = ({
                 {unit.efficiencyRating}%
               </span>
             </div>
-            <span className="text-[10px] text-emerald-400 flex items-center gap-1">
-              <CheckCircle2 size={10} /> Active & Steady
+            <span
+              className={`text-[10px] flex items-center gap-1 ${status.toneClass}`}
+              title={status.detail}
+            >
+              {status.key === 'stressed' ? (
+                <AlertTriangle size={10} />
+              ) : status.key === 'steady' ? (
+                <CheckCircle2 size={10} />
+              ) : (
+                <Activity size={10} />
+              )}
+              {status.label}
             </span>
           </div>
 
@@ -148,11 +162,15 @@ export const UnitInspector: React.FC<UnitInspectorProps> = ({
               </div>
               <div className="p-1.5 rounded bg-slate-950/60">
                 <div className="text-[10px] text-slate-400">MLSS</div>
-                <div className="text-xs font-bold text-amber-300">{unit.mlssActual || 3200} mg/L</div>
+                <div className="text-xs font-bold text-amber-300">
+                  {unit.mlssActual === undefined ? '—' : `${fmtMetric(unit.mlssActual)} mg/L`}
+                </div>
               </div>
               <div className="p-1.5 rounded bg-slate-950/60">
                 <div className="text-[10px] text-slate-400">SVI</div>
-                <div className="text-xs font-bold text-emerald-300">{unit.sviActual || 105} mL/g</div>
+                <div className="text-xs font-bold text-emerald-300">
+                  {unit.sviActual === undefined ? '—' : `${fmtMetric(unit.sviActual)} mL/g`}
+                </div>
               </div>
             </div>
           </div>
@@ -165,7 +183,7 @@ export const UnitInspector: React.FC<UnitInspectorProps> = ({
               <Droplets size={14} className="text-sky-400" /> Live Mass Balance
             </span>
             <span className="text-[10px] font-mono text-cyan-400">
-              Flow: {inlet ? inlet.flowRate.toFixed(0) : 0} m³/d
+              Flow: {inlet ? fmtMetric(inlet.flowRate) : '—'} m³/d
             </span>
           </div>
 

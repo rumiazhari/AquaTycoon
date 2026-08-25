@@ -1,6 +1,14 @@
 import { GameState } from '../gameplay/GameManager';
 import { SimulationEngine } from './SimulationEngine';
 import { UNIT_DEFINITIONS } from './UnitProcessModels';
+import {
+  permitViolations,
+  PERMIT_LABEL,
+  PERMIT_FIELD,
+  violationRatio,
+  PermitCriterion,
+  PermitCriterionKey,
+} from './PermitEngine';
 import { PlacedUnit, TreatmentStandard, UnitTypeId, WaterQuality } from '../types/simulation';
 
 /**
@@ -45,23 +53,21 @@ export function getInfluent(gs: GameState): WaterQuality {
   return gs.gameMode === 'sandbox' ? gs.sandboxCustomInfluent : gs.currentLevel.influentSpec;
 }
 
+/**
+ * Single-source compliance check — delegates to PermitEngine (the ONE
+ * authoritative evaluator shared with the HUD, Operator Console and PFD) so
+ * advisory ranking can never disagree with any other compliance surface.
+ * Supports TRUE ZERO pathogen limits (no Math.max(1, …) clamping) and covers
+ * pH band + turbidity, which the previous local copy silently dropped.
+ */
 export function collectViolations(eff: WaterQuality, std: TreatmentStandard): Violation[] {
-  const v: Violation[] = [];
-  const push = (key: string, label: string, value: number, limit: number, min: boolean = false) => {
-    const ok = min ? value >= limit : value <= limit;
-    if (!ok && limit >= 0) {
-      v.push({ key, label, value, limit, ratio: Math.max(1.01, min ? limit / Math.max(0.01, value) : value / Math.max(0.001, limit)) });
-    }
-  };
-  push('bod', 'BOD', eff.bod, std.maxBod);
-  push('cod', 'COD', eff.cod, std.maxCod);
-  push('tss', 'TSS', eff.tss, std.maxTss);
-  push('tn', 'Total Nitrogen', eff.tn, std.maxTn);
-  push('nh4', 'Ammonia', eff.nh4, std.maxNh4);
-  push('tp', 'Phosphorus', eff.tp, std.maxTp);
-  push('pathogens', 'Pathogens', eff.pathogens, Math.max(1, std.maxPathogens));
-  push('do', 'Dissolved Oxygen', eff.do, std.minDo, true);
-  return v.sort((a, b) => b.ratio - a.ratio);
+  return permitViolations(eff, std).map((cr: PermitCriterion): Violation => ({
+    key: cr.key,
+    label: PERMIT_LABEL[cr.key],
+    value: cr.value,
+    limit: cr.limit,
+    ratio: violationRatio(cr),
+  }));
 }
 
 /** Total normalized exceedance — lower is better. Used to rank candidate fixes. */
@@ -490,9 +496,12 @@ function describePrediction(gs: GameState, fix: FixAction): string {
   const std = gs.currentLevel.standards;
   const parts: string[] = [];
   for (const viol of collectViolations(gs.finalEffluent, std)) {
+    // ph_low/ph_high both read the `ph` field; keys map via PERMIT_FIELD.
+    const field = PERMIT_FIELD[viol.key as PermitCriterionKey] ?? (viol.key as keyof WaterQuality);
     const nv = collectViolations(after, std).find(x => x.key === viol.key);
-    const newVal = nv ? nv.value : (after as unknown as Record<string, number>)[viol.key];
-    parts.push(`${viol.label} ${viol.value.toFixed(viol.limit < 10 ? 2 : 0)}→${Number(newVal).toFixed(viol.limit < 10 ? 2 : 0)}${nv ? ' ✗' : ' ✓'}`);
+    const newVal = nv ? nv.value : (after as unknown as Record<string, number>)[field];
+    const dec = viol.limit < 10 ? 2 : 0;
+    parts.push(`${viol.label} ${viol.value.toFixed(dec)}→${Number(newVal).toFixed(dec)}${nv ? ' ✗' : ' ✓'}`);
   }
   return parts.join('  ');
 }
@@ -506,4 +515,7 @@ const CAUSES: Record<string, string> = {
   tp: 'Phosphorus must be captured chemically or stored biologically by special bacteria, then removed with the sludge.',
   pathogens: 'Pathogens are killed by UV light or chlorine — but cloudy water shields them, so clarity comes first.',
   do: 'Healthy rivers need oxygen. Deeply polluted water arrives starved of oxygen; aeration restores it before discharge.',
+  ph_low: 'Discharge pH is below the legal floor. Excessively acidic water corrodes pipes and harms river life.',
+  ph_high: 'Discharge pH is above the legal ceiling. Over-alkaline water also stresses aquatic ecosystems.',
+  turbidity: 'Turbidity measures how cloudy the discharge is — fine particles that block light and carry stuck-on pollutants.',
 };

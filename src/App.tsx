@@ -35,6 +35,10 @@ import { VictoryModal } from './ui/VictoryModal';
 import { OperatorConsole } from './ui/OperatorConsole';
 import { PortSelector } from './ui/PortSelector';
 import { FixAction, findFreeSpot } from './sim/AdvisoryEngine';
+import {
+  reduceToolSelection,
+  ToolInteractionState,
+} from './ui/ToolStateLogic';
 
 import {
   Info
@@ -83,13 +87,34 @@ export const App: React.FC = () => {
   gsRef.current = gameState;
 
   // ── Tool / Interaction State ─────────────────────────────────────────────────
-  const [toolMode, setToolMode]                     = useState<ToolMode>('select');
+  // ONE authoritative reducer decides toolMode AND selectedUnitTypeId together
+  // (ToolStateLogic.ts). Both always change via the same dispatched action, so
+  // React batching can never strand `toolMode='place_unit'` with a cleared unit
+  // type — the old bug that left Inspect/Pipes/Demolish visually selected while
+  // canvas clicks did nothing.
+  const [toolState, setToolState] = useState<ToolInteractionState>({
+    toolMode: 'select',
+    selectedUnitTypeId: null,
+  });
+  const { toolMode, selectedUnitTypeId } = toolState;
   const toolModeRef = useRef<ToolMode>('select');
   toolModeRef.current = toolMode;
-
-  const [selectedUnitTypeId, setSelectedUnitTypeId] = useState<UnitTypeId | null>(null);
   const selUnitTypeRef = useRef<UnitTypeId | null>(null);
   selUnitTypeRef.current = selectedUnitTypeId;
+
+  /** Atomic global-tool change — also clears any stale placement unit. */
+  const setToolMode = useCallback((mode: ToolMode) => {
+    setToolState(prev => reduceToolSelection(prev, { type: 'set_tool_mode', mode }));
+  }, []);
+
+  /**
+   * Atomic build-unit selection. `null` clears the placement unit WITHOUT ever
+   * forcing place_unit; a non-null id enters place_unit WITH that unit in one
+   * indivisible state transition.
+   */
+  const applyUnitTypeSelection = useCallback((typeId: UnitTypeId | null) => {
+    setToolState(prev => reduceToolSelection(prev, { type: 'select_unit_type', typeId }));
+  }, []);
 
   const [currentRotation, setCurrentRotation]       = useState<0|90|180|270>(0);
   const rotationRef = useRef<0|90|180|270>(0);
@@ -126,8 +151,8 @@ export const App: React.FC = () => {
   const startTutorial = useCallback(() => {
     setAskTutorial(false);
     setGameState(prev => ({ ...prev, tutorialActive: true, tutorialStep: 0 }));
-    setSelectedUnitTypeId(null);
-    setToolMode('select');
+    // Leave any placement/pipe interaction atomically before the guided run.
+    setToolState(prev => reduceToolSelection(prev, { type: 'cancel_placement' }));
     SoundManager.playClick();
     setToast('Tutorial started — Dr. Rio Clearwater is waiting bottom-left!');
   }, []);
@@ -140,7 +165,8 @@ export const App: React.FC = () => {
   const cancelTutorial = useCallback(() => {
     setGameState(prev => ({ ...prev, tutorialActive: false }));
     sceneRef.current?.terrainGrid.setBuildRestriction(null);
-    setToolMode(m => (m === 'connect_pipe' ? 'select' : m));
+    // Atomic exit from any placement/pipe interaction back to Inspect.
+    setToolState(prev => reduceToolSelection(prev, { type: 'cancel_placement' }));
     setToast('Tutorial cancelled — full freedom unlocked!');
     SoundManager.playClick();
   }, []);
@@ -840,8 +866,8 @@ export const App: React.FC = () => {
 
       switch (e.key) {
         case 'p': case 'P':
-          setToolMode(m => (m === 'connect_pipe' ? 'select' : 'connect_pipe'));
-          setSelectedUnitTypeId(null);
+          // Toggle Pipes mode atomically (also clears any placement unit).
+          setToolMode(toolModeRef.current === 'connect_pipe' ? 'select' : 'connect_pipe');
           cancelPipeSelection(true);
           SoundManager.playClick();
           setToast(toolModeRef.current === 'connect_pipe' ? 'Inspect mode.' : 'Pipes mode: LMB connect • click same unit to switch port • RMB cancel • Ctrl+Z undo.');
@@ -855,8 +881,7 @@ export const App: React.FC = () => {
           if (toolModeRef.current === 'connect_pipe' && pipeSourceRef.current) {
             cancelPipeSelection();
           } else {
-            setToolMode('select');
-            setSelectedUnitTypeId(null);
+            setToolState(prev => reduceToolSelection(prev, { type: 'cancel_placement' }));
             cancelPipeSelection(true);
             sceneRef.current?.setPipeSourceHighlight(null, gsRef.current.units);
             setGameState(prev => ({ ...prev, selectedUnitId: null }));
@@ -930,13 +955,12 @@ export const App: React.FC = () => {
           return;
         }
       }
-      // Fallback: hand placement mode
-      setSelectedUnitTypeId(typeId);
-      setToolMode('place_unit');
+      // Fallback: hand placement mode (atomic select+place transition)
       setOperatorOpen(false);
+      applyUnitTypeSelection(typeId);
       setToast(`${def.name} selected ($${def.capex.toLocaleString()}) — click a free spot on the grid.`);
     }
-  }, []);
+  }, [applyUnitTypeSelection]);
 
   // ─────────────────────────────────────────────────────────────────────────────
   // LEVEL CHANGE
@@ -946,6 +970,18 @@ export const App: React.FC = () => {
     redoStackRef.current = [];
     const next = GameManager.createInitialState(levelIndex, isSandbox);
     setGameState(next);
+
+    // ── FULL interaction-state reset (Prompt 3.4.2 P1) ──
+    // Transient player state must never survive a level/stage change: refs and
+    // UI atoms pointing at previous-level units would leave ghost highlights,
+    // an armed pipe source from a deleted unit, or a dangling port picker.
+    setToolState(prev => reduceToolSelection(prev, { type: 'cancel_placement' }));
+    setCurrentRotation(0);
+    cancelPipeSelection(true);          // pipe source + port + position +
+                                        // pending target + picker + preview +
+                                        // source highlight (all scene-synced)
+    setGameState(prev => ({ ...prev, selectedUnitId: null })); // close inspector
+
     if (sceneRef.current) {
       const [w, d] = next.currentLevel.mapSize;
       // Scene-clock sync (Prompt 3.4 item 17): a new level must not inherit the
@@ -958,13 +994,18 @@ export const App: React.FC = () => {
       sceneRef.current.cameraController.resetView(w, d);
       sceneRef.current.syncUnits(next.units);
       sceneRef.current.syncPipes(next.pipes);
+      // Clear any stale hover/ghost placement preview from the old level.
+      sceneRef.current.terrainGrid.setGhostPreview(0, 0, 1, 1, true, false);
+      sceneRef.current.terrainGrid.setHoverTile(0, 0, false);
       if (next.suggestion) {
         sceneRef.current.showNextStepGhost(next.suggestion.unitTypeId, next.suggestion.gridX, next.suggestion.gridY);
+      } else {
+        sceneRef.current.showNextStepGhost(null, 0, 0);
       }
     }
     setIsTopDown(false);
     setToast(`Stage loaded: ${next.currentLevel.title}`);
-  }, []);
+  }, [cancelPipeSelection]);
 
   const handleToggleTopDown = () => {
     const sm = sceneRef.current;
@@ -1011,13 +1052,13 @@ export const App: React.FC = () => {
         />
       )}
 
-      {/* ── Toast Banner ──────────────────────────────────────────────────── */}
+      {/* ── Toast Banner — sits below the HUD bar; never overlaps it ───────── */}
       {toast && (
         <div className="absolute top-[60px] left-1/2 -translate-x-1/2 z-30 pointer-events-none
                         px-4 py-2 rounded-xl bg-slate-900 border border-cyan-500/40
-                        text-cyan-300 text-xs font-mono shadow-2xl flex items-center gap-2 max-w-[90vw] animate-in fade-in slide-in-from-top-2 duration-150">
+                        text-cyan-300 text-xs font-mono shadow-2xl flex items-center gap-2 max-w-[min(90vw,42rem)] animate-in fade-in slide-in-from-top-2 duration-150">
           <Info size={14} className="text-cyan-400 shrink-0" />
-          <span>{toast}</span>
+          <span className="truncate" title={toast}>{toast}</span>
           {toolMode === 'place_unit' && (
             <span className="ml-1 px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 text-[10px] font-bold border border-amber-500/30">
               R = rotate
@@ -1026,11 +1067,12 @@ export const App: React.FC = () => {
         </div>
       )}
 
-      {/* ── Piping control legend (visible in Pipes mode) ──────────────────── */}
+      {/* ── Piping control legend (visible in Pipes mode) — wraps on narrow
+              screens instead of overflowing ───────────────────────────────── */}
       {toolMode === 'connect_pipe' && (
         <div className="absolute bottom-[152px] left-1/2 -translate-x-1/2 z-30 pointer-events-none
                         px-4 py-1.5 rounded-xl bg-slate-900 border border-cyan-500/40
-                        shadow-2xl flex items-center gap-3 text-[10px] font-mono text-slate-300 whitespace-nowrap">
+                        shadow-2xl flex flex-wrap justify-center items-center gap-x-3 gap-y-1 text-[10px] font-mono text-slate-300 max-w-[min(94vw,64rem)]">
           <span className="px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-300 font-bold border border-sky-500/30">PIPES</span>
           <span><b className="text-slate-100">LMB</b> source unit → pick its port → target unit → pick inlet</span>
           <span className="text-slate-600">|</span>
@@ -1080,10 +1122,12 @@ export const App: React.FC = () => {
       <BuildToolbar
         toolMode={toolMode}
         onSetToolMode={mode => {
+          // Atomic tool switch (ToolStateLogic): leaves placement AND clears
+          // the stale build unit in the same state transition. No batching
+          // hazard can leave 'place_unit' active after clicking Inspect/Pipes/
+          // Demolish.
           setToolMode(mode);
-          setPipeSourceId(null);
-          pipeSourcePortRef.current = null;
-          sceneRef.current?.setPipeSourceHighlight(null, gameState.units);
+          if (mode !== 'place_unit') cancelPipeSelection(true);
           if (mode === 'select')       setToast('Inspect Mode: Click any tank to configure parameters.');
           if (mode === 'connect_pipe') setToast('Pipes: LEFT-CLICK a unit → click the destination. Click the SAME unit to switch its output port. RIGHT-CLICK to cancel. Ctrl+Z undo / Ctrl+Y redo.');
           if (mode === 'demolish')     setToast('Demolish Mode: Click any unit to remove for 70% cash refund.');
@@ -1091,8 +1135,11 @@ export const App: React.FC = () => {
         }}
         selectedUnitTypeId={selectedUnitTypeId}
         onSelectUnitTypeId={id => {
-          setSelectedUnitTypeId(id);
-          setToolMode('place_unit');
+          // ATOMIC: a non-null id enters place_unit WITH that unit; null merely
+          // clears placement and NEVER forces place_unit (the old handler
+          // unconditionally ran setToolMode('place_unit') here, clobbering the
+          // Inspect/Pipes/Demolish mode the player had just requested).
+          applyUnitTypeSelection(id);
           if (id) {
             const def = UNIT_DEFINITIONS[id];
             setToast(`${def.name} ($${def.capex.toLocaleString()}) — Click on grid to place. Press R to rotate.`);
@@ -1207,8 +1254,7 @@ export const App: React.FC = () => {
           onOpenPipes={() => { setToolMode('connect_pipe'); setOperatorOpen(false); }}
           onAdvance={() => setGameState(prev => ({ ...prev, tutorialStep: prev.tutorialStep + 1 }))}
           onSelectUnit={typeId => {
-            setSelectedUnitTypeId(typeId);
-            setToolMode('place_unit');
+            applyUnitTypeSelection(typeId);
             const sug = gsRef.current.suggestion;
             if (sug) sceneRef.current?.cameraController.focusOn(sug.gridX, sug.gridY);
             setToast(`${UNIT_DEFINITIONS[typeId].name} selected — click the glowing green lot!`);

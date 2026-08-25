@@ -11,6 +11,34 @@ interface TechTreeModalProps {
   onClose: () => void;
 }
 
+/**
+ * THE truthful reason a tech cannot be researched right now. Replaces the old
+ * blanket "Prerequisites Locked" that showed even when only cash was missing.
+ */
+export function techBlockReason(
+  node: TechNode,
+  techTree: TechNode[],
+  playerCash: number,
+  isSandbox: boolean
+): string {
+  if (node.unlocked) return 'Already unlocked';
+
+  const missing = node.prerequisites.filter(preId => {
+    const pNode = techTree.find(n => n.id === preId);
+    return !pNode || !pNode.unlocked;
+  });
+  if (missing.length > 0) {
+    const titles = missing
+      .map(id => techTree.find(n => n.id === id)?.title ?? id)
+      .join(', ');
+    return `Requires: ${titles}`;
+  }
+  if (!isSandbox && playerCash < node.cost) {
+    return `Need $${(node.cost - playerCash).toLocaleString()} more`;
+  }
+  return '';
+}
+
 export const TechTreeModal: React.FC<TechTreeModalProps> = ({
   techTree,
   playerCash,
@@ -18,17 +46,8 @@ export const TechTreeModal: React.FC<TechTreeModalProps> = ({
   onUnlockTech,
   onClose
 }) => {
-  const canUnlock = (node: TechNode) => {
-    if (node.unlocked) return false;
-    if (node.prerequisites.length > 0) {
-      const allPrereqsMet = node.prerequisites.every(preId => {
-        const pNode = techTree.find(n => n.id === preId);
-        return pNode ? pNode.unlocked : false;
-      });
-      if (!allPrereqsMet) return false;
-    }
-    return isSandbox || playerCash >= node.cost;
-  };
+  const canUnlock = (node: TechNode) =>
+    node.unlocked ? false : techBlockReason(node, techTree, playerCash, isSandbox) === '';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950 animate-in fade-in duration-200">
@@ -59,6 +78,9 @@ export const TechTreeModal: React.FC<TechTreeModalProps> = ({
         <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-4 overflow-y-auto scrollbar-thin">
           {techTree.map(node => {
             const unlockable = canUnlock(node);
+            const blockReason = node.unlocked
+              ? 'Already unlocked'
+              : techBlockReason(node, techTree, playerCash, isSandbox);
 
             return (
               <div
@@ -110,6 +132,7 @@ export const TechTreeModal: React.FC<TechTreeModalProps> = ({
                         SoundManager.playVictory();
                         onUnlockTech(node.id);
                       }}
+                      title={unlockable ? undefined : blockReason}
                       className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold font-mono transition ${
                         unlockable
                           ? 'bg-purple-500 hover:bg-purple-400 text-slate-950 shadow-md'
@@ -117,7 +140,9 @@ export const TechTreeModal: React.FC<TechTreeModalProps> = ({
                       }`}
                     >
                       {unlockable ? <Sparkles size={13} /> : <Lock size={13} />}
-                      <span>{unlockable ? 'Research & Unlock' : 'Prerequisites Locked'}</span>
+                      <span className="max-w-[150px] truncate">
+                        {unlockable ? 'Research & Unlock' : blockReason || 'Unavailable'}
+                      </span>
                     </button>
                   )}
                 </div>

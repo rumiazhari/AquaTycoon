@@ -3,7 +3,8 @@ import {
   X, Activity, Wrench, Hammer, CheckCircle2, AlertTriangle, Droplets, ArrowRight
 } from 'lucide-react';
 import { GameState } from '../gameplay/GameManager';
-import { Advisory, FixAction, generateAdvisories, getInfluent } from '../sim/AdvisoryEngine';
+import { Advisory, FixAction, generateAdvisories } from '../sim/AdvisoryEngine';
+import { permitRows, PermitRow, PermitRowKey } from '../sim/PermitEngine';
 import { SoundManager } from '../audio/SoundManager';
 
 interface OperatorConsoleProps {
@@ -12,45 +13,22 @@ interface OperatorConsoleProps {
   onApplyFix: (fix: FixAction) => void;
 }
 
-interface RowSpec {
-  key: string;
-  label: string;
-  unit: string;
-  value: number;
-  limit: number | null;
-  minLimit?: number | null;
-  maxLimit?: number | null;
-  influent: number;
-  decimals: number;
-  hint: string;
-}
-
 const fmt = (n: number, d: number) =>
   n >= 1_000_000 ? n.toExponential(1) : n.toLocaleString(undefined, { maximumFractionDigits: d });
 
 export const OperatorConsole: React.FC<OperatorConsoleProps> = ({ gameState, onClose, onApplyFix }) => {
   const advisories = useMemo(() => generateAdvisories(gameState), [gameState]);
   const { finalEffluent: eff, currentLevel } = gameState;
-  const inf = getInfluent(gameState);
   const std = currentLevel.standards;
 
-  const rows: RowSpec[] = [
-    { key: 'bod', label: 'BOD', unit: 'mg/L', value: eff.bod, limit: std.maxBod, influent: inf.bod, decimals: 1, hint: 'Organic pollution bacteria must digest' },
-    { key: 'cod', label: 'COD', unit: 'mg/L', value: eff.cod, limit: std.maxCod, influent: inf.cod, decimals: 0, hint: 'Total organic chemistry load' },
-    { key: 'tss', label: 'TSS', unit: 'mg/L', value: eff.tss, limit: std.maxTss, influent: inf.tss, decimals: 1, hint: 'Suspended particles — cloudiness' },
-    { key: 'tn', label: 'Nitrogen', unit: 'mg/L', value: eff.tn, limit: std.maxTn, influent: inf.tn, decimals: 1, hint: 'Causes algae blooms & fish kills' },
-    { key: 'nh4', label: 'Ammonia', unit: 'mg/L', value: eff.nh4, limit: std.maxNh4, influent: inf.nh4, decimals: 1, hint: 'Toxic to aquatic life' },
-    { key: 'tp', label: 'Phosphorus', unit: 'mg/L', value: eff.tp, limit: std.maxTp, influent: inf.tp, decimals: 2, hint: 'Feeds algal blooms' },
-    { key: 'pathogens', label: 'Pathogens', unit: 'CFU', value: eff.pathogens, limit: Math.max(1, std.maxPathogens), influent: inf.pathogens, decimals: 0, hint: 'Disease-causing microbes' },
-    { key: 'do', label: 'Oxygen (DO)', unit: 'mg/L', value: eff.do, limit: std.minDo, influent: inf.do, decimals: 1, hint: 'River life needs oxygen — higher is better', },
-    { key: 'ph', label: 'pH balance', unit: '', value: eff.ph, limit: null, minLimit: std.minPh, maxLimit: std.maxPh, influent: inf.ph, decimals: 1, hint: 'Acidity/alkalinity of the discharge' },
-  ];
-
-  const passCount = rows.filter(r => rowPass(r)).length;
+  // THE authoritative permit table (shared with PFD + HUD). True-zero pathogen
+  // limits are honored literally; every applicable standard is listed.
+  const rows: PermitRow[] = permitRows(eff, std);
+  const passCount = rows.filter(r => r.pass).length;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950 animate-in fade-in duration-200">
-      <div className="relative w-full max-w-3xl bg-cyber-card border border-slate-700/80 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[88vh]">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-950 animate-in fade-in duration-200">
+      <div className="relative w-full max-w-3xl bg-cyber-card border border-slate-700/80 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[92vh] sm:max-h-[88vh]">
 
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 bg-slate-900 border-b border-slate-800 shrink-0">
@@ -119,38 +97,46 @@ export const OperatorConsole: React.FC<OperatorConsoleProps> = ({ gameState, onC
   );
 };
 
-function rowPass(r: RowSpec): boolean {
-  if (r.key === 'ph') {
-    return r.value >= (r.minLimit ?? 0) && r.value <= (r.maxLimit ?? 14);
+/** Bar fill % — honest relative scale, never a fake full bar for failing rows. */
+function rowPct(r: PermitRow): number {
+  if (r.limitMin !== null && r.limitMax !== null) {
+    // Band criterion (pH): position within the legal band.
+    const lo = r.limitMin, hi = r.limitMax;
+    return Math.min(100, Math.max(2, ((r.value - lo) / (hi - lo)) * 100));
   }
-  if (r.limit === null) return true;
-  return r.key === 'do' ? r.value >= r.limit : r.value <= r.limit;
+  if (r.limitMin !== null) {
+    // Minimum criterion (DO): ≥100% means the floor is met.
+    return Math.min(100, Math.max(2, (r.value / r.limitMin) * 60));
+  }
+  const limit = r.limitMax ?? 0;
+  return limit > 0
+    ? Math.min(100, Math.max(3, (r.value / limit) * 70))
+    : 50;
 }
 
-const ReportRow: React.FC<{ row: RowSpec }> = ({ row }) => {
-  const pass = rowPass(row);
-  const isMin = row.key === 'do';
-  const isPh = row.key === 'ph';
+const ROW_HINTS: Record<PermitRowKey, string> = {
+  bod: 'Organic pollution bacteria must digest',
+  cod: 'Total organic chemistry load',
+  tss: 'Suspended particles — cloudiness',
+  tn: 'Causes algae blooms & fish kills',
+  nh4: 'Toxic to aquatic life',
+  tp: 'Feeds algal blooms',
+  pathogens: 'Disease-causing microbes — a 0-limit permit demands sterilization',
+  do: 'River life needs oxygen — higher is better',
+  ph: 'Acidity/alkalinity of the discharge',
+  turbidity: 'Cloudiness that blocks light and shields pathogens',
+};
 
-  let pct: number;
-  if (isPh) {
-    const lo = row.minLimit ?? 6, hi = row.maxLimit ?? 9;
-    pct = Math.min(100, Math.max(2, ((row.value - lo) / (hi - lo)) * 100));
-  } else if (row.limit !== null && row.limit > 0) {
-    pct = isMin
-      ? Math.min(100, (row.value / row.limit) * 60)
-      : Math.min(100, Math.max(3, (row.value / row.limit) * 70));
-  } else {
-    pct = 50;
-  }
-
+const ReportRow: React.FC<{ row: PermitRow }> = ({ row }) => {
+  const pass = row.pass;
+  const pct = rowPct(row);
   const barColor = pass ? 'bg-emerald-400' : 'bg-rose-400';
 
   return (
     <div className="px-4 py-2.5 flex items-center gap-3 bg-slate-900/40 hover:bg-slate-900/70 transition">
       <div className="w-24 shrink-0">
         <div className="text-xs font-bold text-slate-200">{row.label}</div>
-        <div className="text-[10px] text-slate-500 truncate" title={row.hint}>{row.hint}</div>
+        <div className="text-[10px] text-slate-500 truncate" title={ROW_HINTS[row.key]}>{ROW_HINTS[row.key]}</div>
       </div>
 
       <div className="flex-1 h-2 rounded-full bg-slate-800 relative overflow-hidden">
@@ -161,12 +147,7 @@ const ReportRow: React.FC<{ row: RowSpec }> = ({ row }) => {
         <span className={pass ? 'text-emerald-300 font-bold' : 'text-rose-300 font-bold'}>
           {fmt(row.value, row.decimals)}{row.unit ? ` ${row.unit}` : ''}
         </span>
-        <span className="text-slate-500">
-          {' / '}
-          {isPh
-            ? `${row.minLimit}–${row.maxLimit}`
-            : `${isMin ? '≥' : '≤'} ${fmt(row.limit ?? 0, row.decimals)}`}
-        </span>
+        <span className="text-slate-500"> / {row.limitText}</span>
       </div>
 
       <span className={`shrink-0 w-12 text-center text-[9px] font-bold py-0.5 rounded ${pass ? 'bg-emerald-500/15 text-emerald-400' : 'bg-rose-500/15 text-rose-400'}`}>

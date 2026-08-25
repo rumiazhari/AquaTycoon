@@ -1,7 +1,13 @@
-import React from 'react';
-import { X, GitBranch, ShieldCheck } from 'lucide-react';
+import React, { useMemo } from 'react';
+import { X, GitBranch, ShieldCheck, AlertTriangle } from 'lucide-react';
 import { GameState } from '../gameplay/GameManager';
 import { UNIT_DEFINITIONS } from '../sim/UnitProcessModels';
+import { permitRows } from '../sim/PermitEngine';
+import {
+  resolveTrainTopology,
+  UnitFlowState,
+  TrainBranchKind,
+} from '../ui/TrainTopology';
 import { SoundManager } from '../audio/SoundManager';
 
 interface PlantFlowDiagramProps {
@@ -9,23 +15,74 @@ interface PlantFlowDiagramProps {
   onClose: () => void;
 }
 
+/** Branch kinds that get a chip (main-line 'liquid' is the diagram spine). */
+type BranchChipKind = Exclude<TrainBranchKind, 'liquid'>;
+
+/**
+ * Honest numeric formatting: missing/uncomputed data renders as "—", never a
+ * fabricated perfect `0 mg/L`. (`outWater?.bod.toFixed(1) || 0` was the bug.)
+ */
+const fmtNum = (v: number | undefined | null, d: number): string =>
+  v === undefined || v === null || !Number.isFinite(v)
+    ? '—'
+    : v.toLocaleString(undefined, { maximumFractionDigits: d });
+
+/** Chips for non-main-line branches leaving a unit (sludge/RAS/recycle/gas). */
+const BRANCH_CHIP: Record<BranchChipKind, string> = {
+  sludge: 'bg-yellow-900/40 text-yellow-500 border-yellow-800/60',
+  ras: 'bg-amber-900/40 text-amber-400 border-amber-700/60',
+  recycle: 'bg-violet-500/15 text-violet-300 border-violet-500/40',
+  gas: 'bg-orange-500/10 text-orange-300 border-orange-500/40',
+};
+
 export const PlantFlowDiagram: React.FC<PlantFlowDiagramProps> = ({ gameState, onClose }) => {
   const { units, pipes, finalEffluent, currentLevel, overallStats } = gameState;
 
+  // REAL hydraulic topology from pipe connections — never `units.map(...)`.
+  const topo = useMemo(() => resolveTrainTopology(units, pipes), [units, pipes]);
+  // THE authoritative permit table (shared with HUD + Operator Console).
+  const rows = useMemo(
+    () => permitRows(finalEffluent, currentLevel.standards),
+    [finalEffluent, currentLevel.standards]
+  );
+  const passCount = rows.filter(r => r.pass).length;
+  const hasOutfallFlow = finalEffluent.flowRate > 10;
+
+  const trainStates = topo.mainTrainOrder
+    .map(id => topo.byUnit.get(id))
+    .filter((s): s is UnitFlowState => !!s);
+  const offTrainStates = topo.offTrainIds
+    .map(id => topo.byUnit.get(id))
+    .filter((s): s is UnitFlowState => !!s);
+
+  /** Branch chips (sludge/RAS/recycle/gas lines) leaving this unit. */
+  const branchChipsFor = (unitId: string) =>
+    topo.links
+      .filter((l): l is typeof l & { kind: BranchChipKind } =>
+        l.fromUnitId === unitId && l.kind !== 'liquid')
+      .map(l => (
+        <span
+          key={l.pipeId}
+          className={`text-[9px] font-mono px-1.5 py-0.5 rounded border uppercase ${BRANCH_CHIP[l.kind]}`}
+        >
+          {l.kind}
+        </span>
+      ));
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950 animate-in fade-in duration-200">
-      <div className="relative w-full max-w-5xl bg-cyber-card border border-slate-700/80 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[88vh]">
-        
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-950 animate-in fade-in duration-200">
+      <div className="relative w-full max-w-5xl bg-cyber-card border border-slate-700/80 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[92vh] sm:max-h-[88vh]">
+
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 bg-slate-900 border-b border-slate-800">
-          <div className="flex items-center gap-3">
-            <div className="p-2 rounded-xl bg-teal-500/20 text-teal-400">
+        <div className="flex items-center justify-between px-6 py-4 bg-slate-900 border-b border-slate-800 shrink-0 gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="p-2 rounded-xl bg-teal-500/20 text-teal-400 shrink-0">
               <GitBranch size={20} />
             </div>
-            <div>
-              <h2 className="text-base font-bold text-slate-100">Process Flow Diagram (PFD / P&ID)</h2>
-              <p className="text-xs text-slate-400 font-mono">
-                Active Hydraulic Network Topology & Mass-Balance
+            <div className="min-w-0">
+              <h2 className="text-base font-bold text-slate-100 truncate">Process Flow Diagram (PFD / P&amp;ID)</h2>
+              <p className="text-xs text-slate-400 font-mono truncate">
+                Real Pipe Topology &amp; Mass-Balance — {pipes.length} connection{pipes.length === 1 ? '' : 's'}
               </p>
             </div>
           </div>
@@ -39,9 +96,9 @@ export const PlantFlowDiagram: React.FC<PlantFlowDiagramProps> = ({ gameState, o
 
         {/* Content */}
         <div className="p-6 flex flex-col gap-6 overflow-y-auto scrollbar-thin">
-          
+
           {/* Top Plant Removal Summary */}
-          <div className="grid grid-cols-5 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
             <div className="p-3 rounded-xl bg-slate-900/80 border border-slate-800 text-center">
               <span className="text-[10px] text-slate-400 font-mono">BOD₅ Removal</span>
               <div className="text-base font-extrabold text-cyan-400 font-mono">
@@ -74,99 +131,144 @@ export const PlantFlowDiagram: React.FC<PlantFlowDiagramProps> = ({ gameState, o
             </div>
           </div>
 
-          {/* Unit Train Sequence Flow */}
+          {/* ── ACTIVE hydraulic treatment train (real reachability) ── */}
           <div className="flex flex-col gap-3">
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300 font-mono">
-              Treatment Units Train ({units.length} Placed Units, {pipes.length} Pipe Connections)
+              Active Hydraulic Treatment Train ({trainStates.length} unit{trainStates.length === 1 ? '' : 's'} on the liquid path)
             </h3>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-              {units.map(unit => {
-                const def = UNIT_DEFINITIONS[unit.typeId];
+            {trainStates.length <= 1 && (
+              <div className="flex items-start gap-2 p-3 rounded-xl bg-amber-950/30 border border-amber-600/40 text-[11px] text-amber-200 font-mono">
+                <AlertTriangle size={14} className="shrink-0 mt-0.5 text-amber-400" />
+                <span>
+                  No active treatment train yet. Open the Pipes tool and connect units from the Inlet onward —
+                  only units reachable from the Inlet through liquid pipes appear here.
+                </span>
+              </div>
+            )}
+
+            <div className="flex flex-wrap items-stretch gap-1.5">
+              {trainStates.map((s, i) => {
+                const def = UNIT_DEFINITIONS[s.unit.typeId];
                 if (!def) return null;
-                const outWater = unit.lastOutletQuality;
-
+                const flowing = s.inflowM3d > 0.5 || s.unit.typeId === 'influent_inlet';
+                const chips = branchChipsFor(s.unit.instanceId);
                 return (
-                  <div
-                    key={unit.instanceId}
-                    className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 flex flex-col justify-between gap-2"
-                  >
-                    <div className="flex items-center justify-between">
+                  <React.Fragment key={s.unit.instanceId}>
+                    {i > 0 && (
+                      <span className="self-center text-cyan-400 font-bold px-0.5 select-none">→</span>
+                    )}
+                    <div
+                      className={`p-2.5 rounded-xl border flex flex-col gap-1.5 min-w-[168px] max-w-[196px] flex-1 ${
+                        flowing
+                          ? 'bg-slate-900 border-cyan-700/50'
+                          : 'bg-slate-900/60 border-amber-700/40'
+                      }`}
+                    >
                       <div>
-                        <div className="text-[9px] font-mono uppercase text-cyan-400 font-bold">
-                          {def.category}
+                        <div className="text-[8px] font-mono uppercase text-cyan-400 font-bold truncate">{def.category}</div>
+                        <div className="text-[11px] font-bold text-slate-100 leading-tight">{def.name}</div>
+                      </div>
+
+                      {!flowing && (
+                        <span className="text-[9px] font-mono font-bold px-1 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-600/40 w-fit">
+                          NO FLOW
+                        </span>
+                      )}
+
+                      <div className="text-[10px] font-mono text-slate-300 grid grid-cols-2 gap-x-2">
+                        <span>In: <span className="text-sky-300">{fmtNum(flowing ? s.inflowM3d : undefined, 0)}</span></span>
+                        <span>Out: <span className="text-cyan-300">{fmtNum(flowing && s.outflowM3d > 0 ? s.outflowM3d : undefined, 0)}</span> m³/d</span>
+                        <span>BOD: <span className="text-cyan-300">{flowing && s.hasOutletData ? fmtNum(s.unit.lastOutletQuality.bod, 1) : '—'}</span></span>
+                        <span>TSS: <span className="text-teal-300">{flowing && s.hasOutletData ? fmtNum(s.unit.lastOutletQuality.tss, 1) : '—'}</span></span>
+                      </div>
+
+                      {(chips.length > 0 || (s.unit.gasStreams && Object.values(s.unit.gasStreams).some(g => g.flowRate > 0.01))) && (
+                        <div className="flex flex-wrap gap-1">
+                          {chips}
+                          {s.unit.gasStreams && Object.values(s.unit.gasStreams).some(g => g.flowRate > 0.01) && (
+                            <span className="text-[9px] font-mono px-1.5 py-0.5 rounded border bg-orange-500/10 text-orange-300 border-orange-500/40">
+                              🔥 biogas
+                            </span>
+                          )}
                         </div>
-                        <div className="text-xs font-bold text-slate-100">{def.name}</div>
-                      </div>
-                      <span className="text-xs font-bold font-mono px-2 py-0.5 rounded bg-sky-500/10 text-sky-300 border border-sky-500/20">
-                        {unit.efficiencyRating}% Eff.
-                      </span>
+                      )}
                     </div>
-
-                    <div className="grid grid-cols-3 gap-1 text-[11px] font-mono p-2 rounded bg-slate-950/60 text-slate-300">
-                      <div>BOD: <span className="text-cyan-300">{outWater?.bod.toFixed(1) || 0}</span></div>
-                      <div>TSS: <span className="text-teal-300">{outWater?.tss.toFixed(1) || 0}</span></div>
-                      <div>TN: <span className="text-purple-300">{outWater?.tn.toFixed(1) || 0}</span></div>
-                    </div>
-
-                    {/* Per-port streams: sludge / RAS / recycle / gas lines */}
-                    {unit.portStreams && Object.entries(unit.portStreams).some(([, s]) => s.flowRate > 0.5) && (
-                      <div className="flex flex-wrap gap-1">
-                        {Object.entries(unit.portStreams).map(([portId, s]) => {
-                          if (s.flowRate <= 0.5) return null;
-                          const portDef = def.ports.find(pp => pp.id === portId);
-                          if (!portDef || portDef.type === 'outlet') return null;
-                          const isRas = portId === 'sludge_outlet' && def.name.includes('Secondary');
-                          return (
-                            <span
-                              key={portId}
-                              className={`text-[9px] font-mono px-1.5 py-0.5 rounded border ${
-                                isRas
-                                  ? 'bg-amber-900/30 text-amber-400 border-amber-800/60'
-                                  : 'bg-yellow-900/30 text-yellow-600 border-yellow-800/50'
-                              }`}
-                              title={`${portDef.name}: ${s.flowRate.toFixed(0)} m³/d @ ${s.tss.toFixed(0)} mg/L TSS`}
-                            >
-                              {portDef.name}: {s.flowRate.toFixed(0)} m³/d
-                            </span>
-                          );
-                        })}
-                      </div>
-                    )}
-                    {unit.gasStreams && Object.values(unit.gasStreams).some(g => g.flowRate > 0.01) && (
-                      <div className="flex flex-wrap gap-1">
-                        {Object.entries(unit.gasStreams).map(([portId, gas]) => {
-                          if (gas.flowRate <= 0.01) return null;
-                          const portDef = def.ports.find(pp => pp.id === portId);
-                          return (
-                            <span
-                              key={portId}
-                              className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/40"
-                              title={`${portDef?.name ?? portId}: ${gas.flowRate.toFixed(1)} Nm³/d @ ${(gas.ch4Fraction * 100).toFixed(0)}% CH₄`}
-                            >
-                              🔥 {(portDef?.name ?? 'Gas')}: {gas.flowRate.toFixed(1)} Nm³/d ({(gas.ch4Fraction * 100).toFixed(0)}% CH₄)
-                            </span>
-                          );
-                        })}
-                      </div>
-                    )}
-
-                    <div className="flex items-center justify-between text-[10px] text-slate-400 font-mono">
-                      <span>⚡ {unit.lastPowerKwActual.toFixed(1)} kW</span>
-                      <span>💰 ${(unit.lastOpexActual || 0).toFixed(0)}/day</span>
-                    </div>
-                  </div>
+                  </React.Fragment>
                 );
               })}
             </div>
           </div>
 
-          {/* Effluent Standards Comparison Table */}
+          {/* ── Off-train / disconnected units — clearly separated ── */}
+          {offTrainStates.length > 0 && (
+            <div className="flex flex-col gap-3">
+              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400 font-mono flex items-center gap-1.5">
+                <AlertTriangle size={13} className="text-amber-400" />
+                Unconnected / Auxiliary Units ({offTrainStates.length}) — not part of the active liquid train
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                {offTrainStates.map(s => {
+                  const def = UNIT_DEFINITIONS[s.unit.typeId];
+                  if (!def) return null;
+                  const reason = s.fullyDisconnected
+                    ? 'No pipes attached'
+                    : s.hasLiquidInfeed
+                    ? 'Liquid feed present but unreachable from the Inlet'
+                    : 'Only sludge/gas/recycle connections';
+                  return (
+                    <div
+                      key={s.unit.instanceId}
+                      className="p-3.5 rounded-xl bg-slate-950/50 border border-dashed border-slate-700/70 opacity-90 flex flex-col gap-2"
+                    >
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <div className="text-[9px] font-mono uppercase text-slate-500 font-bold">{def.category}</div>
+                          <div className="text-xs font-bold text-slate-300">{def.name}</div>
+                        </div>
+                        <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">
+                          OFF-TRAIN
+                        </span>
+                      </div>
+                      <div className="text-[10px] font-mono text-slate-500">{reason}</div>
+                      <div className="grid grid-cols-3 gap-1 text-[11px] font-mono p-2 rounded bg-slate-900/60 text-slate-400">
+                        <div>BOD: <span className="text-slate-500">—</span></div>
+                        <div>TSS: <span className="text-slate-500">—</span></div>
+                        <div>TN: <span className="text-slate-500">—</span></div>
+                      </div>
+                      <div className="flex items-center justify-between text-[10px] text-slate-500 font-mono">
+                        <span>⚡ {s.unit.lastPowerKwActual.toFixed(1)} kW</span>
+                        <span>💰 ${fmtNum(s.unit.lastOpexActual, 0)}/day</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Effluent Standards Comparison — FULL authoritative permit set */}
           <div className="flex flex-col gap-2 p-4 rounded-xl bg-slate-900/80 border border-slate-800">
-            <h3 className="text-xs font-bold text-slate-300 font-mono uppercase flex items-center gap-2">
-              <ShieldCheck size={14} className="text-emerald-400" />
-              Final Outfall vs Regulatory Effluent Standards
-            </h3>
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <h3 className="text-xs font-bold text-slate-300 font-mono uppercase flex items-center gap-2">
+                <ShieldCheck size={14} className="text-emerald-400" />
+                Final Outfall vs Regulatory Effluent Standards
+              </h3>
+              <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded ${
+                passCount === rows.length
+                  ? 'bg-emerald-500/20 text-emerald-400'
+                  : 'bg-rose-500/20 text-rose-400'
+              }`}>
+                {passCount}/{rows.length} parameters passing
+              </span>
+            </div>
+
+            {!hasOutfallFlow && (
+              <div className="flex items-center gap-2 text-[11px] font-mono text-amber-300 bg-amber-950/30 border border-amber-700/40 rounded-lg px-3 py-2">
+                <AlertTriangle size={13} className="shrink-0" />
+                No treated outfall flow — readings below are the last computed sample, not live discharge.
+              </div>
+            )}
 
             <div className="overflow-x-auto">
               <table className="w-full text-xs font-mono text-left">
@@ -180,61 +282,26 @@ export const PlantFlowDiagram: React.FC<PlantFlowDiagramProps> = ({ gameState, o
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/60 text-slate-200">
-                  <tr>
-                    <td className="py-2 font-bold">BOD₅</td>
-                    <td>{currentLevel.influentSpec.bod} mg/L</td>
-                    <td className="text-cyan-300 font-bold">{finalEffluent.bod.toFixed(1)} mg/L</td>
-                    <td>≤ {currentLevel.standards.maxBod} mg/L</td>
-                    <td>
-                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${finalEffluent.bod <= currentLevel.standards.maxBod ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>
-                        {finalEffluent.bod <= currentLevel.standards.maxBod ? 'PASS' : 'FAIL'}
-                      </span>
-                    </td>
-                  </tr>
-                  <tr>
-                    <td className="py-2 font-bold">COD</td>
-                    <td>{currentLevel.influentSpec.cod} mg/L</td>
-                    <td className="text-cyan-300 font-bold">{finalEffluent.cod.toFixed(1)} mg/L</td>
-                    <td>≤ {currentLevel.standards.maxCod} mg/L</td>
-                    <td>
-                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${finalEffluent.cod <= currentLevel.standards.maxCod ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>
-                        {finalEffluent.cod <= currentLevel.standards.maxCod ? 'PASS' : 'FAIL'}
-                      </span>
-                    </td>
-                  </tr>
-                  <tr>
-                    <td className="py-2 font-bold">TSS</td>
-                    <td>{currentLevel.influentSpec.tss} mg/L</td>
-                    <td className="text-cyan-300 font-bold">{finalEffluent.tss.toFixed(1)} mg/L</td>
-                    <td>≤ {currentLevel.standards.maxTss} mg/L</td>
-                    <td>
-                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${finalEffluent.tss <= currentLevel.standards.maxTss ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>
-                        {finalEffluent.tss <= currentLevel.standards.maxTss ? 'PASS' : 'FAIL'}
-                      </span>
-                    </td>
-                  </tr>
-                  <tr>
-                    <td className="py-2 font-bold">Total Nitrogen (TN)</td>
-                    <td>{currentLevel.influentSpec.tn} mg/L</td>
-                    <td className="text-cyan-300 font-bold">{finalEffluent.tn.toFixed(1)} mg/L</td>
-                    <td>≤ {currentLevel.standards.maxTn} mg/L</td>
-                    <td>
-                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${finalEffluent.tn <= currentLevel.standards.maxTn ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>
-                        {finalEffluent.tn <= currentLevel.standards.maxTn ? 'PASS' : 'FAIL'}
-                      </span>
-                    </td>
-                  </tr>
-                  <tr>
-                    <td className="py-2 font-bold">Total Phosphorus (TP)</td>
-                    <td>{currentLevel.influentSpec.tp} mg/L</td>
-                    <td className="text-cyan-300 font-bold">{finalEffluent.tp.toFixed(2)} mg/L</td>
-                    <td>≤ {currentLevel.standards.maxTp} mg/L</td>
-                    <td>
-                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${finalEffluent.tp <= currentLevel.standards.maxTp ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>
-                        {finalEffluent.tp <= currentLevel.standards.maxTp ? 'PASS' : 'FAIL'}
-                      </span>
-                    </td>
-                  </tr>
+                  {rows.map(r => {
+                    const rawIn = (currentLevel.influentSpec as unknown as Record<string, number>)[r.key];
+                    return (
+                      <tr key={r.key}>
+                        <td className="py-2 font-bold whitespace-nowrap">{r.label}</td>
+                        <td>{rawIn !== undefined ? `${fmtNum(rawIn, r.decimals)}${r.unit ? ' ' + r.unit : ''}` : '—'}</td>
+                        <td className={`${r.pass ? 'text-cyan-300' : 'text-rose-300'} font-bold`}>
+                          {fmtNum(r.value, r.decimals)}{r.unit ? ` ${r.unit}` : ''}
+                        </td>
+                        <td className="whitespace-nowrap">{r.limitText}</td>
+                        <td>
+                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                            r.pass ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'
+                          }`}>
+                            {r.pass ? 'PASS' : 'FAIL'}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

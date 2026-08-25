@@ -36,6 +36,38 @@ const TYPE_STYLE: Record<string, string> = {
   gas_outlet: 'bg-amber-400/10 text-amber-300 border-amber-500/40'
 };
 
+/** Panel geometry used for on-screen clamping (kept in sync with the markup). */
+export const PORT_PANEL_WIDTH = 272;
+/** Worst-case panel height: header + up to ~5 visible port rows + padding. */
+export const PORT_PANEL_MAX_HEIGHT = 296;
+const VIEWPORT_PADDING = 8;
+
+/**
+ * Pure, testable clamp: keeps the port card fully on-screen at any window size
+ * (the old `window.innerWidth - 290` could go NEGATIVE below ~290 px width and
+ * `window.innerHeight - 260` below its own threshold, throwing the card off
+ * screen exactly on the small office laptops this game must stay usable on).
+ */
+export function clampPortPanelPosition(
+  anchorX: number,
+  anchorY: number,
+  viewportW: number,
+  viewportH: number
+): { left: number; top: number } {
+  const minLeft = VIEWPORT_PADDING;
+  const maxLeft = Math.max(minLeft, viewportW - PORT_PANEL_WIDTH - VIEWPORT_PADDING);
+  const left = Math.min(Math.max(minLeft, anchorX - 130), maxLeft);
+
+  const minTop = 64; // below the Header HUD
+  const maxTop = Math.max(
+    minTop,
+    viewportH - PORT_PANEL_MAX_HEIGHT - VIEWPORT_PADDING
+  );
+  const top = Math.min(Math.max(minTop, anchorY - 20), maxTop);
+
+  return { left, top };
+}
+
 /**
  * Contextual port selector — appears next to a unit in Pipe Mode whenever it
  * exposes multiple valid source (or target) ports. Shows name, type and live
@@ -50,9 +82,14 @@ export const PortSelector: React.FC<PortSelectorProps> = ({
   onCancel,
   anchor
 }) => {
-  // Keep the card on-screen near the unit/cursor
-  const left = Math.min(Math.max(8, anchor.x - 130), window.innerWidth - 290);
-  const top = Math.min(Math.max(64, anchor.y - 20), window.innerHeight - 260);
+  // Keep the card on-screen near the unit/cursor — clamped against the REAL
+  // viewport (never negative) via the pure, tested helper above.
+  const { left, top } = clampPortPanelPosition(
+    anchor.x,
+    anchor.y,
+    window.innerWidth,
+    window.innerHeight
+  );
 
   return (
     <div
