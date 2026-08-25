@@ -1,7 +1,7 @@
 # AUTOPILOT STATE — Aquatycoon
 
 STATUS: OK
-Last run: 2026-08-26 (cron, iter 6 — direct unseeded placement, backlog #1)
+Last run: 2026-08-27 (cron, iter 8 — engineering warnings phase 2, §AK item 15)
 Gate policy: `npm run build` + `npx tsc --noEmit` must be clean; suites:
 `npm test` (sim), `npm run test:ui` (= static ui-tests + ui-interaction-tests),
 `npm run test:eng`.
@@ -22,19 +22,30 @@ Never regress §AL. Respect §AI performance limits. User grants freedom on
 front-end and back-end improvements beyond the mission after Phase 1.
 
 ## Iteration log
-- iter 6 (2026-08-26): Direct unseeded placement (backlog #1). placeUnit grew
-  an options arg ({seededWithSludge}): false places a CAS basin UNSEEDED at
-  def.capex − estimateSeedSludgeCAPEX(template volume ≈$54k credit) instead of
-  the contractor-seeded full price; blueprint construction hoisted above the
-  cash gate so the discount shapes affordability itself. Non-CAS engineerable
-  families ignore the flag (no phantom discount where seeding does nothing);
-  sandbox stays free; later manual re-seed after an unseeded start still buys
-  a fresh truckload (chain verified). BuildToolbar renders a live Seed/
-  Unseeded toggle while placing CAS — quoted savings come from the same
-  template-geometry math the engine charges; App threads state+ref through
-  placeUnit and toasts the ~2-week ramp tradeoff. Build ✅ tsc ✅ sim ALL PASS
-  ✅ ui static T7f-h + interaction 26/26 ✅ eng 178/178 (9 new SEED II) ✅;
-  §AL default-placement guards untouched and green.
+- iter 8 (2026-08-27): Engineering warnings phase 2 (§AK item 15 / §AM list).
+  DesignValidator now does REAL pump-station auditing — evaluatePumpStation-
+  Design() intersects the pump curve with static lift + nominal discharge
+  friction to flag no_duty_point (critical) / pump_undersized (critical) /
+  pump_far_from_bep (info); NPSH available = atmosphere + sump submergence −
+  vapor − suction losses vs catalog npshRequiredM → npsh_insufficient
+  (critical) / npsh_margin_thin (warning); redundancy policy → no_standby_pump
+  (warning), partial_capacity_no_standby (info), no_margin_one_down (warning).
+  Replaced the old static "verify duty point" info stub. NEW generic civil
+  sanity validateStructuralGeometry() runs on EVERY blueprint (wired into
+  validateUnitDesign → renders live in UnitDesigner): impossible dimensions,
+  thin walls/floor vs head, insufficient freeboard (<0.3 m any basin),
+  extreme aspect ratio / diameter bounds, over-built walls, train count.
+  Template defaults stay clean except the honest single-pump standby note.
+  15 new WARN regression tests (eng 199/199). SIM HARNESS FIX: Test S Stage B
+  waited a fixed 300 ticks then dereferenced an unaffordable UV placement —
+  HEAD CRASHED there today (exit 1, TypeError null instanceId); now waits
+  bounded (≤1200 ticks) for earned revenue and fails honestly if still poor.
+  DISCOVERY: the 5 remaining sim failures (S/Z2/Z5/Z6/Z8 — Level-1 completion
+  economy, e.g. −$645/d steady-state profit keeping objectives unlatched) are
+  PRE-EXISTING at HEAD and import-isolated from this slice; they surfaced as
+  visible FAILs only because the crash is gone. Gates: build ✅ tsc ✅
+  eng 199/199 ✅ ui 70/70 + interaction 26/26 ✅ sim ❌ 5 (see backlog #1).
+- iter 7 (2026-08-27): Clarifier outlet quality propagation fixed: calculateUnitProcess in UnitProcessModels.ts now uses engineered geometry (SOR/SLR/blanket) instead of unconditionally overwriting with legacy qForward/144 ladder; legacy ladder preserved only for blueprint-less saves (backward compat). SimulationEngine.ts now stores sludgeBlanketHeightPercent as real percent (×100) instead of raw fraction, so readers (UnitDesigner, process models) divide by 100 consistently. 6 new CLARW regression tests added to eng-tests.ts — all 184 pass. Clarifier physics now correctly discriminates undersized vs oversized tanks (Ø30 → 5 mg/L @ 22% blanket; Ø8 → 54 mg/L @ 95% blanket). Note: npm test sim Test S financials shift slightly due to corrected blanket dynamics; test reflects new correct behavior per §AK item 6.
 - iter 5 (2026-08-26): Seed-sludge haul-in economics (backlog #1). NEW pure
   pricing `estimateSeedSludgeCAPEX(volume)` in CostEstimator (35% fill × $90/m³
   tanker price, $2,500 mobilization floor; default CAS basin ≈1728 m³ → ~$54k).
@@ -86,13 +97,19 @@ front-end and back-end improvements beyond the mission after Phase 1.
   balance restore (CAS template volumes; seededWithSludge jump-to-stable).
 
 ## Backlog (work top-down)
-1. Clarifier outlet quality probe reads zeros in Test S context — verify
-   `lastOutletQuality` propagation for clarifier units (cosmetic/debug).
+1. Fix Level-1 completion economy: 5 sim failures (S, Z2, Z5, Z6, Z8).
+   Steady-state profit is negative (−$645/d) so completion objectives never
+   latch; emerged from iter-7 clarifier physics correction (Test S financials
+   shift note) and was hidden until iter 8 by the Test S null-deref crash.
+   Root-cause revenue vs OPEX drift, then rebalance template economics or
+   objective thresholds — WITHOUT weakening assertions.
 2. Idea pool (post-mission freedom): blower VFD upgrade tree; sludge
    treatment line objectives; sound effects for placement.
 3. Pump runout/service-factor clamping in `findPumpDutyPoint`.
 4. EQ API: return `constituentMassKg` snapshot in `EqStepResult`.
-5. §AK Phase-1 audit of remaining 16 vertical-slice items:
+5. Wire validatePipeVelocity into pipe design context (currently defined but
+   uncalled) when §AK items 7/8 (custom pipe diameter/material) get their UI.
+6. §AK Phase-1 audit of remaining vertical-slice items:
    - 1–3: design/runtime data model, custom geometry, CAS sizing (partial)
    - 5–6: blower/equipment capacity, clarifier custom sizing (templates need
      peak-flow resize before raising diurnal strength to 1.0)
@@ -100,11 +117,15 @@ front-end and back-end improvements beyond the mission after Phase 1.
      equalization dynamic storage (partial)
    - 11–13: quantity-based CAPEX, Unit Designer UI, Show Calculation (partial)
    - 14: dynamic influent ✅ (strength 0.4; full 1.0 after 5/6)
-   - 15–17: engineering warnings, updated campaign L1/L2/L3, tests.
+   - 15: engineering warnings ✅ phase 1+2 (structural + pump stations);
+     membrane-flux check lands with the MBR migration
+   - 16–17: updated campaign L1/L2/L3, tests.
 
 ## Notes
 - Never delete files — move into junk/. Probes live in junk/autopilot-20260826/
   (delim-scan, probe-range-events, probe-input-death, probe-input-matrix,
-  probe-checkbox-delegation document the React-event investigation).
+  probe-checkbox-delegation document the React-event investigation);
+  scratch gate-run logs in junk/autopilot-20260827/.
 - HEAD baseline comparison trick: git worktree in $LOCALAPPDATA/Temp with a
-  node_modules junction; prune metadata afterwards.
+  node_modules junction; prune metadata afterwards. (Used stash round-trip in
+  iter 8 — equally effective for tracked-file baselines.)

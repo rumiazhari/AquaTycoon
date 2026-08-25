@@ -15,7 +15,13 @@ import {
   footprintCells,
   localPortOffset,
   isEngineerable,
+  defaultGeometryFor,
 } from '../src/design/Geometry';
+import {
+  validateUnitDesign,
+  validateStructuralGeometry,
+  evaluatePumpStationDesign,
+} from '../src/design/DesignValidator';
 import { blueprintFromTemplate } from '../src/design/UnitBlueprint';
 import { casDesignPoint, stepCasRuntime } from '../src/sim/processes/ActivatedSludge';
 import { evaluateClarifierLoad } from '../src/sim/processes/Clarifier';
@@ -633,6 +639,92 @@ function wq(over: Partial<WaterQuality>): WaterQuality {
     u6ok = rReseed.success && rReseed.newState.financials.cash === cashAfterPlace - credit;
   }
   assert(u6ok, 'SEED. later manual re-seed after unseeded start buys a fresh truckload');
+}
+
+// ── WARN: engineering warnings phase 2 (§AK item 15 / §AM) ──────────────────
+{
+  console.log('\n── WARN: engineering warnings — pump stations & structural sanity ──');
+
+  // W1. All template defaults are structurally sane — no critical spam.
+  for (const id of ['activated_sludge_cas', 'secondary_clarifier', 'equalization_basin', 'pump_station']) {
+    const g = defaultGeometryFor(id)!;
+    const crits = validateStructuralGeometry(g).filter(i => i.severity === 'critical');
+    assert(crits.length === 0, `WARN. template defaults for ${id} raise no critical structural issue`);
+  }
+
+  // W2. Unrealistic wall thickness is a critical.
+  const thinWalls = { ...defaultGeometryFor('activated_sludge_cas')!, wallThicknessM: 0.05 };
+  assert(
+    validateStructuralGeometry(thinWalls).some(i => i.code === 'wall_too_thin' && i.severity === 'critical'),
+    'WARN. unrealistic wall thickness flagged critical'
+  );
+
+  // W3. §AM "insufficient freeboard" fires generically on any basin.
+  const lowFb = { ...defaultGeometryFor('equalization_basin')!, freeboardM: 0.1 };
+  assert(
+    validateStructuralGeometry(lowFb).some(i => i.code === 'freeboard_low_generic'),
+    'WARN. insufficient freeboard produces generic warning'
+  );
+
+  // W4. Absurd proportions get an informational note.
+  const longBasin = { ...defaultGeometryFor('equalization_basin')!, lengthM: 90, widthM: 4 };
+  assert(
+    validateStructuralGeometry(longBasin).some(i => i.code === 'aspect_unusual'),
+    'WARN. extreme basin aspect ratio surfaces an informational note'
+  );
+
+  // W5. Default pump station: missing-standby warning, nothing critical.
+  const psIssues = validateUnitDesign(mkBlueprintUnit('pump_station'));
+  assert(psIssues.some(i => i.code === 'no_standby_pump'),
+    'WARN. single-pump default raises missing-standby warning');
+  assert(!psIssues.some(i => i.severity === 'critical'),
+    'WARN. default pump-station design has no critical issues');
+
+  // W6. Static lift above shutoff head → no valid duty point (critical).
+  const wedge = PUMP_MODELS.sewage_wedge_400;
+  assert(
+    evaluatePumpStationDesign(wedge, 'duty_standby', 30, 4, 200)
+      .some(i => i.code === 'no_duty_point' && i.severity === 'critical'),
+    'WARN. impossible static lift reports no valid duty point'
+  );
+
+  // W7. Demand far above installed capacity → critical undersizing.
+  assert(
+    evaluatePumpStationDesign(wedge, 'single_100', 3.5, 4, 3000)
+      .some(i => i.code === 'pump_undersized' && i.severity === 'critical'),
+    'WARN. demand far above installed capacity flags critical undersizing'
+  );
+
+  // W8. Tiny demand vs big pump → far-from-BEP efficiency note.
+  assert(
+    evaluatePumpStationDesign(wedge, 'single_100', 3.5, 4, 80)
+      .some(i => i.code === 'pump_far_from_bep'),
+    'WARN. design flow far below BEP surfaces efficiency note'
+  );
+
+  // W9. NPSH available below requirement → cavitation is critical.
+  const hungry = { ...wedge, id: 'hungry_test', npshRequiredM: 14 };
+  assert(
+    evaluatePumpStationDesign(hungry, 'single_100', 2, 0.5, 200)
+      .some(i => i.code === 'npsh_insufficient' && i.severity === 'critical'),
+    'WARN. NPSH unavailable below pump requirement is critical'
+  );
+
+  // W10. Thin-but-passing NPSH margin warns before it becomes critical.
+  //      NPSHa = 10.33 + 3 − 0.45 − 1.0 ≈ 11.9 m vs required 11 → <1.25× margin.
+  const marginal = { ...wedge, npshRequiredM: 11 };
+  assert(
+    evaluatePumpStationDesign(marginal, 'single_100', 2, 3, 400)
+      .some(i => i.code === 'npsh_margin_thin'),
+    'WARN. thin NPSH design margin warned before it becomes critical'
+  );
+
+  // W11. No-standby multi-unit bank that loses design flow with one unit down.
+  assert(
+    evaluatePumpStationDesign(wedge, 'two_duty', 3.5, 4, 700)
+      .some(i => i.code === 'no_margin_one_down'),
+    'WARN. losing a unit below design flow warned for no-standby banks'
+  );
 }
 
 // ── summary ─────────────────────────────────────────────────────────────────

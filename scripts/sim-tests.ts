@@ -1082,15 +1082,25 @@ const obj = (state: any, id: string) => state.currentLevel.objectives.find((o: a
     mkPipe('sp7', cl.instanceId, 'sludge_outlet', cas.instanceId, 'ras_inlet', 'ras')
   ];
   for (let i = 0; i < 300; i++) s = GameManager.tick(s, 1);
-  // Stage B: add UV disinfection from earned revenue
-  const uv = place('uv_disinfection', 26, 20)!;
-  s.pipes = s.pipes.filter((p: PipeConnection) => !(p.fromUnitId === cl.instanceId && p.toUnitId === 'outfall_0'));
-  s.pipes.push(
-    mkPipe('sp8', cl.instanceId, 'outlet', uv.instanceId, 'inlet'),
-    mkPipe('sp9', uv.instanceId, 'outlet', 'outfall_0', 'inlet')
-  );
-  for (let i = 0; i < 600; i++) s = GameManager.tick(s, 1);
-  assert(s.isLevelComplete && s.currentLevel.objectives.every((o: any) => o.achieved),
+  // Stage B: add UV disinfection once earned revenue covers it. The wait is
+  // bounded and honest: corrected clarifier physics (iter 7) shifted the
+  // revenue curve, so a fixed tick count made affordability flaky.
+  const uvCapex = UNIT_DEFINITIONS.uv_disinfection.capex;
+  let waitTicks = 0;
+  while (s.financials.cash < uvCapex && waitTicks < 1200) {
+    s = GameManager.tick(s, 1);
+    waitTicks++;
+  }
+  const uv = place('uv_disinfection', 26, 20);
+  if (uv) {
+    s.pipes = s.pipes.filter((p: PipeConnection) => !(p.fromUnitId === cl.instanceId && p.toUnitId === 'outfall_0'));
+    s.pipes.push(
+      mkPipe('sp8', cl.instanceId, 'outlet', uv.instanceId, 'inlet'),
+      mkPipe('sp9', uv.instanceId, 'outlet', 'outfall_0', 'inlet')
+    );
+    for (let i = 0; i < 600; i++) s = GameManager.tick(s, 1);
+  }
+  assert(uv !== null && s.isLevelComplete && s.currentLevel.objectives.every((o: any) => o.achieved),
     `S. Level 1 canonical staged build COMPLETES (score ${s.overallStats.complianceScore}%, cash $${s.financials.cash.toFixed(0)})`);
 }
 

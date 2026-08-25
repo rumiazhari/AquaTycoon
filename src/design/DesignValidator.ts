@@ -5,10 +5,16 @@
  */
 
 import type { PlacedUnit } from '../types/simulation';
-import { planAreaM2 } from './Geometry';
+import { planAreaM2, structuralDepthM, type BasinGeometry } from './Geometry';
 import { casDesignPoint } from '../sim/processes/ActivatedSludge';
 import { evaluateClarifierLoad } from '../sim/processes/Clarifier';
-import { evaluatePipeHydraulics } from '../sim/hydraulics/PipeHydraulics';
+import {
+  evaluatePipeHydraulics,
+  findPumpDutyPoint,
+  systemCurveK,
+} from '../sim/hydraulics/PipeHydraulics';
+import { PUMP_MODELS, REDUNDANCY_CONFIGS, type PumpModel } from './catalogs/Equipment';
+import type { PumpingDesign } from './UnitBlueprint';
 
 export type DesignIssueSeverity = 'info' | 'warning' | 'critical';
 
@@ -24,6 +30,9 @@ export function validateUnitDesign(unit: PlacedUnit): DesignIssue[] {
   const issues: DesignIssue[] = [];
   const bp = unit.blueprint;
   if (!bp) return issues;
+
+  // Generic structural sanity applies to every engineered asset.
+  issues.push(...validateStructuralGeometry(bp.design.geometry));
 
   switch (bp.processType) {
     case 'activated_sludge_cas': {
@@ -101,10 +110,18 @@ export function validateUnitDesign(unit: PlacedUnit): DesignIssue[] {
     }
 
     case 'pump_station': {
-      issues.push({
-        severity: 'info', code: 'check_duty_point',
-        message: 'Verify the pump duty point against your piping headloss in DIAGNOSTICS.',
-      });
+      const design = bp.equipment as PumpingDesign;
+      const model = PUMP_MODELS[design?.pumpModelId ?? 'sewage_wedge_400'];
+      if (!model) break;
+      const sumpGeo = bp.design.geometry;
+      const sumpDepth = sumpGeo.shape === 'rect' ? sumpGeo.waterDepthM : sumpGeo.sideWaterDepthM;
+      issues.push(...evaluatePumpStationDesign(
+        model,
+        design?.redundancyId ?? 'single_100',
+        design?.staticLiftM ?? 3.5,
+        sumpDepth,
+        estimateDesignFlow(unit) / 24
+      ));
       break;
     }
   }
@@ -117,6 +134,171 @@ function estimateDesignFlow(_unit: PlacedUnit): number {
   // Phase-1 heuristic: typical municipal module scale; replaced by contract
   // design flow once contracts carry it through placement context.
   return 5000;
+}
+
+// ── Structural sanity (Prompt §AM "unrealistic structural dimensions") ───────
+
+/**
+ * Generic civil-engineering plausibility checks for ANY engineered geometry.
+ * Template defaults must pass clean — these fire only when a designer
+ * genuinely draws something that cannot be built or cannot hold water.
+ */
+export function validateStructuralGeometry(geo: BasinGeometry): DesignIssue[] {
+  const issues: DesignIssue[] = [];
+  const depth = geo.shape === 'rect' ? geo.waterDepthM : geo.sideWaterDepthM;
+  const area = planAreaM2(geo);
+
+  if (area < 1 || depth < 0.05) {
+    issues.push({
+      severity: 'critical', code: 'dimensions_impossible',
+      message: `Unrealistic structure: ${area.toFixed(1)} m² plan area at ${depth.toFixed(2)} m water depth cannot hold water.`,
+    });
+    return issues;
+  }
+  if (depth > 12) {
+    issues.push({
+      severity: 'warning', code: 'depth_unrealistic',
+      message: `${depth.toFixed(1)} m water depth exceeds common municipal construction practice.`,
+    });
+  }
+  if (geo.shape === 'rect') {
+    const aspect = geo.lengthM / Math.max(1, geo.widthM);
+    if (aspect > 8) {
+      issues.push({
+        severity: 'info', code: 'aspect_unusual',
+        message: `Aspect ratio ${aspect.toFixed(1)}:1 is unusual — long thin basins cost more concrete per m³ and mix poorly.`,
+      });
+    }
+  } else if (geo.diameterM > 60) {
+    issues.push({
+      severity: 'warning', code: 'diameter_unrealistic',
+      message: `Ø${geo.diameterM.toFixed(0)} m exceeds practical circular construction (>60 m).`,
+    });
+  }
+
+  const structDepth = structuralDepthM(geo);
+  const minWall = Math.max(0.15, structDepth / 30);
+  if (geo.wallThicknessM < minWall) {
+    issues.push({
+      severity: 'critical', code: 'wall_too_thin',
+      message: `Walls ${(geo.wallThicknessM * 1000).toFixed(0)} mm are unrealistically thin against ${(structDepth).toFixed(1)} m of head (≥${(minWall * 1000).toFixed(0)} mm expected).`,
+    });
+  } else if (geo.wallThicknessM > 1.2) {
+    issues.push({
+      severity: 'info', code: 'walls_overbuilt',
+      message: `${geo.wallThicknessM.toFixed(2)} m walls are over-built for this head — wasted concrete budget.`,
+    });
+  }
+  if (geo.floorThicknessM < 0.12) {
+    issues.push({
+      severity: 'critical', code: 'floor_too_thin',
+      message: `Floor slab ${(geo.floorThicknessM * 1000).toFixed(0)} mm cannot resist uplift and loads (≥120 mm minimum practice).`,
+    });
+  }
+  if (geo.freeboardM < 0.3) {
+    issues.push({
+      severity: 'warning', code: 'freeboard_low_generic',
+      message: `Freeboard ${geo.freeboardM.toFixed(2)} m is insufficient — storm peaks and foam will spill over the wall.`,
+    });
+  }
+  if (geo.numberOfParallelTrains > 8) {
+    issues.push({
+      severity: 'info', code: 'many_trains',
+      message: `${geo.numberOfParallelTrains} parallel trains — consider larger units to cut piping and complexity.`,
+    });
+  }
+  return issues;
+}
+
+// ── Pump-station engineering (§AM: duty point, NPSH margin, standby) ─────────
+
+const ATMOSPHERIC_PRESSURE_HEAD_M = 10.33;
+const VAPOR_PRESSURE_ALLOWANCE_M = 0.45;
+/**
+ * Phase-1 heuristic friction allowance for the discharge run at demand flow,
+ * until sized pipes feed the validator's design context (§AK item 8 wiring).
+ */
+const NOMINAL_DISCHARGE_FRICTION_M = 1.5;
+
+/**
+ * Real pump-station design audit: does the installed bank have a duty point
+ * at the design flow, enough NPSH margin, and standby where failure would
+ * stop the plant? Pure so tests can probe catalog-independent cases.
+ */
+export function evaluatePumpStationDesign(
+  model: PumpModel,
+  redundancyId: string,
+  staticLiftM: number,
+  sumpDepthM: number,
+  demandM3h: number
+): DesignIssue[] {
+  const issues: DesignIssue[] = [];
+  const red = REDUNDANCY_CONFIGS[redundancyId] ?? REDUNDANCY_CONFIGS.single_100;
+
+  // Missing standby where there is no graceful degradation path (§AM).
+  if (red.id === 'single_100') {
+    issues.push({
+      severity: 'warning', code: 'no_standby_pump',
+      message: `${model.label} runs alone with no standby — one mechanical failure halts all pumping through this station.`,
+      detail: 'Duty+standby redundancy keeps the line alive through a failure.',
+    });
+  } else if (red.capacityWithOneDown < 1) {
+    issues.push({
+      severity: 'info', code: 'partial_capacity_no_standby',
+      message: `${red.label}: losing one unit leaves only ${(red.capacityWithOneDown * 100).toFixed(0)}% capacity with no full standby.`,
+    });
+  }
+
+  // Duty point at design demand: static lift + nominal friction vs pump curve.
+  const Ksys = systemCurveK(NOMINAL_DISCHARGE_FRICTION_M, Math.max(1, demandM3h));
+  const duty = findPumpDutyPoint(model, staticLiftM, Ksys);
+  if (!duty.ok) {
+    issues.push({
+      severity: 'critical', code: 'no_duty_point',
+      message: `No valid duty point: shutoff head ${model.shutoffHeadM.toFixed(1)} m cannot overcome ${staticLiftM.toFixed(1)} m static lift plus friction.`,
+      detail: 'Choose a higher-head pump or reduce the static lift.',
+    });
+    return issues;
+  }
+  const installedCapacityM3h = model.ratedFlowM3h * red.unitCount;
+  if (installedCapacityM3h < demandM3h * 0.98) {
+    issues.push({
+      severity: 'critical', code: 'pump_undersized',
+      message: `Station delivers ~${Math.round(installedCapacityM3h)} m³/h but design flow is ~${Math.round(demandM3h)} m³/h.`,
+      detail: 'Add pumps, pick a larger model, or lower the design flow.',
+    });
+  } else if (red.unitCount > 1 &&
+             installedCapacityM3h * red.capacityWithOneDown < demandM3h) {
+    issues.push({
+      severity: 'warning', code: 'no_margin_one_down',
+      message: `With one pump down only ~${Math.round(installedCapacityM3h * red.capacityWithOneDown)} m³/h remains vs ~${Math.round(demandM3h)} m³/h design flow.`,
+    });
+  }
+  const bepFraction = Math.min(demandM3h, installedCapacityM3h) / model.ratedFlowM3h;
+  if (bepFraction < 0.4 && demandM3h > 0) {
+    issues.push({
+      severity: 'info', code: 'pump_far_from_bep',
+      message: `Design flow sits at only ${(bepFraction * 100).toFixed(0)}% of BEP — energy is wasted far off the efficient point.`,
+    });
+  }
+
+  // NPSH margin: atmosphere + sump submergence − vapor pressure − suction losses.
+  const suctionLossM = 0.5 + 0.5 * Math.pow(demandM3h / model.ratedFlowM3h, 2);
+  const npshAvailableM =
+    ATMOSPHERIC_PRESSURE_HEAD_M + sumpDepthM - VAPOR_PRESSURE_ALLOWANCE_M - suctionLossM;
+  if (npshAvailableM < model.npshRequiredM) {
+    issues.push({
+      severity: 'critical', code: 'npsh_insufficient',
+      message: `NPSH available ≈${npshAvailableM.toFixed(1)} m is below the pump's ${model.npshRequiredM.toFixed(1)} m requirement — cavitation will destroy the impeller.`,
+      detail: 'Deepen the sump or choose a low-NPSH pump.',
+    });
+  } else if (npshAvailableM < model.npshRequiredM * 1.25) {
+    issues.push({
+      severity: 'warning', code: 'npsh_margin_thin',
+      message: `Thin NPSH margin: ≈${npshAvailableM.toFixed(1)} m available vs ${model.npshRequiredM.toFixed(1)} m required (<25% design margin).`,
+    });
+  }
+  return issues;
 }
 
 export function validatePipeVelocity(diameterM: number, materialId: string | undefined, qM3Day: number, lengthM: number): DesignIssue[] {
