@@ -580,7 +580,7 @@ export class GameManager {
         }
       }
 
-      return { ...obj, achieved: obj.achieved || currentlyMet };
+      return { ...obj, achieved: currentlyMet };
     });
 
     const allObjectivesMet = updatedObjectives.length > 0 && updatedObjectives.every(o => o.achieved);

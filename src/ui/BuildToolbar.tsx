@@ -24,6 +24,8 @@ interface BuildToolbarProps {
   suggestedUnitTypeId?: UnitTypeId | null;
   /** Tutorial lock: only this unit is buildable, 'none' = building blocked entirely */
   tutorialAllowedUnitId?: UnitTypeId | 'none';
+  /** True during guided tutorial — enables recommendation badge/highlight UI */
+  showRecommendationUi?: boolean;
 }
 
 const CATEGORIES: { id: UnitCategory; label: string; icon: React.ReactNode }[] = [
@@ -48,7 +50,8 @@ export const BuildToolbar: React.FC<BuildToolbarProps> = ({
   isSandbox,
   availableUnitIds,
   suggestedUnitTypeId,
-  tutorialAllowedUnitId
+  tutorialAllowedUnitId,
+  showRecommendationUi = false
 }) => {
   const [activeCategory, setActiveCategory] = useState<UnitCategory>('preliminary');
   const [hoveredDef, setHoveredDef] = useState<UnitDefinition | null>(null);
@@ -73,7 +76,7 @@ export const BuildToolbar: React.FC<BuildToolbarProps> = ({
     <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-2 pointer-events-none w-full max-w-5xl px-4">
       {/* Unit Hover Information Tooltip */}
       {hoveredDef && (
-        <div className="bg-slate-900/95 backdrop-blur-md border border-cyan-500/40 rounded-xl px-4 py-2.5 shadow-2xl pointer-events-auto text-xs flex flex-col gap-1 w-full max-w-xl animate-in fade-in slide-in-from-bottom-2 duration-150">
+        <div className="bg-slate-900 border border-cyan-500/40 rounded-xl px-4 py-2.5 shadow-2xl pointer-events-auto text-xs flex flex-col gap-1 w-full max-w-xl animate-in fade-in slide-in-from-bottom-2 duration-150">
           <div className="flex items-center justify-between">
             <span className="font-bold text-cyan-300 text-sm">{hoveredDef.name}</span>
             <div className="flex items-center gap-3 font-mono text-slate-300">
@@ -91,12 +94,11 @@ export const BuildToolbar: React.FC<BuildToolbarProps> = ({
       )}
 
       {/* Main Glassmorphic Build Bar */}
-      <div className="bg-slate-900/95 backdrop-blur-md border border-slate-700/80 rounded-2xl p-2 shadow-2xl pointer-events-auto flex flex-col gap-2 w-full">
+      <div className="bg-slate-900 border border-slate-700/80 rounded-2xl p-2 shadow-2xl pointer-events-auto flex flex-col gap-2 w-full">
         
-        {/* Top: Category Tabs & Global Tool Modes */}
-        <div className="flex items-center justify-between border-b border-slate-700/60 pb-2">
-          {/* Tool Modes: Select, Pipe, Demolish */}
-          <div className="flex items-center gap-1 bg-slate-950/90 p-1 rounded-xl border border-slate-800">
+        {/* Top: Global Tool Modes (own layer) */}
+        <div className="flex items-center gap-2 border-b border-slate-700/60 pb-2">
+          <div className="relative z-20 flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800 pointer-events-auto">
             <button
               onClick={() => {
                 SoundManager.playClick();
@@ -149,8 +151,8 @@ export const BuildToolbar: React.FC<BuildToolbarProps> = ({
             </button>
           </div>
 
-          {/* Category Tabs */}
-          <div className="flex items-center gap-1 overflow-x-auto">
+          {/* Category Tabs — separate shrinking region, cannot cover mode buttons */}
+          <div className="flex items-center gap-1 overflow-x-auto flex-1 min-w-0 justify-end scrollbar-thin">
             {CATEGORIES.map(cat => (
               <button
                 key={cat.id}
@@ -176,7 +178,7 @@ export const BuildToolbar: React.FC<BuildToolbarProps> = ({
               SoundManager.playClick();
               onRotate();
             }}
-            className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-sky-300 border border-slate-700 transition"
+            className="shrink-0 flex items-center gap-1 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-sky-300 border border-slate-700 transition"
             title="Rotate placement direction (Shortcut: R)"
           >
             <RotateCw size={13} />
@@ -190,7 +192,7 @@ export const BuildToolbar: React.FC<BuildToolbarProps> = ({
             const unlocked = isUnitUnlocked(def);
             const canAfford = isSandbox || playerCash >= def.capex;
             const isSelected = toolMode === 'place_unit' && selectedUnitTypeId === def.id;
-            const isSuggested = suggestedUnitTypeId === def.id;
+            const isSuggested = showRecommendationUi && suggestedUnitTypeId === def.id;
             // Tutorial lock: everything except the guided unit is grayed out
             const tutorialBlocked = tutorialAllowedUnitId !== undefined &&
               (tutorialAllowedUnitId === 'none' || def.id !== tutorialAllowedUnitId);
@@ -219,7 +221,7 @@ export const BuildToolbar: React.FC<BuildToolbarProps> = ({
                     : isSuggested
                     ? 'bg-sky-950/40 border-sky-400/80 ring-1 ring-sky-400/40'
                     : canAfford
-                    ? 'bg-slate-900/90 border-slate-700/80 hover:border-sky-500/60 hover:bg-slate-800/90'
+                    ? 'bg-slate-900 border-slate-700/80 hover:border-sky-500/60 hover:bg-slate-800/90'
                     : 'bg-slate-900/60 border-rose-900/40 hover:bg-slate-900/80'
                 }`}
               >

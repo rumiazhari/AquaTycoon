@@ -60,7 +60,7 @@ function tbox(w: number, h: number, d: number, mat: THREE.Material): THREE.Mesh 
 
 interface Placed { x: number; z: number; r: number; }
 
-type TrafficMode = 'cruise' | 'overtake' | 'return';
+type TrafficMode = 'cruise' | 'prepare' | 'overtake' | 'return' | 'cooldown';
 
 /** A single road vehicle with car-following / overtaking AI state */
 interface TrafficVehicle {
@@ -70,8 +70,9 @@ interface TrafficVehicle {
   speed: number;
   halfLen: number;
   laneOffset: number;   // signed lateral offset from road centre for this vehicle's home lane
-  mode: TrafficMode;    // cruise | passing on the opposing lane | merging back home
+  mode: TrafficMode;    // full overtake state machine (see TrafficMode)
   overtakeTime: number; // seconds spent in the opposing lane (forces an abort)
+  cooldown: number;     // seconds before this vehicle may attempt another pass
 }
 
 /** Per-scenario world generation rules */
@@ -195,7 +196,7 @@ export class TerrainGrid {
 
   /** Per-frame updates: river flow, cloud drift, night glow */
   public tick(dt: number, elapsed: number, nightFactor: number) {
-    // Flow arrow streaks ride the current with bobbing and shimmer
+    // Flow line-streaks ride the current with bobbing and shimmer
     if (this.flowParticles && this.flowData.length > 0) {
       const zMin = -this.padZ;
       const span = this.D + this.padZ * 2;
@@ -210,16 +211,16 @@ export class TerrainGrid {
         if (f.t > 1) f.t -= 1;
         const z = zMin + f.t * span;
         const meander = this.riverCenterX(z);
-        // Yaw follows the local meander tangent so arrows point downstream
+        // Yaw follows the local meander tangent so streaks align with the flow
         const dcx = this.riverCenterX(z + 0.6) - this.riverCenterX(z - 0.6);
         eul.set(0, Math.atan2(dcx, 1.2), 0);
         q.setFromEuler(eul);
         // Vertical bobbing for a dynamic flowing effect
         const bob = Math.sin(elapsed * 3.0 + i * 1.7) * 0.03;
-        // Scale pulse for shimmer
-        const pulse = 1.0 + Math.sin(elapsed * 2.5 + i * 2.1) * 0.12;
+        // Streaks elongate/pulse subtly along the flow axis (shimmer)
+        const pulse = 1.0 + Math.sin(elapsed * 2.5 + i * 2.1) * 0.18;
         pos.set(meander + f.u, this.waterY + 0.04 + bob, z);
-        scl.set(f.scale * pulse, f.scale * pulse, f.scale * pulse);
+        scl.set(f.scale, f.scale, f.scale * pulse * (1.6 + f.scale));
         m.compose(pos, q, scl);
         this.flowParticles.setMatrixAt(i, m);
       }
@@ -233,6 +234,7 @@ export class TerrainGrid {
       const vs = this.traffic;
       const dts = Math.max(dt, 1e-4);
       const CORRIDOR_TOL = 1.75; // lateral half-width of a lane corridor
+      const overtakeLock: { [d: number]: number | null } = { 1: null, [-1]: null }; // ONE active overtake per direction
 
       /** Nearest vehicle ahead of `me` in the corridor centred at zCentre (ANY direction) */
       const aheadInCorridor = (me: TrafficVehicle, zCentre: number) => {
@@ -288,15 +290,25 @@ export class TerrainGrid {
         // ── Lateral manoeuvres (smooth lane changes with a touch of yaw) ──
         let z = v.group.position.z;
         let yawOffset = 0;
-        if (v.mode === 'overtake') {
+        if (v.mode === 'prepare' || v.mode === 'overtake') {
           const dz = overtakeZ - z;
-          z += Math.sign(dz) * Math.min(Math.abs(dz), 3.2 * dts);
+          z += Math.sign(dz) * Math.min(Math.abs(dz), (v.mode === 'overtake' ? 3.2 : 2.2) * dts);
           yawOffset = -v.dir * 0.14 * Math.sign(dz);
         } else if (v.mode === 'return') {
           const dz = laneZ - z;
           z += Math.sign(dz) * Math.min(Math.abs(dz), 2.8 * dts);
           yawOffset = -v.dir * 0.12 * Math.sign(dz);
-          if (Math.abs(dz) < 0.05) { z = laneZ; v.mode = 'cruise'; }
+          if (Math.abs(dz) < 0.05) {
+            z = laneZ;
+            v.mode = 'cooldown';
+            v.overtakeTime = 0;
+            v.cooldown = 4; // settle time before this vehicle may pass again
+          }
+        }
+        // Cooldown ticking
+        if (v.mode === 'cooldown') {
+          v.cooldown -= dts;
+          if (v.cooldown <= 0) { v.mode = 'cruise'; v.cooldown = 0; }
         }
         v.group.position.z = z;
         v.group.rotation.y += (baseYaw + yawOffset - v.group.rotation.y) * Math.min(1, dts * 8);
@@ -308,9 +320,9 @@ export class TerrainGrid {
         const committedHome = Math.abs(z - laneZ) < 1.4;
 
         let target = v.baseSpeed;
-        if (v.mode === 'cruise') {
+        if (v.mode === 'cruise' || v.mode === 'cooldown') {
           target = followTarget(v, home, target);
-        } else if (v.mode === 'overtake') {
+        } else if (v.mode === 'prepare' || v.mode === 'overtake') {
           target = followTarget(v, pass, target);
           if (!committedPass) target = Math.min(target, followTarget(v, home, v.baseSpeed));
         } else {
@@ -318,24 +330,33 @@ export class TerrainGrid {
           if (!committedHome) target = Math.min(target, followTarget(v, pass, v.baseSpeed));
         }
 
+        // ── Overtake reservation lock: ONE active manoeuvre per direction ──
+        // The whole road is a single two-lane conflict zone per direction, so
+        // only one vehicle may hold the corridor at a time.
+        const myIdx = vs.indexOf(v);
+        const lockHolder = overtakeLock[v.dir];
+        const iHoldLock = lockHolder === myIdx;
+
         // ── Overtake initiation: stuck behind a measurably slower vehicle ──
-        if (v.mode === 'cruise' && home.leader && !home.oncoming &&
+        if ((v.mode === 'cruise' || v.mode === 'cooldown') && v.cooldown <= 0 &&
+            !iHoldLock && lockHolder === null &&
+            home.leader && !home.oncoming &&
             home.leader.speed < v.baseSpeed - 0.8 && home.gap < 2.2 + v.speed * 0.55) {
           const passBlocked =
             (pass.leader !== null && (pass.oncoming ? pass.gap < 32 : pass.gap < 8)) ||
             !oncomingClear(v, overtakeZ, 30, 8);
           if (!passBlocked) {
-            v.mode = 'overtake'; // opposing lane clear → pull out and pass
+            v.mode = 'prepare';       // reserve the corridor before pulling out
             v.overtakeTime = 0;
+            overtakeLock[v.dir] = myIdx; // acquire the single-slot lock
           } else {
             target = Math.min(target, home.leader.speed); // measured slow-down behind the slow vehicle
           }
         }
+        // prepare → overtake once actually in the opposing lane
+        if (v.mode === 'prepare' && committedPass) v.mode = 'overtake';
 
         // ── Overtake progression: ALWAYS finish the manoeuvre ──────────────
-        // A vehicle never stays in the opposing lane: it merges back once it
-        // has passed, on oncoming danger, or when the pass simply takes too
-        // long (anti-deadlock / anti-jam guarantee).
         if (v.mode === 'overtake') {
           v.overtakeTime += dts;
           const passed = !home.leader || home.gap > v.halfLen + home.leader.halfLen + 4.5;
@@ -357,6 +378,14 @@ export class TerrainGrid {
           // If danger and we cannot return yet, followTarget(pass) brakes hard
           // until the rear clears, then the next frame completes the merge.
         }
+        // Release the lock when back in the home lane (return → cooldown above)
+        if (v.mode === 'cooldown' && overtakeLock[v.dir] === myIdx) {
+          overtakeLock[v.dir] = null;
+        }
+        // Safety: never leave a stale lock on wrap-around respawn
+        if ((v.mode === 'cruise' || v.mode === 'cooldown') && overtakeLock[v.dir] === myIdx) {
+          overtakeLock[v.dir] = null;
+        }
 
         // ── Longitudinal integration with acceleration/braking limits ──
         const rate = target > v.speed ? 4.5 : 13;
@@ -364,8 +393,8 @@ export class TerrainGrid {
         if (v.speed < 0) v.speed = 0;
 
         let x = v.group.position.x + v.dir * v.speed * dts;
-        if (x > xMax) { x = xMin; v.mode = 'cruise'; v.group.position.z = zRoad + v.laneOffset; }
-        if (x < xMin) { x = xMax; v.mode = 'cruise'; v.group.position.z = zRoad + v.laneOffset; }
+        if (x > xMax) { x = xMin; v.mode = 'cruise'; v.cooldown = 0; v.group.position.z = zRoad + v.laneOffset; overtakeLock[v.dir] = null; }
+        if (x < xMin) { x = xMax; v.mode = 'cruise'; v.cooldown = 0; v.group.position.z = zRoad + v.laneOffset; overtakeLock[v.dir] = null; }
         v.group.position.x = x;
       }
     }
@@ -522,6 +551,169 @@ export class TerrainGrid {
     this._buildMountains();
     this._buildClouds(rng);
     this._buildChannelMarkers();
+    this._buildScatterFill(rng);
+  }
+
+  // ═══════════════ EMPTY-TERRAIN FILLER + MAP-EDGE RING ═══════════════
+
+  /** True when x/z is in the far outer band (beyond the playable area) */
+  private _isOuterBand(x: number, z: number): boolean {
+    const outsideX = x < -6 || x > this.W + 6;
+    const outsideZ = z < -6 || z > this.zRoad + 8;
+    return outsideX || outsideZ;
+  }
+
+  /**
+   * Task 9 + 10: procedurally enrich large empty regions with grass/dirt
+   * tone patches, rocks and shrub clusters; and add an off-map scenery ring
+   * (distant trees/houses) so the world edge never reads as a void.
+   */
+  private _buildScatterFill(rng: () => number) {
+    const m = new THREE.Matrix4();
+    const q = new THREE.Quaternion();
+    const eul = new THREE.Euler();
+    const col = new THREE.Color();
+    const vPos = new THREE.Vector3();
+    const vScl = new THREE.Vector3();
+
+    // ── A. Ground tone breakup decals (large flat quads hugging terrain) ──
+    const N_PATCH = 260;
+    const patchGeo = new THREE.CircleGeometry(1, 7);
+    patchGeo.rotateX(-Math.PI / 2);
+    const patchMat = new THREE.MeshStandardMaterial({ roughness: 0.98, transparent: true, opacity: 0.55 });
+    const patches = new THREE.InstancedMesh(patchGeo, patchMat, N_PATCH);
+    let nP = 0;
+    for (let tries = 0; tries < N_PATCH * 6 && nP < N_PATCH; tries++) {
+      const x = lerpN(-this.padX, this.W + this.padX, rng());
+      const z = lerpN(-this.padZ, this.D + this.padZ, rng());
+      if (this._isOuterBand(x, z)) continue;
+      if (!this._natureAllowed(x, z)) continue;
+      if (Math.abs(z - this.zRoad) < 6.5) continue;
+      if (Math.abs(x - this.riverCenterX(z)) < this.riverHW + 4) continue;
+      const y = this.terrainHeight(x, z);
+      if (y < -0.5) continue;
+      const s = 2.2 + rng() * 5.5;
+      eul.set(0, rng() * Math.PI * 2, 0);
+      q.setFromEuler(eul);
+      vPos.set(x, y + 0.05 + nP * 0.0006, z); vScl.set(s, 1, s * (0.6 + rng() * 0.7));
+      m.compose(vPos, q, vScl);
+      // Alternate between dry-dirt and richer grass tones
+      col.setHex(rng() > 0.45 ? 0x9a8a55 : 0x55803c).offsetHSL(0, (rng() - 0.5) * 0.06, (rng() - 0.5) * 0.08);
+      patches.setColorAt(nP, col);
+      patches.setMatrixAt(nP++, m);
+    }
+    patches.count = nP;
+    patches.instanceMatrix.needsUpdate = true;
+    if (patches.instanceColor) patches.instanceColor.needsUpdate = true;
+    patches.receiveShadow = true;
+    this.envGroup.add(patches);
+
+    // ── B. Shrub/rock clusters in open brown areas ──
+    const rockGeo = new THREE.DodecahedronGeometry(0.35, 0);
+    const rockMat = new THREE.MeshStandardMaterial({ color: 0x8a8d92, roughness: 0.95 });
+    const shrubGeo = new THREE.IcosahedronGeometry(0.42, 0);
+    shrubGeo.translate(0, 0.3, 0);
+    const shrubMat = new THREE.MeshStandardMaterial({ roughness: 0.9 });
+    const N_CLUST = 150;
+    const rocksF = new THREE.InstancedMesh(rockGeo, rockMat, N_CLUST * 2);
+    const shrubsF = new THREE.InstancedMesh(shrubGeo, shrubMat, N_CLUST * 2);
+    let nR = 0, nS = 0;
+    for (let tries = 0; tries < N_CLUST * 10 && (nR < N_CLUST * 2 || nS < N_CLUST * 2); tries++) {
+      const x = lerpN(-this.padX, this.W + this.padX, rng());
+      const z = lerpN(-this.padZ, this.D + this.padZ, rng());
+      if (!this._natureAllowed(x, z)) continue;
+      if (Math.abs(z - this.zRoad) < 6) continue;
+      if (Math.abs(x - this.riverCenterX(z)) < this.riverHW + 3.5) continue;
+      const y = this.terrainHeight(x, z);
+      if (y < -0.5) continue;
+      const cluster = 1 + Math.floor(rng() * 3);
+      for (let c = 0; c < cluster && (nR < N_CLUST * 2 || nS < N_CLUST * 2); c++) {
+        const ox = x + (rng() - 0.5) * 3.4;
+        const oz = z + (rng() - 0.5) * 3.4;
+        const oy = this.terrainHeight(ox, oz);
+        if (oy < -0.5) continue;
+        eul.set(rng() * 0.6, rng() * Math.PI * 2, rng() * 0.4);
+        q.setFromEuler(eul);
+        const s = 0.5 + rng() * 0.9;
+        if (rng() > 0.45 && nR < N_CLUST * 2) {
+          vPos.set(ox, oy + 0.1, oz); vScl.set(s, s * 0.75, s);
+          m.compose(vPos, q, vScl);
+          rocksF.setMatrixAt(nR++, m);
+        } else if (nS < N_CLUST * 2) {
+          vPos.set(ox, oy, oz); vScl.set(s, s * 0.8, s);
+          m.compose(vPos, q, vScl);
+          col.setHex(this.cfg.broadleafGreens.length ? this.cfg.broadleafGreens[Math.floor(rng() * this.cfg.broadleafGreens.length)] : 0x4a7038).offsetHSL(0, 0, -0.06);
+          shrubsF.setColorAt(nS, col);
+          shrubsF.setMatrixAt(nS++, m);
+        }
+      }
+    }
+    rocksF.count = nR; shrubsF.count = nS;
+    rocksF.instanceMatrix.needsUpdate = true;
+    shrubsF.instanceMatrix.needsUpdate = true;
+    if (shrubsF.instanceColor) shrubsF.instanceColor.needsUpdate = true;
+    this.envGroup.add(rocksF);
+    this.envGroup.add(shrubsF);
+
+    // ── C. Off-map scenery ring: distant silhouette trees + tiny houses ──
+    const R_IN = Math.max(this.W + this.padX, this.D + this.padZ) * 0.62;
+    const R_OUT = R_IN + 90;
+    const N_RING_TREES = 420;
+    const ringConeGeo = new THREE.ConeGeometry(1, 1, 5);
+    ringConeGeo.translate(0, 0.5, 0);
+    const ringTreeMat = new THREE.MeshStandardMaterial({ roughness: 1, flatShading: true });
+    const ringTrees = new THREE.InstancedMesh(ringConeGeo, ringTreeMat, N_RING_TREES);
+    let nRT = 0;
+    for (let i = 0; i < N_RING_TREES * 3 && nRT < N_RING_TREES; i++) {
+      const ang = rng() * Math.PI * 2;
+      const rr = lerpN(R_IN, R_OUT, rng());
+      const x = this.W / 2 + Math.cos(ang) * rr;
+      const z = this.D / 2 + Math.sin(ang) * rr;
+      const s = 4 + rng() * 7;
+      q.setFromEuler(new THREE.Euler(0, rng() * Math.PI, 0));
+      col.setHex(0x2f5230).offsetHSL(0, 0, (rng() - 0.5) * 0.12);
+      ringTrees.setColorAt(nRT, col);
+      vPos.set(x, this.baseY + 1.2, z); vScl.set(s * 0.8, s, s * 0.8);
+      m.compose(vPos, q, vScl);
+      ringTrees.setMatrixAt(nRT++, m);
+    }
+    ringTrees.count = nRT;
+    ringTrees.instanceMatrix.needsUpdate = true;
+    if (ringTrees.instanceColor) ringTrees.instanceColor.needsUpdate = true;
+    this.envGroup.add(ringTrees);
+
+    const N_RING_HOUSES = 60;
+    const houseGeo = new THREE.BoxGeometry(1, 1, 1);
+    houseGeo.translate(0, 0.5, 0);
+    const roofRingGeo = new THREE.ConeGeometry(0.78, 0.6, 4);
+    roofRingGeo.translate(0, 0.5, 0); roofRingGeo.rotateY(Math.PI / 4);
+    const houseMat = new THREE.MeshStandardMaterial({ roughness: 0.95 });
+    const roofMat = new THREE.MeshStandardMaterial({ color: 0x7f4f45, roughness: 0.9, flatShading: true });
+    const ringHouses = new THREE.InstancedMesh(houseGeo, houseMat, N_RING_HOUSES);
+    const ringRoofs = new THREE.InstancedMesh(roofRingGeo, roofMat, N_RING_HOUSES);
+    let nRH = 0;
+    for (let i = 0; i < N_RING_HOUSES * 4 && nRH < N_RING_HOUSES; i++) {
+      const ang = rng() * Math.PI * 2;
+      const rr = lerpN(R_IN + 8, R_OUT - 10, rng());
+      const x = this.W / 2 + Math.cos(ang) * rr;
+      const z = this.D / 2 + Math.sin(ang) * rr;
+      const s = 2.2 + rng() * 2.6;
+      q.setFromEuler(new THREE.Euler(0, rng() * Math.PI, 0));
+      col.setHex(HOUSE_COLORS[Math.floor(rng() * HOUSE_COLORS.length)]);
+      ringHouses.setColorAt(nRH, col);
+      vPos.set(x, this.baseY + 1.2, z); vScl.set(s, s * 0.8, s * 0.9);
+      m.compose(vPos, q, vScl);
+      ringHouses.setMatrixAt(nRH, m);
+      vPos.set(x, this.baseY + 1.2 + s * 0.8, z); vScl.set(s * 1.15, s * 0.7, s * 1.15);
+      m.compose(vPos, q, vScl);
+      ringRoofs.setMatrixAt(nRH++, m);
+    }
+    ringHouses.count = nRH; ringRoofs.count = nRH;
+    ringHouses.instanceMatrix.needsUpdate = true;
+    ringRoofs.instanceMatrix.needsUpdate = true;
+    if (ringHouses.instanceColor) ringHouses.instanceColor.needsUpdate = true;
+    this.envGroup.add(ringHouses);
+    this.envGroup.add(ringRoofs);
   }
 
   private _disposeEnv() {
@@ -680,6 +872,11 @@ export class TerrainGrid {
       tmp.lerp(cSand, bankT * 0.85);
       if (h < -0.85) tmp.lerp(cMud, sstep(-0.85, -1.6, h));
 
+      // Dirt verge instead of grass right next to the road corridor so no
+      // green bleeds onto the asphalt edge (roads sit on flattened ground).
+      const rd = Math.abs(z - this.zRoad);
+      tmp.lerp(cSand, sstep(5.4, 3.4, rd) * 0.9);
+
       colors[i * 3] = tmp.r;
       colors[i * 3 + 1] = tmp.g;
       colors[i * 3 + 2] = tmp.b;
@@ -743,20 +940,19 @@ export class TerrainGrid {
     water.frustumCulled = false;
     water.renderOrder = 2;
     this.envGroup.add(water);
-// Drifting arrow streaks that ride the current downstream (+Z direction)
+// Stylized elongated flow streaks riding the current downstream (+Z direction)
     const N_ARROWS = Math.round((zMax - zMin) / 2.2);
-    // Arrow/chevron shape pointing downstream (+Z), baked flat (rotated to XZ plane)
-    const arrowShape = new THREE.Shape();
-    arrowShape.moveTo(-0.22, 0.38);
-    arrowShape.lineTo(0, 0.62);
-    arrowShape.lineTo(0.22, 0.38);
-    arrowShape.lineTo(0.1, 0.38);
-    arrowShape.lineTo(0.1, -0.38);
-    arrowShape.lineTo(-0.1, -0.38);
-    arrowShape.lineTo(-0.1, 0.38);
-    arrowShape.closePath();
-    const arrowGeo = new THREE.ShapeGeometry(arrowShape);
-    arrowGeo.rotateX(-Math.PI / 2);
+    // Slim rounded line-dash shape (long axis = Z / flow direction), baked flat
+    const dashShape = new THREE.Shape();
+    const dw = 0.07;   // half-width of the streak
+    const dl = 0.75;   // half-length of the streak
+    dashShape.moveTo(-dw, -dl);
+    dashShape.lineTo(dw, -dl);
+    dashShape.lineTo(dw, dl);
+    dashShape.lineTo(-dw, dl);
+    dashShape.closePath();
+    const arrowGeo = new THREE.ShapeGeometry(dashShape);
+    arrowGeo.rotateX(-Math.PI / 2); // lie flat on the water, long axis along Z
     this.arrowMat = new THREE.MeshBasicMaterial({
       color: 0xa8d8ee, transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthWrite: false,
     });
@@ -1018,6 +1214,7 @@ export class TerrainGrid {
         laneOffset: lane,
         mode: 'cruise',
         overtakeTime: 0,
+        cooldown: 0,
       });
     }
   }

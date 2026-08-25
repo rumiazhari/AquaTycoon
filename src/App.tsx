@@ -37,8 +37,7 @@ import { PortSelector } from './ui/PortSelector';
 import { FixAction, findFreeSpot } from './sim/AdvisoryEngine';
 
 import {
-  ZoomIn, ZoomOut, RotateCcw, RotateCw,
-  ChevronUp, ChevronDown, Compass, Info
+  Info
 } from 'lucide-react';
 
 /** Contextual port-picker state (explicit source/target port selection) */
@@ -988,7 +987,7 @@ export const App: React.FC = () => {
       {/* ── Toast Banner ──────────────────────────────────────────────────── */}
       {toast && (
         <div className="absolute top-[60px] left-1/2 -translate-x-1/2 z-30 pointer-events-none
-                        px-4 py-2 rounded-xl bg-slate-900/95 backdrop-blur border border-cyan-500/40
+                        px-4 py-2 rounded-xl bg-slate-900 border border-cyan-500/40
                         text-cyan-300 text-xs font-mono shadow-2xl flex items-center gap-2 max-w-[90vw] animate-in fade-in slide-in-from-top-2 duration-150">
           <Info size={14} className="text-cyan-400 shrink-0" />
           <span>{toast}</span>
@@ -1003,7 +1002,7 @@ export const App: React.FC = () => {
       {/* ── Piping control legend (visible in Pipes mode) ──────────────────── */}
       {toolMode === 'connect_pipe' && (
         <div className="absolute bottom-[152px] left-1/2 -translate-x-1/2 z-30 pointer-events-none
-                        px-4 py-1.5 rounded-xl bg-slate-900/95 backdrop-blur border border-cyan-500/40
+                        px-4 py-1.5 rounded-xl bg-slate-900 border border-cyan-500/40
                         shadow-2xl flex items-center gap-3 text-[10px] font-mono text-slate-300 whitespace-nowrap">
           <span className="px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-300 font-bold border border-sky-500/30">PIPES</span>
           <span><b className="text-slate-100">LMB</b> source unit → pick its port → target unit → pick inlet</span>
@@ -1031,57 +1030,6 @@ export const App: React.FC = () => {
           </span>
         </div>
       )}
-
-      {/* ── Camera Controls Widget (bottom-right) ─────────────────────────── */}
-      <div className="absolute bottom-28 right-3 z-30 flex flex-col items-center gap-1
-                      bg-slate-900/90 backdrop-blur border border-slate-700 rounded-2xl p-2 shadow-2xl
-                      text-slate-300 text-xs select-none">
-        <span className="text-[9px] font-mono uppercase text-slate-400 font-bold tracking-widest">Camera</span>
-        
-        {/* Orbit/Tilt grid */}
-        <div className="grid grid-cols-3 gap-0.5 mt-0.5">
-          <div />
-          <button onClick={() => sceneRef.current?.cameraController.tiltUp()}
-            className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 hover:text-white transition-colors" title="Tilt up">
-            <ChevronUp size={13} />
-          </button>
-          <div />
-          <button onClick={() => sceneRef.current?.cameraController.rotateLeft()}
-            className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 hover:text-white transition-colors" title="Orbit left">
-            <RotateCcw size={13} />
-          </button>
-          <button onClick={() => {
-            const [w, d] = gameState.currentLevel.mapSize;
-            sceneRef.current?.cameraController.resetView(w, d);
-            setIsTopDown(false);
-          }}
-            className="p-2 rounded-lg bg-sky-600/30 text-sky-300 hover:bg-sky-600/50 transition-colors" title="Reset view">
-            <Compass size={13} />
-          </button>
-          <button onClick={() => sceneRef.current?.cameraController.rotateRight()}
-            className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 hover:text-white transition-colors" title="Orbit right">
-            <RotateCw size={13} />
-          </button>
-          <div />
-          <button onClick={() => sceneRef.current?.cameraController.tiltDown()}
-            className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 hover:text-white transition-colors" title="Tilt down">
-            <ChevronDown size={13} />
-          </button>
-          <div />
-        </div>
-
-        {/* Zoom */}
-        <div className="flex gap-1 w-full pt-1 border-t border-slate-800">
-          <button onClick={() => sceneRef.current?.cameraController.zoomIn()}
-            className="flex-1 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 transition-colors flex items-center justify-center" title="Zoom in">
-            <ZoomIn size={13} />
-          </button>
-          <button onClick={() => sceneRef.current?.cameraController.zoomOut()}
-            className="flex-1 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 transition-colors flex items-center justify-center" title="Zoom out">
-            <ZoomOut size={13} />
-          </button>
-        </div>
-      </div>
 
       {/* ── Header HUD ──────────────────────────────────────────────────────── */}
       <HeaderHUD
@@ -1126,6 +1074,7 @@ export const App: React.FC = () => {
         availableUnitIds={gameState.currentLevel.availableUnits}
         suggestedUnitTypeId={gameState.suggestion?.unitTypeId}
         tutorialAllowedUnitId={tutorialAllowedUnitId}
+        showRecommendationUi={tutorialActive}
       />
 
       {/* ── Unit Inspector ──────────────────────────────────────────────────── */}

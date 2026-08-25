@@ -11,11 +11,11 @@ interface LevelModalProps {
 
 export const LevelModal: React.FC<LevelModalProps> = ({ currentLevelId, onSelectLevel, onClose }) => {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-md animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950 animate-in fade-in duration-200">
       <div className="relative w-full max-w-4xl bg-cyber-card border border-slate-700/80 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
         
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 bg-slate-900/90 border-b border-slate-800">
+        <div className="flex items-center justify-between px-6 py-4 bg-slate-900 border-b border-slate-800">
           <div className="flex items-center gap-3">
             <div className="p-2 rounded-xl bg-sky-500/20 text-sky-400">
               <Map size={20} />
@@ -83,7 +83,7 @@ export const LevelModal: React.FC<LevelModalProps> = ({ currentLevelId, onSelect
                 >
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 rounded-xl bg-slate-950/80 border border-slate-700 flex items-center justify-center font-mono font-bold text-sky-400 text-sm">
+                      <div className="w-10 h-10 rounded-xl bg-slate-950 border border-slate-700 flex items-center justify-center font-mono font-bold text-sky-400 text-sm">
                         {lvl.code}
                       </div>
                       <div>
@@ -110,7 +110,7 @@ export const LevelModal: React.FC<LevelModalProps> = ({ currentLevelId, onSelect
                     </button>
                   </div>
 
-                  <p className="text-xs text-slate-300 bg-slate-950/50 p-2.5 rounded-lg border border-slate-800/60">
+                  <p className="text-xs text-slate-300 bg-slate-950 p-2.5 rounded-lg border border-slate-800/60">
                     {lvl.briefing}
                   </p>
 

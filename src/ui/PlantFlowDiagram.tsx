@@ -13,11 +13,11 @@ export const PlantFlowDiagram: React.FC<PlantFlowDiagramProps> = ({ gameState, o
   const { units, pipes, finalEffluent, currentLevel, overallStats } = gameState;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950 animate-in fade-in duration-200">
       <div className="relative w-full max-w-5xl bg-cyber-card border border-slate-700/80 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[88vh]">
         
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 bg-slate-900/90 border-b border-slate-800">
+        <div className="flex items-center justify-between px-6 py-4 bg-slate-900 border-b border-slate-800">
           <div className="flex items-center gap-3">
             <div className="p-2 rounded-xl bg-teal-500/20 text-teal-400">
               <GitBranch size={20} />
@@ -89,7 +89,7 @@ export const PlantFlowDiagram: React.FC<PlantFlowDiagramProps> = ({ gameState, o
                 return (
                   <div
                     key={unit.instanceId}
-                    className="p-3.5 rounded-xl bg-slate-900/90 border border-slate-800 flex flex-col justify-between gap-2"
+                    className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 flex flex-col justify-between gap-2"
                   >
                     <div className="flex items-center justify-between">
                       <div>

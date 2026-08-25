@@ -57,7 +57,7 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({
   return (
     <header className="absolute top-0 left-0 right-0 z-20 flex flex-col items-center pointer-events-none">
       {/* Single simplified navbar */}
-      <div className="w-full flex items-center justify-between px-4 py-2 bg-cyber-card/90 backdrop-blur-md border-b border-slate-700/60 shadow-xl pointer-events-auto gap-3">
+      <div className="w-full flex items-center justify-between px-4 py-2 bg-cyber-card/90 border-b border-slate-700/60 shadow-xl pointer-events-auto gap-3">
 
         {/* Left: Brand + money + day */}
         <div className="flex items-center gap-3 min-w-0">
@@ -169,7 +169,7 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({
             {moreOpen && (
               <>
                 <div className="fixed inset-0 z-40" onClick={() => setMoreOpen(false)} />
-                <div className="absolute right-0 top-full mt-2 w-52 z-50 rounded-xl bg-slate-900/97 backdrop-blur-md border border-slate-700 shadow-2xl p-1.5 flex flex-col pointer-events-auto">
+                <div className="absolute right-0 top-full mt-2 w-52 z-50 rounded-xl bg-slate-900 border border-slate-700 shadow-2xl p-1.5 flex flex-col pointer-events-auto">
                   {[
                     { icon: <Map size={14} />, label: 'Stages & Levels', action: onOpenLevelModal },
                     { icon: <GitBranch size={14} />, label: 'Flowsheet (PFD)', action: onOpenPFD },
@@ -206,7 +206,7 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({
 
       {/* Objectives dropdown */}
       {showObjectives && (
-        <div className="mt-2 pointer-events-auto bg-slate-900/95 backdrop-blur-md border border-slate-700/80 rounded-xl shadow-lg px-4 py-3 max-w-md mx-4">
+        <div className="mt-2 pointer-events-auto bg-slate-900 border border-slate-700/80 rounded-xl shadow-lg px-4 py-3 max-w-md mx-4">
           <div className="flex flex-col gap-1.5">
             {currentLevel.objectives.map(obj => (
               <div key={obj.id} className="flex items-center gap-2 text-xs font-mono">

@@ -110,7 +110,7 @@ export const TutorialPromptModal: React.FC<{
   onAccept: () => void;
   onDecline: () => void;
 }> = ({ onAccept, onDecline }) => (
-  <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-slate-950/90 backdrop-blur-md animate-in fade-in duration-200">
+  <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-slate-950 animate-in fade-in duration-200">
     <div className="relative w-full max-w-lg bg-gradient-to-b from-slate-900 to-slate-950 border border-cyan-500/40 rounded-3xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
       <div className="absolute top-0 left-0 right-0 h-1.5 bg-gradient-to-r from-cyan-500 via-sky-400 to-emerald-400" />
       <div className="p-6 flex flex-col items-center gap-4 text-center">
@@ -161,7 +161,7 @@ export const TutorialCoach: React.FC<{
       <div className="animate-pulse">
         <EngineerAvatar mood={step.mood} size={78} />
       </div>
-      <div className="flex-1 bg-slate-900/95 backdrop-blur-md border border-emerald-500/50 rounded-2xl rounded-bl-none p-3 shadow-2xl flex flex-col gap-2">
+      <div className="flex-1 bg-slate-900 border border-emerald-500/50 rounded-2xl rounded-bl-none p-3 shadow-2xl flex flex-col gap-2">
         {/* Header */}
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0">

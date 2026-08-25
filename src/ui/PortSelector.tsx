@@ -56,10 +56,10 @@ export const PortSelector: React.FC<PortSelectorProps> = ({
 
   return (
     <div
-      className="absolute z-40 w-[272px] rounded-xl bg-slate-900/95 backdrop-blur-md border border-cyan-500/50 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150"
+      className="absolute z-40 w-[272px] rounded-xl bg-slate-900 border border-cyan-500/50 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150"
       style={{ left, top }}
     >
-      <div className="px-3 py-2 bg-slate-950/80 border-b border-slate-800 flex items-center justify-between">
+      <div className="px-3 py-2 bg-slate-950 border-b border-slate-800 flex items-center justify-between">
         <div className="min-w-0">
           <div className="text-[11px] font-bold text-slate-100 truncate">{title}</div>
           {subtitle && (

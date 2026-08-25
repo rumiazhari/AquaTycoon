@@ -68,10 +68,10 @@ export const UnitInspector: React.FC<UnitInspectorProps> = ({
   };
 
   return (
-    <div className="absolute top-16 right-4 z-20 w-96 bg-cyber-card/95 backdrop-blur-md border border-slate-700/90 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[82vh] animate-in fade-in slide-in-from-right-4 duration-200">
+    <div className="absolute top-16 right-4 z-20 w-96 bg-cyber-card/95 border border-slate-700/90 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[82vh] animate-in fade-in slide-in-from-right-4 duration-200">
       
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 bg-slate-900/90 border-b border-slate-700/80">
+      <div className="flex items-center justify-between px-4 py-3 bg-slate-900 border-b border-slate-700/80">
         <div>
           <div className="text-[10px] font-mono uppercase tracking-wider text-cyan-400 font-bold">
             {def.category} Unit

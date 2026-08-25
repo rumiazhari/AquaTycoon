@@ -22,7 +22,7 @@ export const VictoryModal: React.FC<VictoryModalProps> = ({
   onRestartCampaign
 }) => {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-md animate-in zoom-in-95 duration-300">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950 animate-in zoom-in-95 duration-300">
       <div className={`relative w-full max-w-md bg-cyber-card rounded-2xl shadow-2xl overflow-hidden flex flex-col p-6 text-center gap-4 border ${isCampaignComplete ? 'border-amber-400/70' : 'border-emerald-500/60'}`}>
 
         {/* Celebration Icon */}
