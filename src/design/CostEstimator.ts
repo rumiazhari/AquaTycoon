@@ -107,3 +107,23 @@ export function legacyTemplateCapex(capex: number): CapexBreakdown {
   });
   return b;
 }
+
+// ── Seed sludge (biomass inoculum) haul-in ───────────────────────────────────
+/** Delivered price of seed sludge, USD per m³ of liquid inoculum (tanker). */
+export const SEED_SLUDGE_USD_PER_M3 = 90;
+/** Fraction of the reactor volume filled with seed sludge at commissioning. */
+export const SEED_FILL_FRACTION = 0.35;
+/** Minimum mobilization charge for sending a tanker out at all (USD). */
+export const SEED_MIN_CHARGE_USD = 2500;
+
+/**
+ * One-time CAPEX to truck seed sludge into a reactor of `workingVolumeM3`.
+ * Volume-proportional with a mobilization floor so tiny basins still pay for
+ * the delivery. Used by GameManager.setUnitCommissioning whenever operation
+ * transitions INTO seeded mode after placement (the original contractor
+ * seeding is bundled into construction CAPEX and never re-billed).
+ */
+export function estimateSeedSludgeCAPEX(workingVolumeM3: number): number {
+  const seedVolumeM3 = Math.max(0, workingVolumeM3) * SEED_FILL_FRACTION;
+  return Math.max(SEED_MIN_CHARGE_USD, Math.round(seedVolumeM3 * SEED_SLUDGE_USD_PER_M3));
+}

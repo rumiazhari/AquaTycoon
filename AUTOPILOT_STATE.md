@@ -1,7 +1,7 @@
 # AUTOPILOT STATE — Aquatycoon
 
 STATUS: OK
-Last run: 2026-08-26 (cron, iter 3 — PFD branching A6; A7 no _probe-ui.tsx found)
+Last run: 2026-08-26 (cron, iter 5 — seed-sludge haul-in economics, backlog #1)
 Gate policy: `npm run build` + `npx tsc --noEmit` must be clean; suites:
 `npm test` (sim), `npm run test:ui` (= static ui-tests + ui-interaction-tests),
 `npm run test:eng`.
@@ -11,9 +11,9 @@ Gate policy: `npm run build` + `npx tsc --noEmit` must be clean; suites:
 architectural redesign into a wastewater-engineering tycoon / process-design
 simulator. Work it TOP-DOWN:
 1. ✅ Legacy backlog #1 cleared in iter 1.
-2. Section A bug fixes: A1 terrain decals, A2 tool invariant, A3 permit
-   single-source verification, A4 CI gating, A5 UI interaction tests (✅
-   landed iter 2), A6 PFD branching, A7 junk cleanup.
+2. Section A bug fixes: A1 terrain decals ✅, A2 tool invariant ✅, A3 permit
+   single-source verification ✅, A4 CI gating ✅, A5 UI interaction tests ✅
+   (landed iter 2), A6 PFD branching ✅, A7 junk cleanup ✅.
 3. Then §AK PHASE 1 vertical slice: AUDIT each of the 17 items against the
    actual code, finish/strengthen what is partial, one coherent slice per
    iteration, tests per §AM.
@@ -22,7 +22,26 @@ Never regress §AL. Respect §AI performance limits. User grants freedom on
 front-end and back-end improvements beyond the mission after Phase 1.
 
 ## Iteration log
-- iter 2 (2026-08-26): LANDED the crashed run's WIP + finished it.
+- iter 5 (2026-08-26): Seed-sludge haul-in economics (backlog #1). NEW pure
+  pricing `estimateSeedSludgeCAPEX(volume)` in CostEstimator (35% fill × $90/m³
+  tanker price, $2,500 mobilization floor; default CAS basin ≈1728 m³ → ~$54k).
+  NEW domain-layer `GameManager.setUnitCommissioning`: every unseeded→seeded
+  transition buys a fresh truckload (charged once, no refund going unseeded,
+  insufficient funds reject atomically, sandbox free) — closes the free
+  instant-biomass toggle loophole while placement stays contractor-seeded at
+  exactly def.capex (§AL guard test added). UnitDesigner checkbox shows the
+  live quote and disables seeding when unaffordable (new `playerCash` prop);
+  App routes through GameManager with purchase/rejection toasts. Build ✅
+  tsc ✅ sim ✅ ui 67/67 + interaction 22/22 ✅ eng 169/169 (13 new SEED) ✅.
+- iter 4 (2026-08-26): Dynamic municipal influent diurnal curve (Mission §AK
+  Phase-1 item 14). Deterministic raised-cosine flow factor (trough 0.53× @04:30,
+  morning peak 1.44× @10:00, evening bump 1.20× @20:00, 24-h mean = 1). Load
+  damping 0.55 → night sewage stronger, peak slightly diluted. Gated by
+  `state.diurnalInfluentStrength` (default 0.4 for legacy template trains;
+  raise to 1.0 after peak-flow equipment sizing — items 5/6). New module
+  `src/sim/InfluentProfile.ts`; wired in `GameManager.tick`; 16 INFLUENT
+  regression tests added to `eng-tests.ts` (total 156 eng-tests). Build ✅
+  tsc ✅ sim ✅ ui 67/67 + interaction 22/22 ✅ eng 156/156 ✅. §AL no regression.
 - iter 3 (2026-08-26): PFD rendering — removed fake linear chain; replaced with real downstream splitters. Build ✅ tsc ✅ sim ✅ ui 67/67 + interaction 22/22 ✅ eng 47/47 ✅. A7: no _probe-ui.tsx present in conflict-copies-20260825; archives retained.
   - Unit Designer seed-sludge toggle (backlog #2): CAS units show an
     "Unseeded / Seed sludge" checkbox. Correctly lives on PlacedUnit's RUNTIME
@@ -44,6 +63,7 @@ front-end and back-end improvements beyond the mission after Phase 1.
     native-setter/_valueTracker recipe here.
   Gates: build ✅ tsc ✅ sim ALL PASS ✅ ui 67/67 + interaction 22/22 ✅
   eng 47/47 ✅.
+- iter 2 (2026-08-26): LANDED the crashed run's WIP + finished it.
 - iter 1 (2026-08-26): CLEARED backlog #1 — all 4 eng-test failures fixed,
   suite 47/47 (was 42/46). EQ analytic-CSTR + min-pool physics, PIPE test
   typo, PUMP wire-to-water envelope, PERMIT exact-survivor assertion.
@@ -53,19 +73,25 @@ front-end and back-end improvements beyond the mission after Phase 1.
   balance restore (CAS template volumes; seededWithSludge jump-to-stable).
 
 ## Backlog (work top-down)
-1. MISSION_REDESIGN.md Section A remaining: A1 terrain decals, A2 tool
-   invariant, A3 permit single-source verification, A4 CI gating,
-   A6 PFD branching, A7 junk cleanup (move, never delete).
-2. Seed-sludge cost choice (follow-up): wire a real one-time CAPEX charge /
-   discount so the toggle's economics are more than cosmetic; optionally let
-   placement dialog pre-select seeding.
-3. Clarifier outlet quality probe reads zeros in Test S context — verify
+1. Unseeded placement pre-select (follow-up): the cheaper-but-slow start is
+   currently reachable only by placing seeded then toggling off. Add a
+   seed/no-seed choice to the placement flow (toolbar toggle or confirm
+   dialog) wired through placeUnit options.
+2. Clarifier outlet quality probe reads zeros in Test S context — verify
    `lastOutletQuality` propagation for clarifier units (cosmetic/debug).
-4. Idea pool (post-mission freedom): blower VFD upgrade tree; sludge
+3. Idea pool (post-mission freedom): blower VFD upgrade tree; sludge
    treatment line objectives; sound effects for placement.
-5. Pump runout/service-factor clamping in `findPumpDutyPoint`.
-6. EQ API: return `constituentMassKg` snapshot in `EqStepResult`.
-7. Then §AK Phase-1 audit of the 17 vertical-slice items.
+4. Pump runout/service-factor clamping in `findPumpDutyPoint`.
+5. EQ API: return `constituentMassKg` snapshot in `EqStepResult`.
+6. §AK Phase-1 audit of remaining 16 vertical-slice items:
+   - 1–3: design/runtime data model, custom geometry, CAS sizing (partial)
+   - 5–6: blower/equipment capacity, clarifier custom sizing (templates need
+     peak-flow resize before raising diurnal strength to 1.0)
+   - 7–10: custom pipe diameter/material, pipe headloss, pump duty point,
+     equalization dynamic storage (partial)
+   - 11–13: quantity-based CAPEX, Unit Designer UI, Show Calculation (partial)
+   - 14: dynamic influent ✅ (strength 0.4; full 1.0 after 5/6)
+   - 15–17: engineering warnings, updated campaign L1/L2/L3, tests.
 
 ## Notes
 - Never delete files — move into junk/. Probes live in junk/autopilot-20260826/

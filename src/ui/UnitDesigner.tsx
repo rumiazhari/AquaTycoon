@@ -33,6 +33,7 @@ import {
 import {
   estimateStructureCAPEX,
   estimateBlowerCAPEX,
+  estimateSeedSludgeCAPEX,
 } from '../design/CostEstimator';
 import { validateUnitDesign } from '../design/DesignValidator';
 import {
@@ -46,6 +47,8 @@ export interface UnitDesignerProps {
   onUpdateBlueprint: (unitId: string, next: PlacedUnit['blueprint']) => void;
   /** Writes the placed unit's runtime commissioning state (seed-sludge choice). */
   onUpdateCommissioning?: (unitId: string, next: CommissioningState) => void;
+  /** Player cash for affordability gating of the seed-sludge haul-in purchase. */
+  playerCash?: number;
 }
 
 type Tab = 'design' | 'operate' | 'diagnostics' | 'economics' | 'maintenance';
@@ -53,7 +56,7 @@ type Tab = 'design' | 'operate' | 'diagnostics' | 'economics' | 'maintenance';
 const fmt = (v: number | undefined, d = 1) => (v === undefined || Number.isNaN(v) ? '—' : v.toFixed(d));
 const money = (v: number) => `$${Math.round(v).toLocaleString()}`;
 
-export const UnitDesigner: React.FC<UnitDesignerProps> = ({ unit, onClose, onUpdateBlueprint, onUpdateCommissioning }) => {
+export const UnitDesigner: React.FC<UnitDesignerProps> = ({ unit, onClose, onUpdateBlueprint, onUpdateCommissioning, playerCash }) => {
   const def = UNIT_DEFINITIONS[unit.typeId];
   if (!def || !unit.blueprint) {
     return (
@@ -111,22 +114,32 @@ export const UnitDesigner: React.FC<UnitDesignerProps> = ({ unit, onClose, onUpd
         ))}
       </div>
 
-      {/* Seed sludge toggle: controls whether the unit starts with seeded biomass
-          (immediate near-design performance) or unseeded (commissioning ramp to stable). */}
-      {unit.typeId === 'activated_sludge_cas' && (
-        <div className="flex items-center gap-2 mb-3 text-[10px] font-mono">
-          <input
-            type="checkbox"
-            checked={seededWithSludge}
-            onChange={e => toggleSeeded(e.target.checked)}
-            className="bg-slate-800 border border-slate-700 rounded w-4 h-4 text-teal-400 focus-visible:outline focus-visible:ring-2"
-          />
-          <span>
-            {seededWithSludge
-              ? 'Seed sludge: reactor commissioned with imported biomass — near-design performance immediately'
-              : 'Unseeded: culture must grow from scratch (~3-week commissioning ramp at reduced performance)'}</span>
-        </div>
-      )}
+      {/* Seed sludge toggle: controls whether the unit runs with seeded biomass
+          (immediate near-design performance) or unseeded (commissioning ramp to
+          stable). Real economics (backlog #1): the contractor's original seeding
+          at placement was bundled into construction CAPEX; every LATER
+          unseeded→seeded transition buys a fresh tanker of seed sludge — the
+          one-time haul-in charge is enforced by GameManager.setUnitCommissioning. */}
+      {unit.typeId === 'activated_sludge_cas' && (() => {
+        const seedCost = estimateSeedSludgeCAPEX(unit.volume);
+        const canAffordSeed = playerCash === undefined || playerCash >= seedCost;
+        return (
+          <div className="flex items-center gap-2 mb-3 text-[10px] font-mono">
+            <input
+              type="checkbox"
+              checked={seededWithSludge}
+              disabled={!seededWithSludge && !canAffordSeed}
+              onChange={e => toggleSeeded(e.target.checked)}
+              className="bg-slate-800 border border-slate-700 rounded w-4 h-4 text-teal-400 focus-visible:outline focus-visible:ring-2 disabled:opacity-40"
+            />
+            <span>
+              {seededWithSludge
+                ? 'Seed sludge: imported biomass — near-design performance immediately · unchecking spends the culture (no refund)'
+                : `Unseeded: ~3-week commissioning ramp at reduced performance · seed now for a ${money(seedCost)} one-time haul-in${canAffordSeed ? '' : ' (insufficient funds)'}`}
+            </span>
+          </div>
+        );
+      })()}
 
       {/* Issue banner */}
       {issues.length > 0 && (

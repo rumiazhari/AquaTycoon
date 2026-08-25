@@ -11,7 +11,8 @@ import { REAL_SECONDS_PER_GAME_DAY, INITIAL_GAME_TIME_DAYS, getDayNightFactor } 
 import { applyDiurnalInfluent, DIURNAL_DEFAULT_STRENGTH } from '../sim/InfluentProfile';
 import { resolveFootprint } from '../sim/UnitDimensions';
 import { isEngineerable, workingVolumeM3 } from '../design/Geometry';
-import { blueprintFromTemplate } from '../design/UnitBlueprint';
+import { blueprintFromTemplate, CommissioningState } from '../design/UnitBlueprint';
+import { estimateSeedSludgeCAPEX } from '../design/CostEstimator';
 
 export interface NextStepSuggestion {
   unitTypeId: UnitTypeId;
@@ -791,6 +792,54 @@ export class GameManager {
       pipes: state.pipes.filter(p => p.fromUnitId !== instanceId && p.toUnitId !== instanceId),
       selectedUnitId: state.selectedUnitId === instanceId ? null : state.selectedUnitId,
       suggestion: newSuggestion
+    };
+  }
+
+  /**
+   * Writes a placed unit's runtime commissioning state (seed-sludge choice).
+   *
+   * Economics (backlog #1): seeding is free only as part of the original
+   * construction scope — placeUnit hands over a contractor-seeded reactor
+   * whose inoculum was bundled into the CAPEX. Every LATER transition INTO
+   * seeded operation buys a fresh truckload of seed sludge at
+   * estimateSeedSludgeCAPEX(volume); going unseeded never refunds (the
+   * culture is spent). This closes the free instant-biomass loophole where
+   * toggling the designer checkbox re-enabled the seeded performance boost
+   * at zero cost. Sandbox bypasses all money gates, like every other charge.
+   */
+  public static setUnitCommissioning(
+    state: GameState,
+    unitId: string,
+    next: CommissioningState
+  ): { newState: GameState; success: boolean; reason?: string; seedCapexCharged?: number } {
+    const unit = state.units.find(u => u.instanceId === unitId);
+    if (!unit) return { newState: state, success: false, reason: 'Unknown unit' };
+
+    const wasSeeded = unit.commissioning?.seededWithSludge ?? false;
+    let charged = 0;
+    if (next.seededWithSludge && !wasSeeded && state.gameMode !== 'sandbox') {
+      const cost = estimateSeedSludgeCAPEX(unit.volume);
+      if (state.financials.cash < cost) {
+        return {
+          newState: state,
+          success: false,
+          reason: `Insufficient funds for seed sludge ($${cost.toLocaleString()} required)`,
+        };
+      }
+      charged = cost;
+    }
+
+    const newState: GameState = {
+      ...state,
+      financials: { ...state.financials, cash: state.financials.cash - charged },
+      units: state.units.map(u =>
+        u.instanceId === unitId ? { ...u, commissioning: { ...next } } : u
+      ),
+    };
+    return {
+      newState,
+      success: true,
+      ...(charged > 0 ? { seedCapexCharged: charged } : {}),
     };
   }
 

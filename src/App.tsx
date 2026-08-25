@@ -1193,6 +1193,7 @@ export const App: React.FC = () => {
         return (
           <UnitDesigner
             unit={u}
+            playerCash={gameState.financials.cash}
             onClose={() => setDesignerModalId(null)}
             onUpdateBlueprint={(id, next) => {
               setGameState(prev => ({
@@ -1207,12 +1208,17 @@ export const App: React.FC = () => {
               sceneRef.current?.syncUnits(ng);
             }}
             onUpdateCommissioning={(id, next) => {
-              setGameState(prev => ({
-                ...prev,
-                units: prev.units.map(un =>
-                  un.instanceId === id ? { ...un, commissioning: next } : un
-                ),
-              }));
+              // Domain-layer write so the seed-sludge haul-in economics are
+              // enforced even if a future UI path calls this directly.
+              const res = GameManager.setUnitCommissioning(gsRef.current, id, next);
+              if (!res.success) {
+                if (res.reason) setToast(`🔒 ${res.reason}`);
+                return;
+              }
+              setGameState(res.newState);
+              if (res.seedCapexCharged) {
+                setToast(`Seed sludge haul-in purchased — $${Math.round(res.seedCapexCharged).toLocaleString()}.`);
+              }
             }}
           />
         );

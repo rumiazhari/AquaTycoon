@@ -28,9 +28,14 @@ import {
 import {
   estimateStructureCAPEX,
   estimateBlowerCAPEX,
+  estimateSeedSludgeCAPEX,
+  SEED_SLUDGE_USD_PER_M3,
+  SEED_FILL_FRACTION,
+  SEED_MIN_CHARGE_USD,
 } from '../src/design/CostEstimator';
 import { PIPE_MATERIALS, BLOWER_MODELS, PUMP_MODELS } from '../src/design/catalogs/Equipment';
 import { resolveTrainTopology } from '../src/ui/TrainTopology';
+import { GameManager } from '../src/gameplay/GameManager';
 import type { PlacedUnit, WaterQuality } from '../src/types/simulation';
 import { UNIT_DEFINITIONS } from '../src/sim/UnitProcessModels';
 import { evaluatePermitCriteria } from '../src/sim/PermitEngine';
@@ -399,6 +404,86 @@ function wq(over: Partial<WaterQuality>): WaterQuality {
   const before = baseSpec.flowRate;
   applyDiurnalInfluent(baseSpec, 0.5);
   assert(baseSpec.flowRate === before, 'INFLUENT. input spec object never mutated');
+}
+
+// ── SEED: seed-sludge haul-in economics (backlog #1) ────────────────────────
+{
+  // Pricing math: volume-proportional with a mobilization floor.
+  assert(estimateSeedSludgeCAPEX(1000) === Math.round(1000 * SEED_FILL_FRACTION * SEED_SLUDGE_USD_PER_M3),
+    'SEED. quote = working volume × fill fraction × delivered $/m³');
+  assert(estimateSeedSludgeCAPEX(0) === SEED_MIN_CHARGE_USD && estimateSeedSludgeCAPEX(-5) === SEED_MIN_CHARGE_USD,
+    'SEED. zero/negative volumes clamp to the tanker mobilization floor');
+
+  const gsSeed = GameManager.createInitialState(0, false);
+  const casU = mkBlueprintUnit('activated_sludge_cas', 16, 20);
+  const startCash = 500000;
+  const unseededComm = { phase: 'developing' as const, daysInPhase: 6, seededWithSludge: false };
+  let sS: any = {
+    ...gsSeed,
+    units: [{ ...casU, commissioning: { ...unseededComm } }],
+    financials: { ...gsSeed.financials, cash: startCash },
+    simSpeed: 1 as const,
+  };
+  const wantOn = { phase: 'developing' as const, daysInPhase: 6, seededWithSludge: true };
+  const expectedCharge = estimateSeedSludgeCAPEX(casU.volume);
+
+  // OFF→ON: exactly one haul-in charge, cash debited, commissioning written.
+  const rOn = GameManager.setUnitCommissioning(sS, casU.instanceId, wantOn);
+  assert(rOn.success && rOn.seedCapexCharged === expectedCharge,
+    `SEED. unseeded→seeded charges exactly the quote ($${expectedCharge.toLocaleString()})`);
+  assert(rOn.success && rOn.newState.financials.cash === startCash - expectedCharge,
+    'SEED. haul-in charge is debited from cash exactly once');
+  assert(rOn.newState.units[0].commissioning?.seededWithSludge === true,
+    'SEED. accepted toggle writes seeded=true on the placed unit');
+
+  // ON→OFF: no refund — the purchased culture is spent.
+  const rOff = GameManager.setUnitCommissioning(rOn.newState, casU.instanceId, unseededComm);
+  assert(rOff.success && rOff.seedCapexCharged === undefined &&
+    rOff.newState.financials.cash === startCash - expectedCharge,
+    'SEED. seeded→unseeded never refunds the haul-in');
+
+  // Second OFF→ON: a fresh truckload is bought at full price again.
+  const rOn2 = GameManager.setUnitCommissioning(rOff.newState, casU.instanceId, wantOn);
+  assert(rOn2.success && rOn2.seedCapexCharged === expectedCharge &&
+    rOn2.newState.financials.cash === startCash - 2 * expectedCharge,
+    'SEED. every fresh unseeded→seeded transition buys a new truckload');
+
+  // Insufficient funds: rejected atomically — no partial writes.
+  const brokeCash = Math.floor(expectedCharge / 2);
+  const broke: any = {
+    ...sS,
+    units: [{ ...casU, commissioning: { ...unseededComm } }],
+    financials: { ...sS.financials, cash: brokeCash },
+  };
+  const rBroke = GameManager.setUnitCommissioning(broke, casU.instanceId, wantOn);
+  assert(!rBroke.success && !!rBroke.reason && rBroke.reason.includes('Insufficient funds'),
+    'SEED. unaffordable seeding is rejected with an insufficient-funds reason');
+  assert(rBroke.newState.units[0].commissioning?.seededWithSludge === false &&
+    rBroke.newState.financials.cash === brokeCash,
+    'SEED. rejected toggle leaves both commissioning and cash untouched');
+
+  // Sandbox bypasses money gates like every other charge.
+  const sbx: any = { ...broke, gameMode: 'sandbox' as const };
+  const rSbx = GameManager.setUnitCommissioning(sbx, casU.instanceId, wantOn);
+  assert(rSbx.success && rSbx.seedCapexCharged === undefined &&
+    rSbx.newState.financials.cash === brokeCash &&
+    rSbx.newState.units[0].commissioning?.seededWithSludge === true,
+    'SEED. sandbox seeds for free while still writing the commissioning state');
+
+  // Unknown unit id fails cleanly.
+  const rGhost = GameManager.setUnitCommissioning(sS, 'ghost_unit', wantOn);
+  assert(!rGhost.success && rGhost.reason === 'Unknown unit',
+    'SEED. unknown unit id rejected without touching state');
+
+  // Placement regression guard (§AL): initial contractor seeding stays bundled
+  // into construction CAPEX — placement debits ONLY def.capex and seeds by default.
+  const gsP = GameManager.createInitialState(0, false);
+  const rP = GameManager.placeUnit(gsP, 'activated_sludge_cas', 5, 20);
+  const placedCas = rP.success ? rP.newState.units[rP.newState.units.length - 1] : null;
+  assert(rP.success && placedCas !== null && placedCas!.commissioning?.seededWithSludge === true,
+    'SEED. placement still hands over a contractor-seeded reactor');
+  assert(rP.success && rP.newState.financials.cash === gsP.financials.cash - UNIT_DEFINITIONS['activated_sludge_cas'].capex,
+    'SEED. placement debits exactly def.capex — no hidden seed surcharge (§AL)');
 }
 
 // ── summary ─────────────────────────────────────────────────────────────────
