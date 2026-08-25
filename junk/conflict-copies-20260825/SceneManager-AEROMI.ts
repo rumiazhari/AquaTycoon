@@ -1,0 +1,981 @@
+import * as THREE from 'three';
+// Post-processing (official three examples, shipped with the pinned 0.174 dep)
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { GTAOPass } from 'three/examples/jsm/postprocessing/GTAOPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
+import { CameraController } from './CameraController';
+import { TerrainGrid } from './TerrainGrid';
+import { UnitMeshBuilder } from './UnitMeshes';
+import { PipeRenderer } from './PipeRenderer';
+import { PipeConnection, PlacedUnit, UnitTypeId } from '../types/simulation';
+import { UNIT_DEFINITIONS } from '../sim/UnitProcessModels';
+import { getPortWorldPosition, getRotatedFootprint } from '../sim/PipeNetwork';
+import type { LevelBiome, SimulationSpeed } from '../types/game';
+import { getDayNightFactor } from '../gameplay/GameTime';
+
+const lerpN = (a: number, b: number, t: number) => a + (b - a) * t;
+
+// ── Performance budget (Prompt 3.4 items 3, 6, 9): ONE directional light with
+// day/night shadow scaling + budgeted local lights (owned by TerrainGrid) ──
+/** Day sun shadow map resolution. */
+export const DAY_SHADOW_MAP_SIZE = 1024;
+/** Night MOON shadow map — night keeps real depth at quarter the cost. */
+export const NIGHT_SHADOW_MAP_SIZE = 512;
+/**
+ * Conservative pixel-ratio cap for integrated GPUs. High-DPI office displays
+ * no longer pay a 2× fill-rate tax; 1.25 stays crisp for this art style.
+ */
+export const MAX_PIXEL_RATIO = 1.25;
+/** Adaptive-resolution floor (never blurry beyond this). */
+const MIN_PIXEL_RATIO = 0.75;
+/** Adaptive resolution: seconds between quality adjustments (anti-oscillation). */
+const ADAPT_INTERVAL_SEC = 2.5;
+/** Seconds between light-pool reassignments to the nearest street lamps. */
+const LIGHT_POOL_INTERVAL_SEC = 0.5;
+
+// ── Quality tiers for automatic degradation (item 10). Ordered mildest →
+// strongest reduction; we step DOWN one tier when FPS is poor and back UP only
+// after a sustained healthy window, so quality never oscillates.
+const QUALITY_TIERS = [
+  { ao: true, aoHalfRes: false, bloom: true, bloomRes: 1.0, maxStreetLights: 8, localShadowLights: 2, dirShadowSize: DAY_SHADOW_MAP_SIZE },
+  { ao: true, aoHalfRes: true, bloom: true, bloomRes: 0.75, maxStreetLights: 8, localShadowLights: 2, dirShadowSize: DAY_SHADOW_MAP_SIZE },
+  { ao: true, aoHalfRes: true, bloom: true, bloomRes: 0.5, maxStreetLights: 6, localShadowLights: 2, dirShadowSize: DAY_SHADOW_MAP_SIZE },
+  { ao: true, aoHalfRes: true, bloom: true, bloomRes: 0.5, maxStreetLights: 4, localShadowLights: 1, dirShadowSize: DAY_SHADOW_MAP_SIZE },
+  { ao: false, aoHalfRes: true, bloom: true, bloomRes: 0.5, maxStreetLights: 3, localShadowLights: 1, dirShadowSize: NIGHT_SHADOW_MAP_SIZE },
+] as const;
+type QualityTier = (typeof QUALITY_TIERS)[number];
+
+interface DayNightPalette {
+  bg: THREE.Color;
+  fog: THREE.Color;
+  dirColor: THREE.Color;
+  dirIntensity: number;
+  ambientIntensity: number;
+  hemiSky: THREE.Color;
+  hemiGround: THREE.Color;
+  sunEmissive: number;
+  starOpacity: number;
+  sunY: number;
+}
+
+function makeDay(biome?: LevelBiome): DayNightPalette {
+  const p: DayNightPalette = {
+    bg: new THREE.Color(0x87b8e4),
+    fog: new THREE.Color(0x9fc3e0),
+    dirColor: new THREE.Color(0xfff2d8),
+    dirIntensity: 2.1,
+    ambientIntensity: 0.55,
+    hemiSky: new THREE.Color(0x9ec8ef),
+    hemiGround: new THREE.Color(0x51683a),
+    sunEmissive: 0xffdf8a,
+    starOpacity: 0,
+    sunY: 120,
+  };
+  if (biome === 'industrial') {
+    p.bg.setHex(0x9fb0bd); p.fog.setHex(0xb3bec6);
+    p.hemiSky.setHex(0xb4c2cc); p.hemiGround.setHex(0x5a5b46);
+  } else if (biome === 'desert') {
+    p.bg.setHex(0xbfe0ef); p.fog.setHex(0xecd9ae);
+    p.dirColor.setHex(0xfff0c2); p.hemiSky.setHex(0xd8ecf5); p.hemiGround.setHex(0x8a6f42);
+    p.dirIntensity = 2.5;
+  } else if (biome === 'lake_forest') {
+    p.bg.setHex(0x8ed0f0); p.fog.setHex(0xcfe8dc);
+    p.hemiSky.setHex(0xaadff2); p.hemiGround.setHex(0x3d6a30);
+  }
+  return p;
+}
+
+const NIGHT_BASE = (): DayNightPalette => ({
+  bg: new THREE.Color(0x060d1c),
+  fog: new THREE.Color(0x0a1526),
+  // Weak BLUE moonlight — bright enough to keep real 512² shadows with subtle
+  // contrast (Prompt 3.4 item 6), dark enough to read unmistakably as night.
+  dirColor: new THREE.Color(0x8fa8e8),
+  dirIntensity: 0.85,
+  ambientIntensity: 0.34,
+  hemiSky: new THREE.Color(0x182347),
+  hemiGround: new THREE.Color(0x141d18),
+  sunEmissive: 0xdfe7ff,
+  starOpacity: 0.9,
+  sunY: -40,
+});
+
+export class SceneManager {
+  public scene: THREE.Scene;
+  public cameraController: CameraController;
+  public renderer: THREE.WebGLRenderer;
+  public terrainGrid: TerrainGrid;
+  public pipeRenderer: PipeRenderer;
+  public container: HTMLDivElement;
+
+  public get canvas(): HTMLCanvasElement { return this.renderer.domElement; }
+
+  private unitGroup: THREE.Group;
+  private unitMeshMap: Map<string, THREE.Group> = new Map();
+  private ghostSuggestGroup: THREE.Group;
+  private pipeSelectRingMap: Map<string, THREE.Mesh> = new Map();
+  private dirLight: THREE.DirectionalLight;
+  private ambientLight: THREE.AmbientLight;
+  private hemiLight: THREE.HemisphereLight;
+  private raycaster: THREE.Raycaster;
+  private groundPlane: THREE.Plane;
+
+  // Live pipe-connection preview (source port → cursor)
+  private pipePreviewLine!: THREE.Line;
+  private pipePreviewCursor!: THREE.Mesh;
+
+  // Sky / celestial bodies
+  private skyDome!: THREE.Mesh;
+  private skyMatDay!: THREE.ShaderMaterial;
+  private sunMesh!: THREE.Mesh;
+  private stars!: THREE.Points;
+  private starsMat!: THREE.PointsMaterial;
+
+  // Unified simulation clock (Prompt 3.3 items 9–14): the visual world runs on
+  // SIMULATED time — pause freezes everything, fast-forward speeds the whole
+  // world up proportionally. Camera & UI stay on REAL time.
+  private gameTimeDays = 0;        // authoritative clock, pushed from GameManager
+  private worldTimeScale = 1;      // 0 = paused, 1 / 2 / 5
+  private visualSimElapsed = 0;    // simulated seconds accumulator for animations
+  /** Last day/night blend applied to the rig; -1 forces the first apply. */
+  private lastAppliedDayFactor = -1;
+
+  // Adaptive resolution state (item E): slow, stable, capped adjustments.
+  private basePixelRatio: number;
+  private currentPixelRatio: number;
+  private adaptTimer = 0;
+  private frameTimeAccum = 0;
+  private frameCount = 0;
+
+  // Dev-only FPS telemetry (item 19 of P3.3). Enabled with
+  // setTelemetryEnabled(true) or ?fps=1 — never shown in normal play.
+  private telemetryEnabled = false;
+  private telemetryFrames = 0;
+  private telemetryAccum = 0;
+
+  // Dev-only post-FX bypass (?nopost=1): renders straight to the canvas so
+  // composer-related regressions can be isolated visually. ?nopost=gtao /
+  // ?nopost=bloom disable the individual passes for bisection.
+  private postDisabled = false;
+  private _devDisableGtao = false;
+  private _devDisableBloom = false;
+
+  // ── Post-processing: subtle AO + bloom (Prompt 3.4 items 7–8) ──
+  private composer!: EffectComposer;
+  private gtaoPass: GTAOPass | null = null;
+  private bloomPass: UnrealBloomPass | null = null;
+  private outputPass!: OutputPass;
+
+  // Automatic quality scaling state (item 10)
+  private qualityIndex = 0;
+  private qualityCooldown = 0; // seconds since last tier change
+
+  // Smooth day/night blending palettes (instance palettes so biomes can tint)
+  private dayPal: DayNightPalette = makeDay();
+  private nightPal: DayNightPalette = NIGHT_BASE();
+
+  // Street-light pool: reassign the bounded real lights to the lamps
+  // nearest the camera at a modest cadence (items 4–5).
+  private lightPoolTimer = 0;
+
+  private animationFrameId: number | null = null;
+  // NOTE: no THREE.Clock anywhere — world animation runs on visualSimElapsed,
+  // which accumulates simulated time only (pause freezes it, fast-forward
+  // scales it). Real-time needs use the rAF timestamp directly.
+  private lastFrameTime: number = 0;
+
+  constructor(container: HTMLDivElement, mapWidth: number = 24, mapDepth: number = 20) {
+    this.container = container;
+
+    this.scene = new THREE.Scene();
+    this.scene.background = this.dayPal.bg.clone();
+    this.scene.fog = new THREE.FogExp2(this.dayPal.fog.getHex(), 0.0045);
+
+    const w = container.clientWidth || window.innerWidth;
+    const h = container.clientHeight || window.innerHeight;
+    this.cameraController = new CameraController(w / h);
+    this.cameraController.resetView(mapWidth, mapDepth);
+
+    this.renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      powerPreference: 'high-performance',
+      alpha: false,
+    });
+    this.renderer.setSize(w, h);
+    this.basePixelRatio = Math.min(window.devicePixelRatio, MAX_PIXEL_RATIO);
+    this.currentPixelRatio = this.basePixelRatio;
+    this.renderer.setPixelRatio(this.currentPixelRatio);
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.15;
+
+    const canvas = this.renderer.domElement;
+    canvas.style.position = 'absolute';
+    canvas.style.inset = '0';
+    canvas.style.width = '100%';
+    canvas.style.height = '100%';
+    canvas.style.display = 'block';
+    canvas.style.touchAction = 'none';
+    container.appendChild(canvas);
+
+    // Lighting
+    this.ambientLight = new THREE.AmbientLight(0xffffff, this.dayPal.ambientIntensity);
+    this.scene.add(this.ambientLight);
+
+    this.hemiLight = new THREE.HemisphereLight(this.dayPal.hemiSky.getHex(), this.dayPal.hemiGround.getHex(), 0.55);
+    this.scene.add(this.hemiLight);
+
+    this.dirLight = new THREE.DirectionalLight(this.dayPal.dirColor.getHex(), this.dayPal.dirIntensity);
+    this.dirLight.position.set(45, this.dayPal.sunY, 30);
+    // THE single shadow-casting light in the whole scene (day only — the moon
+    // does not cast shadows at night; fake pools carry night readability).
+    this.dirLight.castShadow = true;
+    this.dirLight.shadow.mapSize.width = DAY_SHADOW_MAP_SIZE;
+    this.dirLight.shadow.mapSize.height = DAY_SHADOW_MAP_SIZE;
+    this.dirLight.shadow.camera.near = 1;
+    this.dirLight.shadow.camera.far = 400;
+    const sd = Math.max(mapWidth, mapDepth) * 0.85 + 22;
+    this.dirLight.shadow.camera.left   = -sd;
+    this.dirLight.shadow.camera.right  =  sd;
+    this.dirLight.shadow.camera.top    =  sd;
+    this.dirLight.shadow.camera.bottom = -sd;
+    this.dirLight.shadow.bias = -0.00035;
+    this.dirLight.target.position.set(mapWidth / 2, 0, mapDepth / 2);
+    this.scene.add(this.dirLight);
+    this.scene.add(this.dirLight.target);
+
+    // Sky dome (gradient shader), sun disc & stars
+    this._buildSky();
+
+    // Terrain & full environment
+    this.terrainGrid = new TerrainGrid(mapWidth, mapDepth);
+    this.scene.add(this.terrainGrid.group);
+
+    // Post-processing chain: Render → GTAO (subtle, reduced res) → Bloom
+    // (restrained) → OutputPass (tone mapping + sRGB). Official three addons.
+    this._buildComposer(w, h);
+
+    // Units group
+    this.unitGroup = new THREE.Group();
+    this.scene.add(this.unitGroup);
+
+    // Ghost suggestion group
+    this.ghostSuggestGroup = new THREE.Group();
+    this.scene.add(this.ghostSuggestGroup);
+
+    // Pipes
+    this.pipeRenderer = new PipeRenderer();
+    this.scene.add(this.pipeRenderer.group);
+
+    // Raycaster on Y=0 ground plane
+    this.raycaster = new THREE.Raycaster();
+    this.groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+
+    // Pipe connection preview: bright dashed-style line + cursor ring
+    const previewGeo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(0, 0, 0),
+      new THREE.Vector3(0, 0, 0),
+    ]);
+    this.pipePreviewLine = new THREE.Line(
+      previewGeo,
+      new THREE.LineBasicMaterial({ color: 0x34e0ff, transparent: true, opacity: 0.95, depthTest: false })
+    );
+    this.pipePreviewLine.renderOrder = 999;
+    this.pipePreviewLine.visible = false;
+    this.pipePreviewLine.frustumCulled = false;
+    this.scene.add(this.pipePreviewLine);
+
+    this.pipePreviewCursor = new THREE.Mesh(
+      new THREE.TorusGeometry(0.45, 0.07, 8, 24),
+      new THREE.MeshBasicMaterial({ color: 0x34e0ff, transparent: true, opacity: 0.9, depthTest: false })
+    );
+    this.pipePreviewCursor.rotation.x = Math.PI / 2;
+    this.pipePreviewCursor.renderOrder = 999;
+    this.pipePreviewCursor.visible = false;
+    this.scene.add(this.pipePreviewCursor);
+
+    this._startLoop();
+  }
+
+  private _buildSky() {
+    const geo = new THREE.SphereGeometry(500, 24, 16);
+    this.skyMatDay = new THREE.ShaderMaterial({
+      side: THREE.BackSide,
+      depthWrite: false,
+      fog: false,
+      uniforms: {
+        topColor:     { value: new THREE.Color(0x2f6fb8) },
+        midColor:     { value: new THREE.Color(0x9cc4ea) },
+        bottomColor:  { value: new THREE.Color(0xd8e6ee) },
+        nightTop:     { value: new THREE.Color(0x020617) },
+        nightMid:     { value: new THREE.Color(0x0b1530) },
+        nightBottom:  { value: new THREE.Color(0x16233f) },
+        offset:       { value: 60 },
+        exponent:     { value: 0.75 },
+        nightFactor:  { value: 0 },
+      },
+      vertexShader: `
+        varying vec3 vWorldPosition;
+        void main() {
+          vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+          vWorldPosition = worldPosition.xyz;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }`,
+      fragmentShader: `
+        uniform vec3 topColor; uniform vec3 midColor; uniform vec3 bottomColor;
+        uniform vec3 nightTop; uniform vec3 nightMid; uniform vec3 nightBottom;
+        uniform float offset; uniform float exponent; uniform float nightFactor;
+        varying vec3 vWorldPosition;
+        void main() {
+          float h = normalize(vWorldPosition + vec3(0.0, offset, 0.0)).y;
+          float t = pow(max(h, 0.0), exponent);
+          vec3 dayCol   = mix(mix(bottomColor, midColor, smoothstep(0.0, 0.35, t)), topColor, smoothstep(0.3, 1.0, t));
+          vec3 nightCol = mix(mix(nightBottom, nightMid, smoothstep(0.0, 0.35, t)), nightTop, smoothstep(0.3, 1.0, t));
+          gl_FragColor = vec4(mix(dayCol, nightCol, nightFactor), 1.0);
+        }`,
+    });
+    this.skyDome = new THREE.Mesh(geo, this.skyMatDay);
+    this.skyDome.frustumCulled = false;
+    this.scene.add(this.skyDome);
+
+    // Sun disc
+    this.sunMesh = new THREE.Mesh(
+      new THREE.SphereGeometry(14, 16, 12),
+      new THREE.MeshBasicMaterial({ color: this.dayPal.sunEmissive, fog: false })
+    );
+    this.sunMesh.position.set(180, this.dayPal.sunY, 90);
+    this.scene.add(this.sunMesh);
+
+    // Stars (visible at night)
+    const starCount = 700;
+    const positions = new Float32Array(starCount * 3);
+    for (let i = 0; i < starCount; i++) {
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(Math.random() * 0.85);
+      const r = 430;
+      positions[i * 3]     = r * Math.sin(phi) * Math.cos(theta);
+      positions[i * 3 + 1] = Math.abs(r * Math.cos(phi)) + 15;
+      positions[i * 3 + 2] = r * Math.sin(phi) * Math.sin(theta);
+    }
+    const starGeo = new THREE.BufferGeometry();
+    starGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    this.starsMat = new THREE.PointsMaterial({
+      color: 0xffffff,
+      size: 1.6,
+      sizeAttenuation: false,
+      transparent: true,
+      opacity: 0,
+      fog: false,
+    });
+    this.stars = new THREE.Points(starGeo, this.starsMat);
+    this.stars.frustumCulled = false;
+    this.scene.add(this.stars);
+  }
+
+  /**
+   * Builds the post-processing chain (items 7–8): subtle GTAO + restrained
+   * bloom. AO runs at reduced resolution with a small radius; bloom uses a
+   * high threshold and low strength so only lamp bulbs halo — never the scene.
+   */
+  private _buildComposer(w: number, h: number) {
+    // Dev bypass: ?nopost=1 skips the whole chain; ?nopost=gtao / ?nopost=bloom
+    // disable individual passes (composer-regression diagnostics).
+    if (typeof window !== 'undefined') {
+      const q = new URLSearchParams(window.location.search).get('nopost');
+      this.postDisabled = q === '1';
+      this._devDisableGtao = q === 'gtao';
+      this._devDisableBloom = q === 'bloom';
+    }
+    this.composer = new EffectComposer(this.renderer);
+    this.composer.addPass(new RenderPass(this.scene, this.cameraController.camera));
+
+    const tier = QUALITY_TIERS[this.qualityIndex];
+    // Dev: ?gtaoOutput=<normal|depth|ao> shows raw G-buffer/AO (bisection).
+    let devGtaoOutput: number | null = null;
+    if (typeof window !== 'undefined') {
+      const go = new URLSearchParams(window.location.search).get('gtaoOutput');
+      if (go === 'normal') devGtaoOutput = GTAOPass.OUTPUT.Normal;
+      else if (go === 'depth') devGtaoOutput = GTAOPass.OUTPUT.Depth;
+      else if (go === 'ao') devGtaoOutput = GTAOPass.OUTPUT.AO;
+    }
+    if (tier.ao || devGtaoOutput !== null) {
+      try {
+        const gtao = new GTAOPass(this.scene, this.cameraController.camera, w, h);
+        gtao.updateGtaoMaterial({
+          // Small radius + modest budget → "grounded", not "outlined".
+          radius: 0.35,
+          distanceExponent: 1.2,
+          thickness: 1.0,
+          scale: 1.0,
+          samples: 8,
+          distanceFallOff: 1.0,
+          screenSpaceRadius: false,
+        });
+        // Half-resolution AO when the tier demands it (weak GPUs).
+        gtao.setSize(w * (tier.aoHalfRes ? 0.5 : 1), h * (tier.aoHalfRes ? 0.5 : 1));
+        gtao.output = devGtaoOutput ?? GTAOPass.OUTPUT.Default;
+        this.composer.addPass(gtao);
+        this.gtaoPass = gtao;
+      } catch {
+        // AO is polish, not a requirement — never block startup on it.
+        this.gtaoPass = null;
+      }
+    }
+    if (this.gtaoPass && this._devDisableGtao) this.gtaoPass.enabled = false;
+
+    // Restrained luminance-threshold bloom: small warm halos around lamps.
+    const bloomRes = new THREE.Vector2(w * tier.bloomRes, h * tier.bloomRes);
+    this.bloomPass = new UnrealBloomPass(bloomRes, /*strength*/ 0.28, /*radius*/ 0.45, /*threshold*/ 0.92);
+    this.composer.addPass(this.bloomPass);
+    if (this._devDisableBloom) this.bloomPass.enabled = false;
+
+    // OutputPass applies tone mapping + color-space conversion at the end.
+    this.outputPass = new OutputPass();
+    this.composer.addPass(this.outputPass);
+    this.composer.setSize(w, h);
+  }
+
+  /** Rebuilds post-FX for a quality tier without touching lights or scene. */
+  private _applyQualityTier(tier: QualityTier, w: number, h: number) {
+    if (this.gtaoPass) {
+      this.gtaoPass.enabled = tier.ao;
+      if (tier.ao) {
+        this.gtaoPass.setSize(w * (tier.aoHalfRes ? 0.5 : 1), h * (tier.aoHalfRes ? 0.5 : 1));
+      }
+    }
+    if (this.bloomPass) {
+      this.bloomPass.resolution.set(w * tier.bloomRes, h * tier.bloomRes);
+      this.bloomPass.setSize(w * tier.bloomRes, h * tier.bloomRes);
+    }
+    // Street-light pool cap & local shadow casters live in TerrainGrid.
+    this.terrainGrid.applyQualityBudget(tier.maxStreetLights, tier.localShadowLights);
+    // Directional shadow map day size (night always uses NIGHT_SHADOW_MAP_SIZE).
+    if (this.dirLight.shadow.mapSize.width !== tier.dirShadowSize) {
+      this.dirLight.shadow.mapSize.set(tier.dirShadowSize, tier.dirShadowSize);
+      if (this.dirLight.shadow.map) {
+        this.dirLight.shadow.map.dispose();
+        // three re-creates the map lazily on the next shadow render
+        (this.dirLight.shadow as unknown as { map: THREE.WebGLRenderTarget | null }).map = null;
+      }
+    }
+  }
+
+  private _startLoop() {
+    const animate = (timestamp: number) => {
+      this.animationFrameId = requestAnimationFrame(animate);
+      const dt = Math.min(0.05, (timestamp - this.lastFrameTime) / 1000);
+      this.lastFrameTime = timestamp;
+
+      // ── REAL TIME (item 12): camera + UI-facing motion never scale with the
+      // simulation speed — panning/orbiting feels identical at pause and 5×.
+      this.cameraController.update(dt);
+
+      // ── SIMULATED TIME (items 9/11/13): ONE authoritative world clock.
+      // Pause ⇒ simDt = 0 ⇒ vehicles/river/clouds/machinery freeze cleanly.
+      // 5× ⇒ every world animation advances 5× per real second. Exactly one
+      // requestAnimationFrame loop and one render per frame regardless (item 18).
+      const simDt = dt * this.worldTimeScale;
+      this.visualSimElapsed += simDt;
+
+      // ── DAY/NIGHT FROM THE ACTUAL GAME CLOCK (item 15): the lighting state
+      // is a pure function of gameTimeDays — dawn/day/sunset/night come from
+      // the simulated clock, so sunset progresses 5× faster at 5× and freezing
+      // mid-sunset at pause holds the blend. No independent boolean lerp.
+      const dayFactor = getDayNightFactor(this.gameTimeDays);
+      if (this.lastAppliedDayFactor < 0 || Math.abs(dayFactor - this.lastAppliedDayFactor) > 0.0008) {
+        this.lastAppliedDayFactor = dayFactor;
+        const nf = 1 - dayFactor; // 0 = full day, 1 = full night
+        const bg = this.dayPal.bg.clone().lerp(this.nightPal.bg, nf);
+        const fg = this.dayPal.fog.clone().lerp(this.nightPal.fog, nf);
+        this.scene.background = bg;
+        (this.scene.fog as THREE.FogExp2).color.copy(fg);
+        this.dirLight.color.copy(this.dayPal.dirColor).lerp(this.nightPal.dirColor, nf);
+        this.dirLight.intensity = lerpN(this.dayPal.dirIntensity, this.nightPal.dirIntensity, nf);
+        this.ambientLight.intensity = lerpN(this.dayPal.ambientIntensity, this.nightPal.ambientIntensity, nf);
+        this.hemiLight.color.copy(this.dayPal.hemiSky).lerp(this.nightPal.hemiSky, nf);
+        this.hemiLight.groundColor.copy(this.dayPal.hemiGround).lerp(this.nightPal.hemiGround, nf);
+        this.skyMatDay.uniforms.nightFactor.value = nf;
+        (this.sunMesh.material as THREE.MeshBasicMaterial).color.setHex(nf > 0.5 ? this.nightPal.sunEmissive : this.dayPal.sunEmissive);
+        this.starsMat.opacity = lerpN(this.dayPal.starOpacity, this.nightPal.starOpacity, nf);
+        this.sunMesh.position.y = lerpN(this.dayPal.sunY, this.nightPal.sunY, nf);
+        this.sunMesh.visible = this.sunMesh.position.y > -25 || nf < 0.5;
+        // Shadow budget (Prompt 3.4 item 6): the directional light NEVER goes
+        // fully shadowless — by day it's the sun @1024², at night a weak blue
+        // moon keeps real depth @512². Dusk/dawn interpolates intensity while
+        // the map size switches once at the midpoint (cheap, stable).
+        const wantNightMap = dayFactor <= 0.4;
+        const wantSize = wantNightMap ? NIGHT_SHADOW_MAP_SIZE : DAY_SHADOW_MAP_SIZE;
+        if (this.dirLight.shadow.mapSize.width !== wantSize) {
+          this.dirLight.shadow.mapSize.set(wantSize, wantSize);
+          if (this.dirLight.shadow.map) {
+            this.dirLight.shadow.map.dispose();
+            // three re-creates the map lazily on the next shadow render
+            (this.dirLight.shadow as unknown as { map: THREE.WebGLRenderTarget | null }).map = null;
+          }
+        }
+      }
+
+      // WORLD runs on simulated time (vehicles, river, foam, clouds, lamps)
+      this.terrainGrid.tick(simDt, this.visualSimElapsed, 1 - dayFactor);
+
+      // Street-light pool: reassign the bounded real lights to the lamps
+      // nearest the camera at a modest cadence (items 4–5).
+      this.lightPoolTimer += dt;
+      if (this.lightPoolTimer >= LIGHT_POOL_INTERVAL_SEC) {
+        this.lightPoolTimer = 0;
+        // CameraController.target is the live look-at focus on the ground.
+        const camFocus = this.cameraController.target;
+        this.terrainGrid.updateLightPool(camFocus.x, camFocus.z);
+      }
+
+      // PROCESS MACHINERY on simulated time too
+      for (const mesh of this.unitMeshMap.values()) {
+        UnitMeshBuilder.updateUnitAnimation(mesh, this.visualSimElapsed);
+      }
+      this._animateGhostSuggest(this.visualSimElapsed);
+
+      // ── AUTOMATIC QUALITY SCALING (item 10): steps down one tier when FPS
+      // is poor, climbs back only after sustained health. Never removes real
+      // lighting — it trims AO res → bloom res → street count → shadow count
+      // → dir map → pixel ratio, in that order.
+      this.frameTimeAccum += dt;
+      this.frameCount++;
+      this.adaptTimer += dt;
+      this.qualityCooldown = Math.max(0, this.qualityCooldown - ADAPT_INTERVAL_SEC);
+      if (this.adaptTimer >= ADAPT_INTERVAL_SEC) {
+        const avgFps = this.frameCount / Math.max(1e-4, this.frameTimeAccum);
+        let changedQuality = false;
+        if (avgFps < 26 && this.qualityIndex < QUALITY_TIERS.length - 1 && this.qualityCooldown === 0) {
+          this.qualityIndex++;
+          changedQuality = true;
+        } else if (avgFps > 55 && this.qualityIndex > 0 && this.qualityCooldown === 0) {
+          this.qualityIndex--;
+          changedQuality = true;
+        }
+        if (changedQuality) {
+          this._applyQualityTier(QUALITY_TIERS[this.qualityIndex], window.innerWidth, window.innerHeight);
+          this.qualityCooldown = 3; // hold for ≥2 evaluation windows before next change
+        } else {
+          // Pixel-ratio fallback remains the LAST resort, below all tiers.
+          if (avgFps < 22 && this.currentPixelRatio > MIN_PIXEL_RATIO + 1e-3) {
+            this.currentPixelRatio = Math.max(MIN_PIXEL_RATIO, this.currentPixelRatio - 0.15);
+            this.renderer.setPixelRatio(this.currentPixelRatio);
+          } else if (avgFps > 55 && this.currentPixelRatio < this.basePixelRatio - 1e-3) {
+            this.currentPixelRatio = Math.min(this.basePixelRatio, this.currentPixelRatio + 0.05);
+            this.renderer.setPixelRatio(this.currentPixelRatio);
+          }
+        }
+        this.adaptTimer = 0;
+        this.frameTimeAccum = 0;
+        this.frameCount = 0;
+      }
+
+      // Dev-only telemetry (item 19): console lines, never on-screen HUD.
+      if (this.telemetryEnabled) {
+        this.telemetryFrames++;
+        this.telemetryAccum += dt;
+        if (this.telemetryAccum >= 1) {
+          const msPerFrame = (this.telemetryAccum / this.telemetryFrames) * 1000;
+          console.log(
+            `[aquateycoon-fps] ${this.telemetryFrames} fps · ${msPerFrame.toFixed(2)} ms/frame · ` +
+            `ratio ${this.currentPixelRatio.toFixed(2)} · ${dayFactor > 0.5 ? 'day' : 'night'} · ` +
+            `${this.worldTimeScale}× · dirShadow ${SceneManager.dirShadowLabel(dayFactor)}² · ` +
+            `quality tier ${this.qualityIndex}`
+          );
+          this.telemetryFrames = 0;
+          this.telemetryAccum = 0;
+        }
+      }
+
+      // Post-processing chain ends in OutputPass (tone mapping + sRGB);
+      // ?nopost=1 bypasses it for composer-regression diagnostics.
+      if (this.postDisabled) {
+        this.renderer.render(this.scene, this.cameraController.camera);
+      } else {
+        this.composer.render();
+      }
+    };
+    this.lastFrameTime = performance.now();
+    animate(this.lastFrameTime);
+  }
+
+  /** Telemetry helper: current directional shadow-map size label. */
+  private static dirShadowLabel(dayFactor: number): string {
+    return dayFactor <= 0.4 ? String(NIGHT_SHADOW_MAP_SIZE) : String(DAY_SHADOW_MAP_SIZE);
+  }
+
+  private _animateGhostSuggest(t: number) {
+    for (const child of this.ghostSuggestGroup.children) {
+      const m = child as THREE.Mesh;
+      if (m.material && (m.material as THREE.MeshBasicMaterial).opacity !== undefined) {
+        (m.material as THREE.MeshBasicMaterial).opacity = 0.25 + Math.sin(t * 3) * 0.15;
+      }
+    }
+  }
+
+  /** Sync unit meshes; add missing, remove stale, always refresh transforms */
+  public syncUnits(units: PlacedUnit[]) {
+    const activeIds = new Set(units.map(u => u.instanceId));
+
+    for (const [id, mesh] of this.unitMeshMap.entries()) {
+      if (!activeIds.has(id)) {
+        this.unitGroup.remove(mesh);
+        mesh.traverse(o => {
+          const mm = o as THREE.Mesh;
+          if (mm.geometry) mm.geometry.dispose();
+        });
+        this.unitMeshMap.delete(id);
+      }
+    }
+
+    for (const unit of units) {
+      const def = UNIT_DEFINITIONS[unit.typeId];
+      if (!def) continue;
+      const [fw, fl] = unit.rotation === 90 || unit.rotation === 270
+        ? [def.footprint[1], def.footprint[0]]
+        : def.footprint;
+
+      let mesh = this.unitMeshMap.get(unit.instanceId);
+      if (!mesh) {
+        mesh = UnitMeshBuilder.buildUnitMesh(unit);
+        // Realism: enable shadows on opaque parts
+        mesh.traverse(o => {
+          const mm = o as THREE.Mesh;
+          if (mm.isMesh && mm.material) {
+            const mat = Array.isArray(mm.material) ? mm.material[0] : mm.material;
+            const transparent = (mat as THREE.MeshStandardMaterial).transparent === true;
+            const basicGlow = mat instanceof THREE.MeshBasicMaterial;
+            mm.castShadow = !transparent && !basicGlow;
+            mm.receiveShadow = true;
+          }
+        });
+        this.unitMeshMap.set(unit.instanceId, mesh);
+        this.unitGroup.add(mesh);
+      }
+      mesh.position.set(unit.gridX + fw / 2, 0, unit.gridY + fl / 2);
+      mesh.rotation.y = (unit.rotation * Math.PI) / 180;
+    }
+  }
+
+  public syncPipes(pipes: PipeConnection[]) {
+    // Flow animation runs on SIMULATED time — pause freezes the pipe flow.
+    this.pipeRenderer.updatePipes(pipes, this.visualSimElapsed);
+  }
+
+  /**
+   * Pushes the authoritative game clock into the renderer. Lighting derives
+   * from this via getDayNightFactor — no independent real-time lerp.
+   */
+  public setGameClock(gameTimeDays: number) {
+    this.gameTimeDays = gameTimeDays;
+  }
+
+  /**
+   * Explicit world-speed control (item 14): 0 = paused, 1 = normal, 2 = fast,
+   * 5 = ultra. Scales ALL world animation; never the camera or UI.
+   */
+  public setSimulationSpeed(speed: SimulationSpeed) {
+    this.worldTimeScale = speed;
+  }
+
+  /** Alias matching the prompt's suggested API name. */
+  public setWorldTimeScale(scale: number) {
+    this.worldTimeScale = scale as SimulationSpeed;
+  }
+
+  /** Dev-only FPS/frame-time telemetry toggle (item 19). Off in production. */
+  public setTelemetryEnabled(enabled: boolean) {
+    this.telemetryEnabled = enabled;
+  }
+
+  /**
+   * Shows a pulsing green ghost at the suggested next build position.
+   */
+  public showNextStepGhost(
+    unitTypeId: UnitTypeId | null,
+    gridX: number,
+    gridY: number
+  ) {
+    while (this.ghostSuggestGroup.children.length > 0) {
+      const c = this.ghostSuggestGroup.children[0];
+      // Dispose transient preview resources — each ghost creates fresh
+      // geometry/material, so skipping this leaks VRAM on every refresh.
+      c.traverse(o => {
+        const m = o as THREE.Mesh;
+        if (m.geometry) m.geometry.dispose();
+        const mat = m.material as THREE.Material | THREE.Material[] | undefined;
+        if (Array.isArray(mat)) mat.forEach(mm => mm.dispose());
+        else if (mat) mat.dispose();
+      });
+      this.ghostSuggestGroup.remove(c);
+    }
+    if (!unitTypeId) return;
+
+    const def = UNIT_DEFINITIONS[unitTypeId];
+    if (!def) return;
+    const [fw, fl] = def.footprint;
+
+    const boxGeo = new THREE.BoxGeometry(fw - 0.1, 1.0, fl - 0.1);
+    const boxMat = new THREE.MeshBasicMaterial({
+      color: 0x22c55e,
+      transparent: true,
+      opacity: 0.3,
+    });
+    const box = new THREE.Mesh(boxGeo, boxMat);
+    box.position.set(gridX + fw / 2, 0.6, gridY + fl / 2);
+    this.ghostSuggestGroup.add(box);
+
+    const wireMat = new THREE.MeshBasicMaterial({
+      color: 0x4ade80,
+      wireframe: true,
+      transparent: true,
+      opacity: 0.7,
+    });
+    const wire = new THREE.Mesh(new THREE.BoxGeometry(fw - 0.1, 1.0, fl - 0.1), wireMat);
+    wire.position.copy(box.position);
+    this.ghostSuggestGroup.add(wire);
+
+    const coneGeo = new THREE.ConeGeometry(0.35, 0.7, 8);
+    const coneMat = new THREE.MeshBasicMaterial({ color: 0x4ade80, transparent: true, opacity: 0.85 });
+    const cone = new THREE.Mesh(coneGeo, coneMat);
+    cone.position.set(gridX + fw / 2, 2.5, gridY + fl / 2);
+    cone.rotation.x = Math.PI;
+    this.ghostSuggestGroup.add(cone);
+  }
+
+  /**
+   * Highlights the selected pipe source unit with a glowing ring, centered on
+   * the ROTATED footprint so non-square units ring correctly at any rotation.
+   * Optionally draws markers on every selectable port (chosen one emphasized).
+   */
+  public setPipeSourceHighlight(
+    unitInstanceId: string | null,
+    units: PlacedUnit[],
+    opts?: { chosenPortId?: string | null; showPorts?: boolean }
+  ) {
+    for (const ring of this.pipeSelectRingMap.values()) {
+      this.unitGroup.remove(ring);
+      ring.geometry.dispose();
+      (ring.material as THREE.Material).dispose();
+    }
+    this.pipeSelectRingMap.clear();
+
+    if (!unitInstanceId) return;
+    const unit = units.find(u => u.instanceId === unitInstanceId);
+    if (!unit) return;
+    const def = UNIT_DEFINITIONS[unit.typeId];
+    if (!def) return;
+
+    const [fw, fl] = getRotatedFootprint(def, unit.rotation);
+    const radius = Math.max(fw, fl) * 0.65;
+    const cx = unit.gridX + fw / 2;
+    const cz = unit.gridY + fl / 2;
+
+    const ringGeo = new THREE.TorusGeometry(radius, 0.06, 8, 32);
+    const ringMat = new THREE.MeshBasicMaterial({ color: 0x06b6d4, transparent: true, opacity: 0.9 });
+    const ring = new THREE.Mesh(ringGeo, ringMat);
+    ring.rotation.x = Math.PI / 2;
+    ring.position.set(cx, 0.15, cz);
+    this.unitGroup.add(ring);
+    this.pipeSelectRingMap.set(unitInstanceId + '__ring', ring);
+
+    // Optional per-port markers: cyan = available, amber = currently chosen.
+    if (opts?.showPorts) {
+      const chosen = opts.chosenPortId ?? null;
+      for (const port of def.ports) {
+        const [px, py, pz] = getPortWorldPosition(unit, port.id);
+        const isChosen = port.id === chosen;
+        const markerGeo = new THREE.SphereGeometry(isChosen ? 0.3 : 0.18, 12, 10);
+        const markerMat = new THREE.MeshBasicMaterial({
+          color: isChosen ? 0xfbbf24 : 0x22d3ee,
+          transparent: true,
+          opacity: isChosen ? 0.95 : 0.55
+        });
+        const marker = new THREE.Mesh(markerGeo, markerMat);
+        marker.position.set(px, Math.max(0.25, py), pz);
+        this.unitGroup.add(marker);
+        this.pipeSelectRingMap.set(`${unitInstanceId}__port_${port.id}`, marker);
+      }
+    }
+  }
+
+  /** Projects a world point to canvas pixel coordinates (for HTML overlays). */
+  public worldToScreen(x: number, y: number, z: number): { x: number; y: number } | null {
+    const canvas = this.renderer.domElement;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    const v = new THREE.Vector3(x, y, z).project(this.cameraController.camera);
+    if (v.z > 1) return null; // behind camera
+    return {
+      x: rect.left + ((v.x + 1) / 2) * rect.width,
+      y: rect.top + ((-v.y + 1) / 2) * rect.height
+    };
+  }
+
+  /** Canvas-local projection (same as worldToScreen but relative to canvas top-left). */
+  public worldToCanvasPx(x: number, y: number, z: number): { x: number; y: number } | null {
+    const s = this.worldToScreen(x, y, z);
+    if (!s) return null;
+    const canvas = this.renderer.domElement;
+    const rect = canvas.getBoundingClientRect();
+    return { x: s.x - rect.left, y: s.y - rect.top };
+  }
+
+  /** Raycasts screen coords to grid tile using the canvas rect */
+  public getGridTileFromScreen(clientX: number, clientY: number): { x: number; y: number } | null {
+    const canvas = this.renderer.domElement;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+
+    const ndcX =  ((clientX - rect.left) / rect.width)  * 2 - 1;
+    const ndcY = -((clientY - rect.top)  / rect.height) * 2 + 1;
+
+    this.raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), this.cameraController.camera);
+    const hit = new THREE.Vector3();
+    const intersected = this.raycaster.ray.intersectPlane(this.groundPlane, hit);
+    if (!intersected) return null;
+    return { x: Math.floor(hit.x), y: Math.floor(hit.z) };
+  }
+
+  /** Raw ground-plane hit point (not snapped to the grid) */
+  public getGroundPointFromScreen(clientX: number, clientY: number): THREE.Vector3 | null {
+    const canvas = this.renderer.domElement;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    const ndcX =  ((clientX - rect.left) / rect.width)  * 2 - 1;
+    const ndcY = -((clientY - rect.top)  / rect.height) * 2 + 1;
+    this.raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), this.cameraController.camera);
+    const hit = new THREE.Vector3();
+    return this.raycaster.ray.intersectPlane(this.groundPlane, hit) ? hit : null;
+  }
+
+  /** Shows the live connection preview from the chosen source port to the cursor */
+  public setPipePreview(from: THREE.Vector3 | null, to: THREE.Vector3 | null) {
+    if (!from || !to) {
+      this.pipePreviewLine.visible = false;
+      this.pipePreviewCursor.visible = false;
+      return;
+    }
+    const posAttr = this.pipePreviewLine.geometry.getAttribute('position') as THREE.BufferAttribute;
+    posAttr.setXYZ(0, from.x, from.y, from.z);
+    posAttr.setXYZ(1, to.x, to.y + 0.15, to.z);
+    posAttr.needsUpdate = true;
+    this.pipePreviewLine.geometry.computeBoundingSphere();
+    this.pipePreviewLine.visible = true;
+    this.pipePreviewCursor.position.set(to.x, 0.12, to.z);
+    this.pipePreviewCursor.visible = true;
+  }
+
+  public getUnitAtScreen(clientX: number, clientY: number, units: PlacedUnit[]): PlacedUnit | null {
+    const canvas = this.renderer.domElement;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+
+    const ndcX =  ((clientX - rect.left) / rect.width)  * 2 - 1;
+    const ndcY = -((clientY - rect.top)  / rect.height) * 2 + 1;
+    this.raycaster.setFromCamera(new THREE.Vector2(ndcX, ndcY), this.cameraController.camera);
+
+    // 1) TRUE MESH PICKING FIRST — tall units (digesters, turbines, tanks) must
+    //    be clickable on their whole body, not just their ground footprint.
+    const hits = this.raycaster.intersectObjects(this.unitGroup.children, true);
+    for (const h of hits) {
+      let o: THREE.Object3D | null = h.object;
+      while (o) {
+        if (o.name) {
+          const u = units.find(uu => uu.instanceId === o!.name);
+          if (u) return u;
+        }
+        o = o.parent;
+      }
+    }
+
+    // 2) Ground-tile fallback (clicking the pad / ground inside the footprint)
+    const hit = new THREE.Vector3();
+    if (!this.raycaster.ray.intersectPlane(this.groundPlane, hit)) return null;
+    const tile = { x: Math.floor(hit.x), y: Math.floor(hit.z) };
+    return units.find(u => {
+      const def = UNIT_DEFINITIONS[u.typeId];
+      if (!def) return false;
+      const [fw, fl] = (u.rotation === 90 || u.rotation === 270)
+        ? [def.footprint[1], def.footprint[0]]
+        : def.footprint;
+      return tile.x >= u.gridX && tile.x < u.gridX + fw &&
+             tile.y >= u.gridY && tile.y < u.gridY + fl;
+    }) ?? null;
+  }
+
+  public handleResize(width: number, height: number) {
+    this.renderer.setSize(width, height);
+    this.composer.setSize(width, height);
+    this.cameraController.setAspect(width / height);
+  }
+
+  /** Re-fit the sun/shadow frustum and light rig when a bigger level loads */
+  public updateShadowBounds(mapWidth: number, mapDepth: number) {
+    const sd = Math.max(mapWidth, mapDepth) * 0.85 + 22;
+    this.dirLight.shadow.camera.left   = -sd;
+    this.dirLight.shadow.camera.right  =  sd;
+    this.dirLight.shadow.camera.top    =  sd;
+    this.dirLight.shadow.camera.bottom = -sd;
+    this.dirLight.shadow.camera.far = sd * 6 + 200;
+    this.dirLight.shadow.camera.updateProjectionMatrix();
+    this.dirLight.position.set(mapWidth / 2 + 45, this.dayPal.sunY, mapDepth / 2 + 30);
+    this.dirLight.target.position.set(mapWidth / 2, 0, mapDepth / 2);
+    this.dirLight.target.updateMatrixWorld();
+    this.skyDome.position.set(mapWidth / 2, 0, mapDepth / 2);
+    this.sunMesh.position.x = mapWidth / 2 + 180;
+    this.sunMesh.position.z = mapDepth / 2 + 90;
+    this.stars.position.set(mapWidth / 2, 0, mapDepth / 2);
+  }
+
+  /** Tints the whole sky/fog/light rig to match the level's scenario biome */
+  public setEnvironment(biome: LevelBiome) {
+    this.dayPal = makeDay(biome);
+    this.nightPal = NIGHT_BASE();
+    if (biome === 'industrial') {
+      this.nightPal.fog.setHex(0x11161c);
+      this.nightPal.hemiSky.setHex(0x1a2030);
+    } else if (biome === 'desert') {
+      this.nightPal.fog.setHex(0x1a1610);
+      this.nightPal.hemiGround.setHex(0x241d12);
+    } else if (biome === 'lake_forest') {
+      this.nightPal.fog.setHex(0x0a1a16);
+    }
+    // Apply immediately for a snappy level transition
+    this.scene.background = this.dayPal.bg.clone();
+    (this.scene.fog as THREE.FogExp2).color.copy(this.dayPal.fog);
+    // Force the day/night rig to re-apply with the new biome palettes.
+    this.lastAppliedDayFactor = -1;
+  }
+
+  public dispose() {
+    if (this.animationFrameId !== null) {
+      cancelAnimationFrame(this.animationFrameId);
+      this.animationFrameId = null;
+    }
+    // Release post-processing targets before tearing down the renderer.
+    this.composer?.dispose();
+    // BUG FIX: fully release GPU resources (was leaking on unmount/HMR)
+    this.scene.traverse(obj => {
+      const mesh = obj as THREE.Mesh;
+      if (mesh.geometry) mesh.geometry.dispose();
+      if (mesh.material) {
+        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        mats.forEach(m => {
+          const std = m as THREE.MeshStandardMaterial;
+          if (std.map) std.map.dispose();
+          if (std.emissiveMap && std.emissiveMap !== std.map) std.emissiveMap.dispose();
+          m.dispose();
+        });
+      }
+    });
+    this.scene.clear();
+    this.renderer.dispose();
+    if (this.renderer.domElement.parentElement) {
+      this.renderer.domElement.parentElement.removeChild(this.renderer.domElement);
+    }
+  }
+}

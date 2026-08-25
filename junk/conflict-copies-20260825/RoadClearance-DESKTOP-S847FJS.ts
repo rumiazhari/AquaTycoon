@@ -28,16 +28,6 @@ export const ROAD_SUPPORT_GRADE = 0.05;
 export const ROAD_CLEAR_END =
   ROAD_HALF_WIDTH + ROAD_SHOULDER_WIDTH + ROAD_BLEND_BAND;
 
-/**
- * Minimum lateral distance kept free of trees, shrubs, rocks, grass/dirt
- * patches, town props and other nature/decor spawn points (Prompt 3.4.1
- * §9/§12). ONE authoritative figure replacing the scattered 5 / 5.2 / 6 / 6.5
- * magic distances: paved half-width + shoulder + safety margin, so nothing
- * rooted beyond the corridor can lean or drip into the asphalt.
- */
-export const NATURE_ROAD_CLEARANCE =
-  ROAD_HALF_WIDTH + ROAD_SHOULDER_WIDTH + 1.8; // = 6.0
-
 function smoothstep(edgeA: number, edgeB: number, x: number): number {
   const t = Math.max(0, Math.min(1, (x - edgeA) / (edgeB - edgeA)));
   return t * t * (3 - 2 * t);

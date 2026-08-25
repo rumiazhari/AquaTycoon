@@ -9,7 +9,7 @@ import {
   type FoamParticle,
   type FlowStreak,
 } from './WaterSurface';
-import { roadCorridorHeight, NATURE_ROAD_CLEARANCE } from './RoadClearance';
+import { roadCorridorHeight } from './RoadClearance';
 
 /**
  * Realistic 3D environment surrounding the plant site:
@@ -51,31 +51,10 @@ const TOWER_COLORS     = [0x94a3b8, 0xa8b3c5, 0x7d8aa0, 0xb0bac9];
 const CONIFER_GREENS   = [0x2d6a34, 0x275e2d, 0x35753c, 0x1f5426];
 const BROADLEAF_GREENS = [0x4a8f3c, 0x579c46, 0x3f7d33, 0x6aa84f];
 
-// ── Explicit three-stop water palette (Prompt 3.4.1 §2) ──────────────────────
-// Unlit water is immune to scene lights, so the day/night blend is done
-// manually through THREE named stops. Water is unmistakably WATER at all times:
-// never pure black, never neon emissive.
-//   DAY  : clear stylized medium/light blue
-//   DUSK : darker desaturated blue
-//   NIGHT: dark navy — still obviously blue
-export const WATER_DAY   = new THREE.Color(0x4383b2);
-export const WATER_DUSK  = new THREE.Color(0x274e6e);
-export const WATER_NIGHT = new THREE.Color(0x16283a);
-
-/**
- * Pure palette evaluation at a game day/night factor (0 = noon, 1 = midnight).
- * Piecewise DAY→DUSK→NIGHT lerp; exported for headless regression tests.
- */
-export function waterColorAt(
-  nightFactor: number,
-  out: THREE.Color = new THREE.Color()
-): THREE.Color {
-  return out
-    .copy(WATER_DAY)
-    .lerp(WATER_DUSK, Math.min(nightFactor / 0.5, 1))
-    .lerp(WATER_NIGHT, Math.max((nightFactor - 0.5) / 0.5, 0));
-}
-
+// River palette: desaturated day blue ↔ dark night blue (unlit material is
+// immune to scene lights, so the day/night blend is done manually)
+const RIVER_DAY   = new THREE.Color(0x4383b2);
+const RIVER_NIGHT = new THREE.Color(0x16283a);
 const FLOW_STREAK_DAY   = new THREE.Color(0xa8d8ee);
 const FLOW_STREAK_NIGHT = new THREE.Color(0x24384a);
 const FOAM_DAY    = new THREE.Color(0xf2f6f8);
@@ -516,9 +495,7 @@ export class TerrainGrid {
     // Road glow decals: now a faint secondary polish under the real pool lights.
     if (this.lampPoolMat) this.lampPoolMat.opacity = nightFactor * 0.28;
     // River is unlit — blend its palette manually so it darkens at night
-    // Explicit 3-stop palette (DAY → DUSK → NIGHT): water stays a stylized
-    // blue through dusk instead of collapsing toward black too early.
-    if (this.waterMat) waterColorAt(nightFactor, this.waterMat.color);
+    if (this.waterMat) this.waterMat.color.copy(RIVER_DAY).lerp(RIVER_NIGHT, nightFactor);
     if (this.flowStreakMat) this.flowStreakMat.color.copy(FLOW_STREAK_DAY).lerp(FLOW_STREAK_NIGHT, nightFactor);
     if (this.ringMat) this.ringMat.color.copy(FOAM_DAY).lerp(FOAM_NIGHT, nightFactor);
     if (this.foamMat) this.foamMat.color.copy(FOAM_DAY).lerp(FOAM_NIGHT, nightFactor);
@@ -679,7 +656,7 @@ export class TerrainGrid {
       const z = lerpN(-this.padZ, this.D + this.padZ, rng());
       if (this._isOuterBand(x, z)) continue;
       if (!this._natureAllowed(x, z)) continue;
-      if (Math.abs(z - this.zRoad) < NATURE_ROAD_CLEARANCE) continue; // §12: shared clearance
+      if (Math.abs(z - this.zRoad) < 6.5) continue;
       if (Math.abs(x - this.riverCenterX(z)) < this.riverHW + 4) continue;
       const y = this.terrainHeight(x, z);
       if (y < -0.5) continue;
@@ -713,7 +690,7 @@ export class TerrainGrid {
       const x = lerpN(-this.padX, this.W + this.padX, rng());
       const z = lerpN(-this.padZ, this.D + this.padZ, rng());
       if (!this._natureAllowed(x, z)) continue;
-      if (Math.abs(z - this.zRoad) < NATURE_ROAD_CLEARANCE) continue; // §12: shared clearance
+      if (Math.abs(z - this.zRoad) < 6) continue;
       if (Math.abs(x - this.riverCenterX(z)) < this.riverHW + 3.5) continue;
       const y = this.terrainHeight(x, z);
       if (y < -0.5) continue;
@@ -1096,8 +1073,7 @@ export class TerrainGrid {
     // roughly riverHW*1.55, so this width keeps the plane tucked inside the
     // banks with zero exposed bed — pure cartoon blue edge to edge.
     const waterGeo = mkRibbon(this.riverHW * 1.52, this.waterY);
-    // Initial color = the authoritative DAY stop; tick() re-evaluates every frame.
-    this.waterMat = new THREE.MeshBasicMaterial({ color: WATER_DAY.getHex(), side: THREE.DoubleSide });
+    this.waterMat = new THREE.MeshBasicMaterial({ color: 0x4383b2, side: THREE.DoubleSide });
     const water = new THREE.Mesh(waterGeo, this.waterMat);
     water.frustumCulled = false;
     // renderOrder 2 keeps it above the terrain fill; depthWrite stays ON so
@@ -1590,7 +1566,7 @@ export class TerrainGrid {
 
   private _natureAllowed(x: number, z: number): boolean {
     if (x > -3.2 && x < this.W + 3.2 && z > -3.2 && z < this.D + 3.2) return false;
-    if (Math.abs(z - this.zRoad) < NATURE_ROAD_CLEARANCE) return false; // §12: shared clearance
+    if (Math.abs(z - this.zRoad) < 5.2) return false;
     if (Math.abs(x - this.riverCenterX(z)) < this.riverHW + 2.8) return false;
     return true;
   }
@@ -1773,7 +1749,7 @@ export class TerrainGrid {
 
   private _townAllowed(x: number, z: number, placed: Placed[], r: number): boolean {
     if (x > -4 && x < this.W + 4 && z > -4 && z < this.D + 2) return false;
-    if (Math.abs(z - this.zRoad) < NATURE_ROAD_CLEARANCE) return false; // §12: shared clearance
+    if (Math.abs(z - this.zRoad) < 5) return false;
     if (Math.abs(x - this.riverCenterX(z)) < this.riverHW + 3.4) return false;
     for (const p of placed) {
       if (Math.hypot(p.x - x, p.z - z) < p.r + r) return false;

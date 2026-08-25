@@ -34,14 +34,7 @@ import {
   ROAD_SHOULDER_WIDTH,
   ROAD_SUPPORT_GRADE,
   ROAD_CLEAR_END,
-  NATURE_ROAD_CLEARANCE,
 } from '../src/graphics/RoadClearance';
-import {
-  WATER_DAY,
-  WATER_DUSK,
-  WATER_NIGHT,
-  waterColorAt,
-} from '../src/graphics/TerrainGrid';
 import * as THREE from 'three';
 
 let failures = 0;
@@ -1534,70 +1527,6 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
     if (at(d + 0.001) < at(d) - 1e-9) monotonic = false;
   }
   assert(monotonic, 'R2b. height rises monotonically outward (no trench, no re-raise)');
-}
-
-// ── Prompt 3.4.1 §2: explicit three-stop water palette (day → dusk → night) ──
-// Water must be a stylized blue at ALL times — never pure black, never neon.
-
-// P1: the palette exports exist and are unmistakably blue (b > r and b > g).
-{
-  // Read channels back in sRGB via getHex() (round-trips through three's
-  // color management), so thresholds are intuitive byte values.
-  const chans = (c: THREE.Color) => {
-    const hx = c.getHex();
-    return { r: (hx >> 16) & 255, g: (hx >> 8) & 255, b: hx & 255 };
-  };
-  const isBlue = (c: THREE.Color) => {
-    const h = chans(c);
-    return h.b > h.r && h.b > h.g && h.b >= 0x30;
-  };
-  assert(isBlue(WATER_DAY), 'P1a. WATER_DAY is a blue');
-  assert(isBlue(WATER_DUSK), 'P1b. WATER_DUSK is a blue');
-  assert(isBlue(WATER_NIGHT), 'P1c. WATER_NIGHT is a blue');
-  // Day brightest, night darkest, dusk strictly between on luminance.
-  const lum = (c: THREE.Color) => {
-    const h = chans(c);
-    return 0.2126 * h.r + 0.7152 * h.g + 0.0722 * h.b;
-  };
-  assert(lum(WATER_DAY) > lum(WATER_DUSK), 'P1d. day brighter than dusk');
-  assert(lum(WATER_DUSK) > lum(WATER_NIGHT), 'P1e. dusk brighter than night');
-  assert(WATER_NIGHT.getHex() !== 0x000000, 'P1f. night water is not pure black');
-}
-
-// P2: waterColorAt interpolates through the DUSK stop at nf=0.5.
-{
-  assert(waterColorAt(0).getHex() === WATER_DAY.getHex(), 'P2a. nf=0 → WATER_DAY exactly');
-  assert(waterColorAt(1).getHex() === WATER_NIGHT.getHex(), 'P2b. nf=1 → WATER_NIGHT exactly');
-  const mid = waterColorAt(0.5).getHex();
-  const naive = WATER_DUSK.getHex();
-  const dayToNight = new THREE.Color(WATER_DAY).lerp(new THREE.Color(WATER_NIGHT), 0.5).getHex();
-  assert(mid === naive, 'P2c. nf=0.5 hits WATER_DUSK exactly (3-stop curve, not a DAY↔NIGHT lerp)');
-  assert(mid !== dayToNight, 'P2d. midpoint differs from a plain two-stop lerp (dusk stop is real)');
-  // Monotonic darkening across nf ∈ [0,1] — no bright flash or dip anywhere.
-  // Luminance from sRGB channels (see chans() above).
-  const lumOf = (c: THREE.Color) => {
-    const hx = c.getHex();
-    return 0.2126 * ((hx >> 16) & 255) + 0.7152 * ((hx >> 8) & 255) + 0.0722 * (hx & 255);
-  };
-  let mono = true;
-  for (let t = 0; t <= 20; t++) {
-    const lA = lumOf(waterColorAt(t / 20));
-    const lB = lumOf(waterColorAt((t + 1) / 20));
-    if (lB > lA + 1e-9) mono = false;
-  }
-  assert(mono, 'P2e. luminance decreases monotonically with nightFactor (no dips/spikes)');
-}
-
-// ── Prompt 3.4.1 §9/§12: ONE authoritative nature road-clearance constant ────
-
-// C1: the constant exists and covers asphalt + shoulder plus a safety margin.
-{
-  assert(NATURE_ROAD_CLEARANCE === ROAD_HALF_WIDTH + ROAD_SHOULDER_WIDTH + 1.8,
-    'C1a. NATURE_ROAD_CLEARANCE = paved half-width + shoulder + margin');
-  assert(NATURE_ROAD_CLEARANCE >= 5.2,
-    'C1b. at least as strict as the tightest previous magic distance (5.2)');
-  assert(NATURE_ROAD_CLEARANCE <= 6.5,
-    'C1c. not wider than the widest previous distance (6.5 — no over-clearing)');
 }
 
 console.log(failures === 0 ? '\nALL TESTS PASSED' : `\n${failures} TEST(S) FAILED`);
