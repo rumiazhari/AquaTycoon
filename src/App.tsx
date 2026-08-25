@@ -220,6 +220,11 @@ export const App: React.FC = () => {
     const [mapW, mapD] = initState.currentLevel.mapSize;
     const sm = new SceneManager(container, mapW, mapD);
     sceneRef.current = sm;
+    // Scene-clock sync (Prompt 3.4 item 17): push the authoritative clock and
+    // speed BEFORE the first render so the world never boots at a false
+    // midnight/1× state before the first 500 ms React tick.
+    sm.setGameClock(initState.gameTimeDays);
+    sm.setSimulationSpeed(initState.simSpeed);
     sm.setEnvironment(initState.currentLevel.biome);
 
     sm.cameraController.setCanvasSize(container.clientWidth, container.clientHeight);
@@ -943,6 +948,10 @@ export const App: React.FC = () => {
     setGameState(next);
     if (sceneRef.current) {
       const [w, d] = next.currentLevel.mapSize;
+      // Scene-clock sync (Prompt 3.4 item 17): a new level must not inherit the
+      // previous one's visual speed (e.g. 5×) or paused visual world.
+      sceneRef.current.setGameClock(next.gameTimeDays);
+      sceneRef.current.setSimulationSpeed(next.simSpeed);
       sceneRef.current.setEnvironment(next.currentLevel.biome);
       sceneRef.current.terrainGrid.updateSize(w, d, next.currentLevel.biome);
       sceneRef.current.updateShadowBounds(w, d);

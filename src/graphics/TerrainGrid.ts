@@ -1,6 +1,14 @@
 import * as THREE from 'three';
 import { LevelBiome } from '../types/game';
 import { OvertakeController, OvertakeVehicle as OvertakeVehicleState } from './OvertakeController';
+import {
+  composeFlatWaterMatrix,
+  riverYawAt,
+  foamTransform,
+  flowStreakTransform,
+  type FoamParticle,
+  type FlowStreak,
+} from './WaterSurface';
 
 /**
  * Realistic 3D environment surrounding the plant site:
@@ -25,6 +33,16 @@ const sstep = (a: number, b: number, x: number) => {
   return t * t * (3 - 2 * t);
 };
 const lerpN = (a: number, b: number, t: number) => a + (b - a) * t;
+
+// ── Night-light budget manager constants (Prompt 3.4 items 3–5, 9) ──────────
+/** Real SpotLight floodlights on the plant corners. */
+export const FLOOD_LIGHT_COUNT = 4;
+/** Hard cap on local lights allowed to cast shadows simultaneously. */
+export const MAX_LOCAL_SHADOW_LIGHTS = 2;
+/** Local (SpotLight) shadow map size — tiny by design, NOT 1024². */
+export const LOCAL_SHADOW_MAP_SIZE = 256;
+/** Bounded pool of REAL street PointLights active at once. */
+export const MAX_ACTIVE_STREET_LIGHTS = 8;
 
 const HOUSE_COLORS     = [0xc9a37e, 0xb0764f, 0x9c6644, 0xd9cdb6, 0xa89078, 0xcbd5e1];
 const ROOF_COLORS      = [0x7f4f45, 0x5b3a34, 0x8c4a3c, 0x46536b, 0x6b4436];
@@ -167,14 +185,18 @@ export class TerrainGrid {
   private lampBulbMat: THREE.MeshStandardMaterial | null = null;
   private windowMat: THREE.MeshStandardMaterial | null = null;
   private lampPoolMat: THREE.MeshBasicMaterial | null = null;
-  // Stylized fake site lighting (NO real SpotLights — see _buildSiteLighting)
+  // Real budgeted site lighting (Prompt 3.4): four SpotLights, ≤2 shadowed.
   private siteHeadMat: THREE.MeshStandardMaterial | null = null;
-  private siteConeMat: THREE.MeshBasicMaterial | null = null;
   private sitePoolMat: THREE.MeshBasicMaterial | null = null;
+  private floodLights: THREE.SpotLight[] = [];
+  // Bounded POOL of real street lights reassigned to the nearest lamps.
+  private streetLightPool: THREE.PointLight[] = [];
+  /** World positions of every physical street lamp (emissive bulb always on). */
+  private lampPositions: { x: number; y: number; z: number }[] = [];
   private restrictionGroup: THREE.Group | null = null;
   private restrictionRectKey: string = '';
   private flowParticles: THREE.InstancedMesh | null = null;
-  private flowData: { t: number; u: number; speed: number; scale: number }[] = [];
+  private flowData: FlowStreak[] = [];
   private waterMat: THREE.MeshBasicMaterial | null = null;
   private flowStreakMat: THREE.MeshBasicMaterial | null = null;
   private ringMat: THREE.MeshBasicMaterial | null = null;
@@ -183,7 +205,8 @@ export class TerrainGrid {
   private nextVehicleId: number = 1;
   /** Shoreline / bank foam: InstancedMesh + per-instance anim metadata. */
   private foamParticles: THREE.InstancedMesh | null = null;
-  private foamData: { t: number; u: number; w: number; phase: number }[] = [];
+  /** IMMUTABLE base transforms — animation derives from these + time (item 13). */
+  private foamData: FoamParticle[] = [];
   private foamMat: THREE.MeshBasicMaterial | null = null;
   /** River-rock positions (surface-breakers) collected during _buildForests, consumed by _buildRiver foam. */
   private riverRockPositions: { x: number; z: number; s: number }[] = [];
@@ -209,57 +232,37 @@ export class TerrainGrid {
 
   /** Per-frame updates: river flow, cloud drift, night glow */
   public tick(dt: number, elapsed: number, nightFactor: number) {
-    // Flow line-streaks ride the current with bobbing and shimmer
+    // Flow line-streaks ride the current with bobbing and shimmer.
+    // All transforms are recomputed FROM SCRATCH via the pure flat-water
+    // helper — no previous-frame matrices are ever read back (item 13).
     if (this.flowParticles && this.flowData.length > 0) {
       const zMin = -this.padZ;
       const span = this.D + this.padZ * 2;
       const m = new THREE.Matrix4();
-      const q = new THREE.Quaternion();
-      const eul = new THREE.Euler();
-      const scl = new THREE.Vector3();
-      const pos = new THREE.Vector3();
       for (let i = 0; i < this.flowData.length; i++) {
         const f = this.flowData[i];
         f.t += ((f.speed * dt) / span) % 1;
         if (f.t > 1) f.t -= 1;
-        const z = zMin + f.t * span;
-        const meander = this.riverCenterX(z);
-        // Yaw follows the local meander tangent so streaks align with the flow
-        const dcx = this.riverCenterX(z + 0.6) - this.riverCenterX(z - 0.6);
-        eul.set(0, Math.atan2(dcx, 1.2), 0);
-        q.setFromEuler(eul);
-        // Vertical bobbing for a dynamic flowing effect
-        const bob = Math.sin(elapsed * 3.0 + i * 1.7) * 0.03;
-        // Streaks elongate/pulse subtly along the flow axis (shimmer)
-        const pulse = 1.0 + Math.sin(elapsed * 2.5 + i * 2.1) * 0.18;
-        pos.set(meander + f.u, this.waterY + 0.04 + bob, z);
-        scl.set(f.scale, f.scale, f.scale * pulse * (1.6 + f.scale));
-        m.compose(pos, q, scl);
+        const s = flowStreakTransform(f, elapsed, zMin, span, this.riverCenterX.bind(this), this.waterY);
+        composeFlatWaterMatrix(m, s.x, s.y, s.z, s.yaw, s.sx, s.sz);
         this.flowParticles.setMatrixAt(i, m);
       }
       this.flowParticles.instanceMatrix.needsUpdate = true;
     }
 
-    // ── River shoreline foam: subtle longitudinal drift + pulsing shimmer ──
+    // ── River shoreline + rock foam: bounded oscillation around IMMUTABLE
+    // base positions. Pure function of (base, simTime) — cumulative drift is
+    // impossible by construction because the previous frame's matrix is never
+    // used as input (items 13–14).
     if (this.foamParticles && this.foamData.length > 0) {
       const m2 = new THREE.Matrix4();
-      const pos2 = new THREE.Vector3();
-      const q2 = new THREE.Quaternion();
-      const scl2 = new THREE.Vector3();
-      for (let i = 0; i < this.foamParticles.count; i++) {
-        const f = this.foamData[i];
-        this.foamParticles.getMatrixAt(i, m2);
-        m2.decompose(pos2, q2, scl2);
-        // Longitudinal drift: nudge the segment slightly upstream/downstream
-        // over time so the foam appears to breathe with the current.
-        const drift = Math.sin(elapsed * 0.7 + f.phase) * 0.06;
-        // Recompose only position + a pulsing opacity via color alpha scaling.
-        pos2.x += drift * 0.08;
-        pos2.z += drift;
-        // Pulsation: scale the quad slightly and vary its effective brightness.
-        const pulse = 1.0 + Math.sin(elapsed * 1.9 + f.phase * 0.5) * 0.12;
-        scl2.set(f.w * pulse, 1, scl2.z);
-        m2.compose(pos2, q2, scl2);
+      for (let i = 0; i < Math.min(this.foamParticles.count, this.foamData.length); i++) {
+        const p = this.foamData[i];
+        const s = foamTransform(p, elapsed);
+        // Rock arcs (driftAmplitude < 0.05) ride 0.01 higher, matching build.
+        composeFlatWaterMatrix(m2, s.x,
+          this.waterY + (p.driftAmplitude < 0.05 ? 0.03 : 0.02), s.z,
+          s.yaw, s.width, s.length);
         this.foamParticles.setMatrixAt(i, m2);
       }
       this.foamParticles.instanceMatrix.needsUpdate = true;
@@ -466,21 +469,35 @@ export class TerrainGrid {
       this.cloudMesh.instanceMatrix.needsUpdate = true;
     }
 
-    // Site floodlighting: stylized FAKE lighting only (items 7–8A) — emissive
-    // heads, additive cones and pool decals fade in at dusk. Zero real lights,
-    // zero shadow passes; night cost ≈ a handful of unlit quads.
-    if (this.siteHeadMat) this.siteHeadMat.emissiveIntensity = lerpN(0.05, 3.2, nightFactor);
-    if (this.siteConeMat) this.siteConeMat.opacity = nightFactor * 0.16;
-    if (this.sitePoolMat) this.sitePoolMat.opacity = nightFactor * 0.5;
-    // Street lamps: warm bulb glow + additive road pools (no real spotlights).
+    // REAL site floodlighting (Prompt 3.4 items 2–3): four SpotLights fade in
+    // at dusk; the two budgeted shadow-casters come on with them. Emissive
+    // heads stay as the visual source; the faint decal is secondary polish.
+    if (this.siteHeadMat) this.siteHeadMat.emissiveIntensity = lerpN(0.05, 2.6, nightFactor);
+    if (this.sitePoolMat) this.sitePoolMat.opacity = nightFactor * 0.22;
+    for (const light of this.floodLights) {
+      // Physically-believable warm wash: intensity ramps with dusk, zero by day.
+      light.intensity = nightFactor * 260;
+      light.visible = nightFactor > 0.02;
+    }
+    // Street lamps: emissive bulbs always exist; the POOLED real lights below
+    // illuminate road/vehicles near the camera (reassigned in updateLightPool).
     if (this.lampBulbMat) this.lampBulbMat.emissiveIntensity = lerpN(0.05, 2.4, nightFactor);
     if (this.windowMat) this.windowMat.emissiveIntensity = lerpN(0.05, 1.15, nightFactor);
+    // Bounded street-light pool: real illumination only near the camera, only
+    // at night, never shadowed. Pool assignment is updated by SceneManager via
+    // updateLightPool(); here we just fade intensity with dusk.
+    for (const light of this.streetLightPool) {
+      const active = nightFactor > 0.02 && light.userData.nearCamera === true;
+      light.visible = active;
+      light.intensity = active ? nightFactor * 26 : 0;
+    }
+    // Road glow decals: now a faint secondary polish under the real pool lights.
+    if (this.lampPoolMat) this.lampPoolMat.opacity = nightFactor * 0.28;
     // River is unlit — blend its palette manually so it darkens at night
     if (this.waterMat) this.waterMat.color.copy(RIVER_DAY).lerp(RIVER_NIGHT, nightFactor);
     if (this.flowStreakMat) this.flowStreakMat.color.copy(FLOW_STREAK_DAY).lerp(FLOW_STREAK_NIGHT, nightFactor);
     if (this.ringMat) this.ringMat.color.copy(FOAM_DAY).lerp(FOAM_NIGHT, nightFactor);
     if (this.foamMat) this.foamMat.color.copy(FOAM_DAY).lerp(FOAM_NIGHT, nightFactor);
-    if (this.lampPoolMat) this.lampPoolMat.opacity = nightFactor * 0.75;
   }
 
   public setHoverTile(x: number, y: number, visible: boolean = true) {
@@ -787,8 +804,10 @@ export class TerrainGrid {
     this.windowMat = null;
     this.lampPoolMat = null;
     this.siteHeadMat = null;
-    this.siteConeMat = null;
     this.sitePoolMat = null;
+    this.floodLights = [];
+    this.streetLightPool = [];
+    this.lampPositions = [];
     this.restrictionGroup = null;
     this.restrictionRectKey = '';
     this.flowParticles = null;
@@ -808,29 +827,25 @@ export class TerrainGrid {
     this.nextVehicleId = 1;
   }
 
-  // ══════════════ SITE FLOODLIGHTING (stylized FAKE lighting) ═══════════════
+  // ══════════════ SITE FLOODLIGHTING (REAL lights, strict budget) ═══════════
   //
-  // Prompt 3.3 items 7–8B: NO real SpotLights and NO shadow passes at night.
-  // Night readability comes from (1) emissive floodlight heads, (2) additive
-  // light-pool decals on the plant floor, (3) translucent fake light cones,
-  // and (4) the global hemisphere/moon rig owned by SceneManager.
+  // Prompt 3.4 items 1–4: the fake translucent cones from Prompt 3.3 looked
+  // like polygonal lampshades and are GONE. The plant is lit by four REAL
+  // THREE.SpotLights originating at the lamp heads. Shadow budget:
+  //   • at most TWO of them cast shadows at once (the diagonal pair that best
+  //     covers the plant)…
+  //   • …at only LOCAL_SHADOW_MAP_SIZE² each (256² — not the old 1024²).
+  //   • the other two illuminate without any shadow pass.
+  // A faint warm ground decal remains purely as secondary polish.
 
   private _buildSiteLighting() {
     const w = this.W;
     const d = this.D;
 
-    // Shared animated materials (tick() drives their intensity with nightFactor)
+    // Shared animated materials (tick() drives intensity with nightFactor)
     const mastMat = std(0x6b7480, 0.6, 0.4);
     this.siteHeadMat = new THREE.MeshStandardMaterial({
       color: 0xfff8e0, emissive: 0xfff2c4, emissiveIntensity: 0.05,
-    });
-    this.siteConeMat = new THREE.MeshBasicMaterial({
-      color: 0xffe9b8,
-      transparent: true,
-      opacity: 0,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      side: THREE.DoubleSide,
     });
     this.sitePoolMat = new THREE.MeshBasicMaterial({
       map: this._makeWarmGlowTexture(),
@@ -849,9 +864,9 @@ export class TerrainGrid {
       [inset, d - inset],
       [w - inset, d - inset],
     ];
-    const poolGeo = new THREE.PlaneGeometry(17, 17);
+    const poolGeo = new THREE.PlaneGeometry(13, 13);
 
-    for (const [cx, cz] of corners) {
+    corners.forEach(([cx, cz], idx) => {
       const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.13, 7.5, 8), mastMat);
       mast.position.set(cx, 3.75, cz);
       this.envGroup.add(mast);
@@ -859,46 +874,57 @@ export class TerrainGrid {
       crossbar.position.set(cx, 7.4, cz);
       crossbar.rotation.y = cx < w / 2 ? Math.PI / 4 : -Math.PI / 4;
       this.envGroup.add(crossbar);
-      const head = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.16, 0.35), this.siteHeadMat);
+      const head = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.16, 0.35), this.siteHeadMat!);
       head.position.set(cx, 7.28, cz);
       head.lookAt(w / 2, 0, d / 2);
       this.envGroup.add(head);
 
-      // Fake light cone: open-ended additive cylinder hanging under the head,
-      // aimed at the same interior point the old spotlight used to target.
-      const target = new THREE.Vector3(
-        cx < w / 2 ? w * 0.35 : w * 0.65,
+      // REAL spotlight from the physical head toward the plant interior.
+      const spot = new THREE.SpotLight(
+        0xffe9b8,
+        0,                      // intensity animated by nightFactor in tick()
+        48,                     // range covers half the slab comfortably
+        0.82,                   // ~47° half-angle
+        0.55,                   // soft edge falloff
+        1.6                     // physical-ish decay
+      );
+      spot.position.set(cx, 7.3, cz);
+      spot.target.position.set(
+        cx < w / 2 ? w * 0.32 : w * 0.68,
         0,
-        cz < d / 2 ? d * 0.35 : d * 0.65
+        cz < d / 2 ? d * 0.32 : d * 0.68
       );
-      const coneGeo = new THREE.CylinderGeometry(0.5, 4.6, 11, 12, 1, true);
-      coneGeo.translate(0, -5.5, 0); // apex at the origin, body extending down -Y
-      const cone = new THREE.Mesh(coneGeo, this.siteConeMat);
-      cone.position.set(cx, 7.25, cz);
-      cone.quaternion.setFromUnitVectors(
-        new THREE.Vector3(0, -1, 0),
-        target.clone().sub(cone.position).normalize()
-      );
-      cone.renderOrder = 22;
-      this.envGroup.add(cone);
+      // STRICT shadow budget: only TWO of the four cast shadows, and at a tiny
+      // 256² map (was 4×1024² in the pre-3.3 build). The diagonal pair (indices
+      // 0 and 3: NW + SE) gives full-plant coverage from just two maps.
+      if (idx === 0 || idx === 3) {
+        spot.castShadow = true;
+        spot.shadow.mapSize.set(LOCAL_SHADOW_MAP_SIZE, LOCAL_SHADOW_MAP_SIZE);
+        spot.shadow.camera.near = 1;
+        spot.shadow.camera.far = 60;
+        spot.shadow.bias = -0.0006;
+      }
+      this.envGroup.add(spot);
+      this.envGroup.add(spot.target);
+      this.floodLights.push(spot);
 
-      // Stylized light-pool decal where the cone lands (additive, unlit).
-      const pool = new THREE.Mesh(poolGeo, this.sitePoolMat);
-      pool.position.set(target.x, 0.085, target.z);
+      // Secondary polish ONLY: faint warm decal where the cone lands.
+      const pool = new THREE.Mesh(poolGeo, this.sitePoolMat!);
+      pool.position.set(spot.target.position.x, 0.085, spot.target.position.z);
       pool.rotation.x = -Math.PI / 2;
       pool.renderOrder = 21;
       this.envGroup.add(pool);
-    }
+    });
 
-    // Gate lantern — a short mast on the welcome-sign post carrying ONLY an
-    // emissive lamp head plus a small pool decal on the yard side (item B).
+    // Gate lantern — emissive head + small decal; no dedicated light (the two
+    // corner floods already wash the gate yard).
     const gateMast = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.08, 2.4, 8), mastMat);
     gateMast.position.set(w / 2, 3.7, d + 0.35);
     this.envGroup.add(gateMast);
     const gateLamp = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.14, 0.24), this.siteHeadMat);
     gateLamp.position.set(w / 2, 4.85, d + 0.35);
     this.envGroup.add(gateLamp);
-    const gatePool = new THREE.Mesh(new THREE.PlaneGeometry(9, 9), this.sitePoolMat);
+    const gatePool = new THREE.Mesh(new THREE.PlaneGeometry(7, 7), this.sitePoolMat);
     gatePool.rotation.x = -Math.PI / 2;
     gatePool.position.set(w / 2, 0.085, d - 3);
     gatePool.renderOrder = 21;
@@ -1060,13 +1086,13 @@ export class TerrainGrid {
     });
     this.flowParticles = new THREE.InstancedMesh(flowStreakGeo, this.flowStreakMat, N_FLOW_STREAKS);
     const m = new THREE.Matrix4();
-    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2, 0, 0));
-    const one = new THREE.Vector3(1, 1, 1);
-    const pos = new THREE.Vector3();
     for (let i = 0; i < N_FLOW_STREAKS; i++) {
       this.flowData.push({ t: rngFleck(), u: (rngFleck() - 0.5) * 5.6, speed: 0.75 + rngFleck() * 0.5, scale: 1.0 + rngFleck() * 1.0 });
-      pos.set(this.riverCenterX(this.flowData[i].t * (zMax - zMin) + zMin), this.waterY + 0.04, 0);
-      m.compose(pos, q, one);
+      // Flat-water rule: geometry is baked flat ONCE above; instances use
+      // world-Y yaw ONLY (never a second -π/2 X rotation — that was the bug).
+      const z0 = this.flowData[i].t * (zMax - zMin) + zMin;
+      composeFlatWaterMatrix(m, this.riverCenterX(z0), this.waterY + 0.04, z0,
+        riverYawAt(this.riverCenterX.bind(this), z0), 1, 1);
       this.flowParticles.setMatrixAt(i, m);
     }
     this.flowParticles.instanceMatrix.needsUpdate = true;
@@ -1124,8 +1150,6 @@ export class TerrainGrid {
     this.foamParticles.frustumCulled = false;
 
     const m = new THREE.Matrix4();
-    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2, 0, 0));
-    const pos = new THREE.Vector3();
     let nFoam = 0;
 
     const y = this.waterY + 0.02; // just above the water ribbon
@@ -1137,7 +1161,8 @@ export class TerrainGrid {
       if (rng() < 0.30) continue;
 
       const cx = this.riverCenterX(z);
-      const span = zMax - zMin;
+      // Local river tangent yaw — foam strips follow the meander (item 14).
+      const tangentYaw = riverYawAt(this.riverCenterX.bind(this), z);
 
       for (const side of [-1, 1]) {
         if (nFoam >= maxFoam) break;
@@ -1150,10 +1175,18 @@ export class TerrainGrid {
         const segLen = 0.7 + rng() * 0.9;
         const segW = 0.35 + rng() * 0.45;
         const alpha = 0.45 + rng() * 0.38;
-        m.compose(pos.set(jx, y, jz), q, new THREE.Vector3(segW, 1, segLen));
+        this.foamData.push({
+          baseX: jx,
+          baseZ: jz,
+          baseYaw: tangentYaw,
+          baseWidth: segW,
+          baseLength: segLen,
+          phase: i * 0.7,
+          driftAmplitude: 0.06,
+        });
+        composeFlatWaterMatrix(m, jx, y, jz, tangentYaw, segW, segLen);
         this.foamParticles.setMatrixAt(nFoam, m);
         this.foamParticles.setColorAt(nFoam, new THREE.Color(FOAM_DAY.getHex()).multiplyScalar(alpha));
-        this.foamData.push({ t: (jz - zMin) / span, u: (jx - cx) / (this.riverHW + foamBankOffset), w: segW, phase: i * 0.7 });
         nFoam++;
       }
     }
@@ -1161,16 +1194,25 @@ export class TerrainGrid {
     // Rock-break-surface foam arcs (already collected positions, no scene search).
     for (const rock of this.riverRockPositions) {
       if (nFoam >= maxFoam) break;
-      // A small curved arc — built as a short rotated quad with a slight yaw.
+      // A small horizontal arc hugging the rock: local river tangent plus a
+      // tiny deterministic yaw offset. NEVER a pitch/roll rotation.
       const arcLen = 0.5 + rng() * 0.5;
       const arcW = 0.22 + rng() * 0.22;
-      const yaw = (rng() - 0.5) * Math.PI;
-      const arcQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2, 0, yaw));
+      const yawOffset = (rng() - 0.5) * 0.5;
+      const yaw = riverYawAt(this.riverCenterX.bind(this), rock.z) + yawOffset;
       const ry = this.waterY + 0.03;
-      m.compose(pos.set(rock.x, ry, rock.z), arcQ, new THREE.Vector3(arcW, 1, arcLen));
+      this.foamData.push({
+        baseX: rock.x,
+        baseZ: rock.z,
+        baseYaw: yaw,
+        baseWidth: arcW,
+        baseLength: arcLen,
+        phase: nFoam * 0.9,
+        driftAmplitude: 0.04,
+      });
+      composeFlatWaterMatrix(m, rock.x, ry, rock.z, yaw, arcW, arcLen);
       this.foamParticles.setMatrixAt(nFoam, m);
       this.foamParticles.setColorAt(nFoam, new THREE.Color(FOAM_DAY.getHex()).multiplyScalar(0.7));
-      this.foamData.push({ t: (rock.z - zMin) / (zMax - zMin), u: 0, w: arcW, phase: nFoam * 0.9 });
       nFoam++;
     }
 
@@ -2299,6 +2341,8 @@ export class TerrainGrid {
       vPos.set(sp.x, y + 2.86, zR + sp.side * (4.6 - 1.65));
       m.compose(vPos, q, vOne);
       bulbs.setMatrixAt(i, m);
+      // Remember the bulb world position — the pooled REAL lights attach here.
+      this.lampPositions.push({ x: sp.x, y: y + 2.86, z: zR + sp.side * (4.6 - 1.65) });
     });
     poles.instanceMatrix.needsUpdate = true;
     arms.instanceMatrix.needsUpdate = true;
@@ -2307,7 +2351,10 @@ export class TerrainGrid {
     this.envGroup.add(arms);
     this.envGroup.add(bulbs);
 
-    // ── Warm light pool on the road under EVERY lamp (additive decal) ──
+    // ── VERY subtle warm decal under each lamp (secondary polish ONLY) ──
+    // The primary illumination is the pooled real PointLights below; the old
+    // bright white circles read as paint on the asphalt, so opacity is now a
+    // fraction of what it was.
     const poolCanvas = document.createElement('canvas');
     poolCanvas.width = 128; poolCanvas.height = 128;
     const pctx = poolCanvas.getContext('2d');
@@ -2340,10 +2387,73 @@ export class TerrainGrid {
     pools.renderOrder = 20;
     this.envGroup.add(pools);
 
-    // ── NO real SpotLights here (item 8B): the player perceives "the lamp
-    // illuminates the road" purely from the emissive bulb + additive ground
-    // pool above. Physically correct point illumination is unnecessary for a
-    // top-down tycoon view, and every real light cost a render pass at night.
+    // ── BOUNDED POOL of real PointLights (Prompt 3.4 item 5) ──
+    // Every physical lamp shows its emissive bulb, but only the nearest
+    // MAX_ACTIVE_STREET_LIGHTS get a REAL light object at a time. The fixed
+    // pool is reassigned (never recreated) as the camera moves — see
+    // updateLightPool(). Zero street shadows by design.
+    this.streetLightPool = [];
+    for (let i = 0; i < MAX_ACTIVE_STREET_LIGHTS; i++) {
+      const light = new THREE.PointLight(0xffe2a8, 0, 16, 1.7);
+      light.visible = false; // parked until night + camera proximity
+      light.castShadow = false;
+      this.envGroup.add(light);
+      this.streetLightPool.push(light);
+    }
+  }
+
+  /**
+   * Quality-budget hook (Prompt 3.4 item 10): SceneManager's autoscaler trims
+   * the street-light pool cap and the number of shadow-casting floodlights
+   * BEFORE any real lighting is removed. Lights are re-tagged, never recreated.
+   */
+  public applyQualityBudget(maxStreetLights: number, localShadowLights: number) {
+    // Street pool: extra lights beyond the cap park invisible.
+    this.streetLightPool.forEach((light, i) => {
+      if (i >= maxStreetLights) {
+        light.visible = false;
+        light.intensity = 0;
+        light.userData.nearCamera = false;
+      }
+    });
+    // Floodlight shadow casters: keep the first `localShadowLights` tagged
+    // (diagonal pair by construction), strip shadows from the rest at runtime.
+    let shadowBudget = Math.max(0, Math.min(MAX_LOCAL_SHADOW_LIGHTS, localShadowLights));
+    for (const light of this.floodLights) {
+      const wasCasting = light.castShadow;
+      const shouldCast = shadowBudget > 0;
+      if (wasCasting !== shouldCast) light.castShadow = shouldCast;
+      if (shouldCast) shadowBudget--;
+    }
+  }
+
+  /**
+   * Reassigns the bounded street-light pool to the lamp positions closest to
+   * the camera focus (item 4/5). Cheap: one distance pass over lamp positions,
+   * called at most every ~0.5 s from tick(). Lights are REUSED, not recreated.
+   */
+  public updateLightPool(cameraX: number, cameraZ: number) {
+    if (this.streetLightPool.length === 0 || this.lampPositions.length === 0) return;
+    const n = Math.min(this.streetLightPool.length, this.lampPositions.length);
+    // Partial selection of the n nearest lamps (lamp count is modest; a full
+    // sort of ~40 entries every half-second is negligible).
+    const ranked = this.lampPositions
+      .map((p, idx) => ({ idx, d2: (p.x - cameraX) ** 2 + (p.z - cameraZ) ** 2 }))
+      .sort((a, b) => a.d2 - b.d2)
+      .slice(0, n);
+    const assigned = new Set<number>();
+    for (let i = 0; i < n; i++) {
+      const pos = this.lampPositions[ranked[i].idx];
+      assigned.add(ranked[i].idx);
+      const light = this.streetLightPool[i];
+      light.position.set(pos.x, pos.y, pos.z);
+      light.userData.assignedLamp = ranked[i].idx;
+    }
+    for (const light of this.streetLightPool) {
+      light.userData.nearCamera =
+        assigned.has(light.userData.assignedLamp ?? -1) &&
+        (light.position.x - cameraX) ** 2 + (light.position.z - cameraZ) ** 2 < 90 * 90;
+    }
   }
 
   // ════════════ TUTORIAL BUILD-RESTRICTION OVERLAY ════════════════════

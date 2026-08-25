@@ -22,6 +22,13 @@ import {
   formatGameClock,
   getDayNightFactor,
 } from '../src/gameplay/GameTime';
+import {
+  composeFlatWaterMatrix,
+  riverYawAt,
+  foamTransform,
+  flowStreakTransform,
+} from '../src/graphics/WaterSurface';
+import * as THREE from 'three';
 
 let failures = 0;
 const assert = (cond: boolean, msg: string) => {
@@ -1382,6 +1389,106 @@ const obj = (state: any, id: string) => state.currentLevel.objectives.find((o: a
   // Visual↔production consistency: factor drives BOTH.
   assert(getDayNightFactor(noon.gameTimeDays) === 1 && getDayNightFactor(midnight.gameTimeDays) === 0,
     'T8c. lighting factor agrees with production windows');
+}
+
+// ── Prompt 3.4: flat-water transform architecture (items 11–16) ─────────────
+
+const WATER_EPS = 1e-6;
+
+/** Transforms (0,1,0) by a matrix and returns the world-space normal. */
+function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
+  const n = new THREE.Vector3(0, 1, 0);
+  // Use the normal matrix (inverse transpose of the upper 3×3). Our matrices
+  // are rotation(Y)+non-uniform scale(X/Z), so this validates the real
+  // shading normal behaviour too.
+  const inv = new THREE.Matrix4().copy(m).invert();
+  const nrm = new THREE.Matrix3().setFromMatrix4(inv).transpose();
+  return n.applyMatrix3(nrm).normalize();
+}
+
+// W1: THE regression test for the vertical-white-poles bug. Every water
+// instance matrix must keep the surface normal pointing UP (+Y) for ANY yaw.
+{
+  const yaws = [0, Math.PI / 4, Math.PI / 2, Math.PI, -Math.PI / 2, 2.7, -0.9];
+  let allUp = true;
+  for (const yaw of yaws) {
+    const m = composeFlatWaterMatrix(new THREE.Matrix4(), 5, 0.02, -7, yaw, 1.3, 2.1);
+    const n = transformedUpNormal(m);
+    if (n.y < 1 - 1e-4 || Math.abs(n.x) > 1e-6 || Math.abs(n.z) > 1e-6) allUp = false;
+  }
+  assert(allUp, 'W1a. surface normal stays +Y for yaws {0, π/4, π/2, π, −π/2, …}');
+  // The old buggy pattern (Euler(-π/2, 0, yaw) applied to already-flat geometry)
+  // stands the quad vertical — prove the helper can NEVER reproduce it.
+  const badQ = new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2, 0, 0));
+  const badM = new THREE.Matrix4().compose(
+    new THREE.Vector3(), badQ, new THREE.Vector3(1, 1, 1));
+  const badN = transformedUpNormal(badM);
+  assert(Math.abs(badN.y) < 1e-6 && Math.abs(badN.z + 1) < 1e-6,
+    'W1b. sanity: the OLD double-rotation pattern yields normal −Z (vertical quad)');
+}
+
+// W2: foam animation is a pure function of (immutable base, time) — no drift,
+// no dependence on evaluation history.
+{
+  const p = {
+    baseX: 12.5, baseZ: -30.25, baseYaw: riverYawAt((z) => z * 0.05, -30),
+    baseWidth: 0.42, baseLength: 1.1, phase: 1.234, driftAmplitude: 0.06,
+  };
+  const t0 = foamTransform(p, 0);
+  const t1 = foamTransform(p, 10);
+  const t2 = foamTransform(p, 123.45);
+  const bounded =
+    (s: { x: number; z: number }) =>
+      Math.hypot(s.x - p.baseX, s.z - p.baseZ) <= p.driftAmplitude + 1e-9;
+  assert(bounded(t0) && bounded(t1) && bounded(t2),
+    'W2a. position always equals basePosition ± bounded oscillation');
+  // Determinism / history-independence: evaluating "out of order" gives the
+  // exact same result — impossible with the old decompose-and-mutate scheme.
+  const again = foamTransform(p, 10);
+  assert(t1.x === again.x && t1.z === again.z,
+    'W2b. pure determinism: same (base,t) → identical position, any call order');
+  // Width pulses around base width; length immutable.
+  assert(Math.abs(t1.width - p.baseWidth) <= p.baseWidth * 0.13,
+    'W2c. width pulse stays within ±13% of base width');
+  assert(t0.length === t1.length && t1.length === t2.length && t2.length === p.baseLength,
+    'W2d. length never mutates');
+  // Yaw NEVER changes — instances stay tangent-aligned, never pitch/roll.
+  assert(t0.yaw === t1.yaw && t1.yaw === t2.yaw && t2.yaw === p.baseYaw,
+    'W2e. yaw is constant per particle (no accidental verticals over time)');
+}
+
+// W3: thousands of simulated frames must never accumulate displacement.
+{
+  const p = {
+    baseX: 3.3, baseZ: 8.8, baseYaw: 0.4, baseWidth: 0.5, baseLength: 0.9,
+    phase: 0.77, driftAmplitude: 0.06,
+  };
+  let maxDisp = 0;
+  for (let f = 0; f < 10000; f++) {
+    const s = foamTransform(p, f * (1 / 60)); // 10k frames @60fps ≈ 166 s
+    maxDisp = Math.max(maxDisp, Math.hypot(s.x - p.baseX, s.z - p.baseZ));
+  }
+  assert(maxDisp <= p.driftAmplitude + 1e-9,
+    `W3a. max displacement after 10k frames = ${maxDisp.toFixed(6)} ≤ amplitude ${p.driftAmplitude}`);
+  // And the exact start state recurs every full period → zero net integration.
+  const periodS = (2 * Math.PI) / 0.7; // FOAM_DRIFT_FREQUENCY = 0.7 rad/s
+  const a = foamTransform(p, 500);
+  const b = foamTransform(p, 500 + 1000 * periodS);
+  assert(Math.abs(a.x - b.x) < WATER_EPS && Math.abs(a.z - b.z) < WATER_EPS,
+    'W3b. position is periodic in time — no secular (cumulative) term exists');
+}
+
+// W4: flow streaks also stay flat and follow the local river tangent.
+{
+  const meander = (z: number) => 6 * Math.sin(z * 0.02); // gentle S-curve
+  const f = { t: 0.37, u: -1.2, speed: 1.0, scale: 1.4 };
+  const s = flowStreakTransform(f, 4.2, -50, 200, meander, 0.15);
+  const m = composeFlatWaterMatrix(new THREE.Matrix4(), s.x, s.y, s.z, s.yaw, s.sx, s.sz);
+  const n = transformedUpNormal(m);
+  assert(n.y > 1 - 1e-4, 'W4a. animated streak matrix keeps normal +Y');
+  const expectedYaw = Math.atan2(meander(s.z + 0.6) - meander(s.z - 0.6), 1.2);
+  assert(Math.abs(s.yaw - expectedYaw) < 1e-9,
+    'W4b. streak yaw equals atan2(ΔcenterX, 2Δ) — follows the meander tangent');
 }
 
 console.log(failures === 0 ? '\nALL TESTS PASSED' : `\n${failures} TEST(S) FAILED`);
