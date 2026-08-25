@@ -1,7 +1,7 @@
 # AUTOPILOT STATE — Aquatycoon
 
 STATUS: OK
-Last run: 2026-08-26 (cron, iter 2 — backlog #2 + mission A5 landed)
+Last run: 2026-08-26 (cron, iter 3 — PFD branching A6; A7 no _probe-ui.tsx found)
 Gate policy: `npm run build` + `npx tsc --noEmit` must be clean; suites:
 `npm test` (sim), `npm run test:ui` (= static ui-tests + ui-interaction-tests),
 `npm run test:eng`.
@@ -23,6 +23,7 @@ front-end and back-end improvements beyond the mission after Phase 1.
 
 ## Iteration log
 - iter 2 (2026-08-26): LANDED the crashed run's WIP + finished it.
+- iter 3 (2026-08-26): PFD rendering — removed fake linear chain; replaced with real downstream splitters. Build ✅ tsc ✅ sim ✅ ui 67/67 + interaction 22/22 ✅ eng 47/47 ✅. A7: no _probe-ui.tsx present in conflict-copies-20260825; archives retained.
   - Unit Designer seed-sludge toggle (backlog #2): CAS units show an
     "Unseeded / Seed sludge" checkbox. Correctly lives on PlacedUnit's RUNTIME
     `commissioning` state via new optional prop `onUpdateCommissioning`
