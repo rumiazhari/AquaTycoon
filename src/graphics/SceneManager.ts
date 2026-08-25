@@ -155,6 +155,13 @@ export class SceneManager {
   private telemetryFrames = 0;
   private telemetryAccum = 0;
 
+  // Dev-only post-FX bypass (?nopost=1): renders straight to the canvas so
+  // composer-related regressions can be isolated visually. ?nopost=gtao /
+  // ?nopost=bloom disable the individual passes for bisection.
+  private postDisabled = false;
+  private _devDisableGtao = false;
+  private _devDisableBloom = false;
+
   // ── Post-processing: subtle AO + bloom (Prompt 3.4 items 7–8) ──
   private composer!: EffectComposer;
   private gtaoPass: GTAOPass | null = null;
@@ -374,11 +381,27 @@ export class SceneManager {
    * high threshold and low strength so only lamp bulbs halo — never the scene.
    */
   private _buildComposer(w: number, h: number) {
+    // Dev bypass: ?nopost=1 skips the whole chain; ?nopost=gtao / ?nopost=bloom
+    // disable individual passes (composer-regression diagnostics).
+    if (typeof window !== 'undefined') {
+      const q = new URLSearchParams(window.location.search).get('nopost');
+      this.postDisabled = q === '1';
+      this._devDisableGtao = q === 'gtao';
+      this._devDisableBloom = q === 'bloom';
+    }
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.cameraController.camera));
 
     const tier = QUALITY_TIERS[this.qualityIndex];
-    if (tier.ao) {
+    // Dev: ?gtaoOutput=<normal|depth|ao> shows raw G-buffer/AO (bisection).
+    let devGtaoOutput: number | null = null;
+    if (typeof window !== 'undefined') {
+      const go = new URLSearchParams(window.location.search).get('gtaoOutput');
+      if (go === 'normal') devGtaoOutput = GTAOPass.OUTPUT.Normal;
+      else if (go === 'depth') devGtaoOutput = GTAOPass.OUTPUT.Depth;
+      else if (go === 'ao') devGtaoOutput = GTAOPass.OUTPUT.AO;
+    }
+    if (tier.ao || devGtaoOutput !== null) {
       try {
         const gtao = new GTAOPass(this.scene, this.cameraController.camera, w, h);
         gtao.updateGtaoMaterial({
@@ -393,7 +416,7 @@ export class SceneManager {
         });
         // Half-resolution AO when the tier demands it (weak GPUs).
         gtao.setSize(w * (tier.aoHalfRes ? 0.5 : 1), h * (tier.aoHalfRes ? 0.5 : 1));
-        gtao.output = GTAOPass.OUTPUT.Default;
+        gtao.output = devGtaoOutput ?? GTAOPass.OUTPUT.Default;
         this.composer.addPass(gtao);
         this.gtaoPass = gtao;
       } catch {
@@ -401,11 +424,13 @@ export class SceneManager {
         this.gtaoPass = null;
       }
     }
+    if (this.gtaoPass && this._devDisableGtao) this.gtaoPass.enabled = false;
 
     // Restrained luminance-threshold bloom: small warm halos around lamps.
     const bloomRes = new THREE.Vector2(w * tier.bloomRes, h * tier.bloomRes);
     this.bloomPass = new UnrealBloomPass(bloomRes, /*strength*/ 0.28, /*radius*/ 0.45, /*threshold*/ 0.92);
     this.composer.addPass(this.bloomPass);
+    if (this._devDisableBloom) this.bloomPass.enabled = false;
 
     // OutputPass applies tone mapping + color-space conversion at the end.
     this.outputPass = new OutputPass();
@@ -565,8 +590,13 @@ export class SceneManager {
         }
       }
 
-      // Post-processing chain ends in OutputPass (tone mapping + sRGB).
-      this.composer.render();
+      // Post-processing chain ends in OutputPass (tone mapping + sRGB);
+      // ?nopost=1 bypasses it for composer-regression diagnostics.
+      if (this.postDisabled) {
+        this.renderer.render(this.scene, this.cameraController.camera);
+      } else {
+        this.composer.render();
+      }
     };
     this.lastFrameTime = performance.now();
     animate(this.lastFrameTime);

@@ -9,6 +9,7 @@ import {
   type FoamParticle,
   type FlowStreak,
 } from './WaterSurface';
+import { roadCorridorHeight } from './RoadClearance';
 
 /**
  * Realistic 3D environment surrounding the plant site:
@@ -577,7 +578,10 @@ export class TerrainGrid {
     const blend = 1 - sstep(slopeEnd, slopeEnd + 3.5, dr);
     h = h * (1 - blend) + cy * blend;
 
-    return h;
+    // FINAL road-corridor clearance (Prompt 3.4.1 C): runs LAST so no earlier
+    // layer — hills, river bank plateau, anything — can leave raised soil
+    // overlapping the asphalt at bridge approaches or anywhere else.
+    return roadCorridorHeight(h, Math.abs(z - this.zRoad));
   }
 
   private _buildAll(w: number, d: number) {
@@ -1053,6 +1057,13 @@ export class TerrainGrid {
       }
       const g = new THREE.BufferGeometry();
       g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      // Explicit flat +Y surface normals. REQUIRED: GTAO's G-buffer pass
+      // overrides materials with MeshNormalMaterial; a position-only geometry
+      // feeds it degenerate (0,0,0) normals, so the whole river got AO≈0 and
+      // GTAOPass's replace-style blend painted it solid black (Prompt 3.4.1 A).
+      const nrm = new Float32Array(pos.length);
+      for (let i = 0; i < nrm.length; i += 3) nrm[i + 1] = 1;
+      g.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
       g.setIndex(idx);
       return g;
     };
@@ -1065,6 +1076,11 @@ export class TerrainGrid {
     this.waterMat = new THREE.MeshBasicMaterial({ color: 0x4383b2, side: THREE.DoubleSide });
     const water = new THREE.Mesh(waterGeo, this.waterMat);
     water.frustumCulled = false;
+    // renderOrder 2 keeps it above the terrain fill; depthWrite stays ON so
+    // the surface participates in the post-processing G-buffer. With no depth
+    // contribution, GTAOPass's blend pass sees AO=0/alpha=0 here and paints
+    // the river solid BLACK (GTAOBlendShader REPLACES rather than multiplies).
+    // Writing depth costs nothing visually — nothing transparent renders below.
     water.renderOrder = 2;
     this.envGroup.add(water);
 

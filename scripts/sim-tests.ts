@@ -28,6 +28,13 @@ import {
   foamTransform,
   flowStreakTransform,
 } from '../src/graphics/WaterSurface';
+import {
+  roadCorridorHeight,
+  ROAD_HALF_WIDTH,
+  ROAD_SHOULDER_WIDTH,
+  ROAD_SUPPORT_GRADE,
+  ROAD_CLEAR_END,
+} from '../src/graphics/RoadClearance';
 import * as THREE from 'three';
 
 let failures = 0;
@@ -1489,6 +1496,37 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
   const expectedYaw = Math.atan2(meander(s.z + 0.6) - meander(s.z - 0.6), 1.2);
   assert(Math.abs(s.yaw - expectedYaw) < 1e-9,
     'W4b. streak yaw equals atan2(ΔcenterX, 2Δ) — follows the meander tangent');
+}
+
+// ── Prompt 3.4.1: road-corridor terrain clearance (item C) ──────────────────
+
+// R1: inside the paved corridor + shoulder, terrain can NEVER exceed the
+// road support grade — no matter how high the incoming candidate is (this was
+// the raised-soil lip at the bridge approaches).
+{
+  const bankPlateau = 0.25;   // river bank-top height that overrode the flatten
+  const tallHill = 3.0;       // worst-case hill amplitude
+  let allClear = true;
+  for (let d = 0; d <= ROAD_HALF_WIDTH + ROAD_SHOULDER_WIDTH + 1e-9; d += 0.1) {
+    if (roadCorridorHeight(bankPlateau, d) > ROAD_SUPPORT_GRADE + 1e-9) allClear = false;
+    if (roadCorridorHeight(tallHill, d) > ROAD_SUPPORT_GRADE + 1e-9) allClear = false;
+  }
+  assert(allClear, 'R1a. corridor heights clamped ≤ support grade (bridge approaches clean)');
+  // Negative terrain (river bed crossing under the road) must be untouched.
+  assert(roadCorridorHeight(-1.75, 0) === -1.75,
+    'R1b. below-grade channel bed passes through unclamped');
+}
+
+// R2: smooth hand-off — no harsh trench, monotonic release across blend band.
+{
+  const h = 2.5;
+  const at = (d: number) => roadCorridorHeight(h, d);
+  assert(at(ROAD_CLEAR_END) === h, 'R2a. natural terrain restored at/after clear end');
+  let monotonic = true;
+  for (let d = ROAD_HALF_WIDTH; d < ROAD_CLEAR_END; d += 0.05) {
+    if (at(d + 0.001) < at(d) - 1e-9) monotonic = false;
+  }
+  assert(monotonic, 'R2b. height rises monotonically outward (no trench, no re-raise)');
 }
 
 console.log(failures === 0 ? '\nALL TESTS PASSED' : `\n${failures} TEST(S) FAILED`);
