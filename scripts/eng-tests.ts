@@ -35,6 +35,15 @@ import type { PlacedUnit, WaterQuality } from '../src/types/simulation';
 import { UNIT_DEFINITIONS } from '../src/sim/UnitProcessModels';
 import { evaluatePermitCriteria } from '../src/sim/PermitEngine';
 import type { TreatmentStandard } from '../src/types/simulation';
+import {
+  applyDiurnalInfluent,
+  diurnalFlowFactor,
+  hourOfDay,
+  DIURNAL_MEAN_FACTOR,
+  DIURNAL_MIN_FACTOR,
+  DIURNAL_MAX_FACTOR,
+} from '../src/sim/InfluentProfile';
+import { createInfluentWater } from '../src/sim/WaterStream';
 
 // ── tiny assert harness ─────────────────────────────────────────────────────
 let passed = 0;
@@ -323,6 +332,73 @@ function wq(over: Partial<WaterQuality>): WaterQuality {
   const casLinks = topo.links.filter(l => l.fromUnitId === 'cas' && l.kind === 'liquid');
   assert(casLinks.length === 2, `PFD. splitter produces 2 outgoing liquid edges (fan-out), not a single chain (${casLinks.length})`);
   assert(topo.mainTrainOrder.includes('cl1') && topo.mainTrainOrder.includes('cl2'), 'PFD. both branches appear on the active train');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// INFLUENT — dynamic municipal diurnal curve (MISSION §AK Phase-1 item 14)
+// ‐══════════════════════════════════════════════════════════════════════════
+{
+  // Curve shape: deterministic, bounded, classic trough/peak/evening-bump.
+  assert(DIURNAL_MEAN_FACTOR > 0 && DIURNAL_MEAN_FACTOR < 2,
+    `INFLUENT. raw curve mean is a sensible positive number (mean=${DIURNAL_MEAN_FACTOR.toFixed(4)})`);
+  assert(Math.abs(DIURNAL_MEAN_FACTOR - 1.0373) < 0.001,
+    'INFLUENT. raw curve mean matches the deterministic trapezoid integral');
+  const fTrough = diurnalFlowFactor(4.5);
+  const fPeak = diurnalFlowFactor(10.0);
+  assert(fTrough < 0.7 && fPeak > 1.3,
+    `INFLUENT. trough ≈04:30 well below average and morning peak ≈10:00 well above (${fTrough.toFixed(2)} / ${fPeak.toFixed(2)})`);
+  let minF = Infinity, maxF = -Infinity;
+  for (let h = 0; h < 24; h += 0.25) {
+    const f = diurnalFlowFactor(h);
+    if (f < minF) minF = f;
+    if (f > maxF) maxF = f;
+    assert(f > 0 && Number.isFinite(f), `INFLUENT. factor positive+finite at h=${h}`);
+  }
+  assert(Math.abs(minF - DIURNAL_MIN_FACTOR) < 1e-9 && Math.abs(maxF - DIURNAL_MAX_FACTOR) < 1e-9,
+    'INFLUENT. exported MIN/MAX constants match a fine scan of the curve');
+  let sum24 = 0;
+  for (let h = 0; h < 24; h++) sum24 += diurnalFlowFactor(h);
+  assert(Math.abs(sum24 / 24 - 1) < 0.005,
+    `INFLUENT. 24-h mean flow factor is exactly ~1 so long-run economics hold (${(sum24 / 24).toFixed(4)})`);
+
+  // Determinism: same clock ⇒ identical result.
+  assert(diurnalFlowFactor(hourOfDay(3.5 / 24)) === diurnalFlowFactor(hourOfDay(3.5 / 24)),
+    'INFLUENT. purely deterministic in the simulated clock');
+
+  // Spec application: flow rides the curve; concentrations ride load/flow.
+  // NOTE: gameTimeDays is FRACTIONAL DAYS — divide the target hour by 24.
+  const baseSpec: WaterQuality = { ...createInfluentWater(), flowRate: 10000 };
+  const night = applyDiurnalInfluent(baseSpec, 4.5 / 24);   // day 0, ≈04:30 trough
+  const peak = applyDiurnalInfluent(baseSpec, 10 / 24);     // day 0, ≈10:00 peak
+  const fN = diurnalFlowFactor(4.5), fP = diurnalFlowFactor(10);
+  assert(Math.abs(night.flowRate - baseSpec.flowRate * fN) < 1e-6,
+    'INFLUENT. applied flow equals spec × curve factor at the trough');
+  assert(night.bod > peak.bod,
+    `INFLUENT. night sewage reads stronger than peak-flow sewage (BOD ${night.bod.toFixed(0)} > ${peak.bod.toFixed(0)} mg/L)`);
+  // Mass-load character: loads swing LESS than flow (damped by sewer routing).
+  const loadNight = night.bod * night.flowRate;
+  const loadBase = baseSpec.bod * baseSpec.flowRate;
+  const loadPeak = peak.bod * peak.flowRate;
+  const dFlowNight = Math.abs(night.flowRate / baseSpec.flowRate - 1);
+  const dLoadNight = Math.abs(loadNight / loadBase - 1);
+  assert(dLoadNight < dFlowNight,
+    'INFLUENT. pollutant mass load swings less than flow (sewer damping)');
+  assert(loadPeak > loadBase * 1.05,
+    'INFLUENT. morning peak carries a genuinely higher pollutant load');
+  // Mean-preserving over the clock wrap: same hour on different days agrees.
+  const d1 = applyDiurnalInfluent(baseSpec, 1 + 20 / 24);
+  const d2 = applyDiurnalInfluent(baseSpec, 7 + 20 / 24);
+  assert(Math.abs(d1.flowRate - d2.flowRate) < 1e-9 && Math.abs(d1.bod - d2.bod) < 1e-9,
+    'INFLUENT. same hour on any two days yields identical influent');
+
+  // Legacy escape hatch: strength 0 returns the spec unchanged (§AL).
+  const off = applyDiurnalInfluent(baseSpec, 0.42, 0);
+  assert(off.flowRate === baseSpec.flowRate && off.bod === baseSpec.bod,
+    'INFLUENT. strength=0 reproduces the legacy constant spec exactly');
+  // Input spec is never mutated.
+  const before = baseSpec.flowRate;
+  applyDiurnalInfluent(baseSpec, 0.5);
+  assert(baseSpec.flowRate === before, 'INFLUENT. input spec object never mutated');
 }
 
 // ── summary ─────────────────────────────────────────────────────────────────

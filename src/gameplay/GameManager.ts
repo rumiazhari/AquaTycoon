@@ -8,6 +8,7 @@ import { SimulationEngine } from '../sim/SimulationEngine';
 import { analyzeActiveLiquidPath, hasActiveProcessTypeOnPath } from './PlantTopology';
 import { TUTORIAL_STEPS } from './TutorialSteps';
 import { REAL_SECONDS_PER_GAME_DAY, INITIAL_GAME_TIME_DAYS, getDayNightFactor } from './GameTime';
+import { applyDiurnalInfluent, DIURNAL_DEFAULT_STRENGTH } from '../sim/InfluentProfile';
 import { resolveFootprint } from '../sim/UnitDimensions';
 import { isEngineerable, workingVolumeM3 } from '../design/Geometry';
 import { blueprintFromTemplate } from '../design/UnitBlueprint';
@@ -44,6 +45,13 @@ export interface GameState {
   complianceStreakDays: number;
   tutorialActive: boolean;
   tutorialStep: number;
+  /**
+   * MISSION §AK Phase-1 item 14: amplitude of the dynamic municipal influent
+   * curve in [0,1]. Template trains are currently average-day designs; until
+   * peak-flow equipment sizing lands (items 5/6) new games start at a gentle
+   * 0.4 swing. Raise to DIURNAL_DEFAULT_STRENGTH=1 after template resizing.
+   */
+  diurnalInfluentStrength: number;
 }
 
 export class GameManager {
@@ -158,7 +166,8 @@ export class GameManager {
       suggestion: initialSuggestion,
       complianceStreakDays: 0,
       tutorialActive: false,
-      tutorialStep: 0
+      tutorialStep: 0,
+      diurnalInfluentStrength: DIURNAL_DEFAULT_STRENGTH
     };
   }
 
@@ -466,6 +475,12 @@ export class GameManager {
     // Influent choice
     const activeInfluent = state.gameMode === 'sandbox' ? state.sandboxCustomInfluent : state.currentLevel.influentSpec;
 
+    // Dynamic influent (MISSION §AK Phase-1 item 14): the plant sees a real
+    // municipal diurnal curve — night trough ≈04:30, morning peak ≈10:00,
+    // evening bump ≈20:00. Amplitude controlled by state.diurnalInfluentStrength
+    // (default 0.4 for legacy template trains; raise to 1.0 after peak-flow resizing).
+    const dynamicInfluent = applyDiurnalInfluent(activeInfluent, newDays, state.diurnalInfluentStrength ?? 1);
+
     // Environmental factors driving renewable generation.
     // SOLAR uses the SAME smooth day-night factor as the visual sky (Prompt 3.3
     // item 15): sunrise visually matches production beginning, midday = peak,
@@ -478,7 +493,7 @@ export class GameManager {
     const simResult = SimulationEngine.stepSimulation(
       state.units,
       state.pipes,
-      activeInfluent,
+      dynamicInfluent,
       state.currentLevel.standards,
       state.financials,
       state.currentLevel.tariffPerM3,
