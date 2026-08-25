@@ -641,14 +641,19 @@ export class GameManager {
   }
 
   /**
-   * Places a new unit on the plant grid
+   * Places a new unit on the plant grid.
+   *
+   * options.seededWithSludge (backlog #1 follow-up): false places an UNSEEDED
+   * CAS reactor at def.capex − estimateSeedSludgeCAPEX(volume) instead of the
+   * contractor-seeded default; ignored for families without commissioning.
    */
   public static placeUnit(
     state: GameState,
     typeId: UnitTypeId,
     gridX: number,
     gridY: number,
-    rotation: 0 | 90 | 180 | 270 = 0
+    rotation: 0 | 90 | 180 | 270 = 0,
+    options?: { seededWithSludge?: boolean }
   ): { newState: GameState; success: boolean; reason?: string } {
     const def = UNIT_DEFINITIONS[typeId];
     if (!def) return { newState: state, success: false, reason: 'Invalid unit type' };
@@ -681,9 +686,31 @@ export class GameManager {
     const tutStep = state.tutorialActive ? TUTORIAL_STEPS[state.tutorialStep] : undefined;
     const tutorialGrant = !!tutStep?.unitTypeId && tutStep.unitTypeId === typeId;
 
+    // Engineerable families start with a blueprint from the template default
+    // geometry so the new architecture is live from the first placement; the
+    // player refines it afterwards in the Unit Designer (Prompt §C/D).
+    // (Hoisted ABOVE the cash gate: the unseeded-placement discount below is
+    // derived from the template working volume and must shape affordability.)
+    const blueprint = isEngineerable(typeId)
+      ? blueprintFromTemplate(typeId) ?? undefined
+      : undefined;
+
+    // Backlog #1 follow-up — direct unseeded placement. Only the CAS family
+    // consumes commissioning seeding today; for every other family the flag
+    // is ignored (full contractor price) so nobody banks a phantom discount
+    // on a unit where seeding does nothing.
+    const wantSeeded = options?.seededWithSludge !== false;
+    const consumesSeed = typeId === 'activated_sludge_cas' && !!blueprint;
+    const seedCredit = consumesSeed && !wantSeeded
+      ? estimateSeedSludgeCAPEX(workingVolumeM3(blueprint!.design.geometry))
+      : 0;
+    // Owner-builder skips the bundled haul-in: construction price drops by
+    // the seed-sludge share (floored at $0); biomass then ramps naturally.
+    const effectiveCapex = Math.max(0, def.capex - seedCredit);
+
     // C. Cost check
-    if (!tutorialGrant && state.gameMode !== 'sandbox' && state.financials.cash < def.capex) {
-      return { newState: state, success: false, reason: `Insufficient funds ($${def.capex.toLocaleString()} required)` };
+    if (!tutorialGrant && state.gameMode !== 'sandbox' && state.financials.cash < effectiveCapex) {
+      return { newState: state, success: false, reason: `Insufficient funds ($${effectiveCapex.toLocaleString()} required)` };
     }
 
     // Boundary check — engineered units use their real blueprint footprint.
@@ -715,13 +742,6 @@ export class GameManager {
       return { newState: state, success: false, reason: 'Tile lot already occupied' };
     }
 
-    // Engineerable families start with a blueprint from the template default
-    // geometry so the new architecture is live from the first placement; the
-    // player refines it afterwards in the Unit Designer (Prompt §C/D).
-    const blueprint = isEngineerable(typeId)
-      ? blueprintFromTemplate(typeId) ?? undefined
-      : undefined;
-
     const newUnit: PlacedUnit = {
       instanceId: `unit_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       typeId,
@@ -737,7 +757,11 @@ export class GameManager {
       // multi-week unseeded culture-growth ramp. Only CAS consumes this
       // today; other engineerable families ignore it.
       commissioning: blueprint
-        ? { phase: 'empty' as const, daysInPhase: 0, seededWithSludge: true }
+        ? {
+            phase: 'empty' as const,
+            daysInPhase: 0,
+            seededWithSludge: consumesSeed ? wantSeeded : true,
+          }
         : undefined,
       customParams: { ...def.defaultParams },
       active: true,
@@ -751,7 +775,7 @@ export class GameManager {
 
     const newCash = state.gameMode === 'sandbox'
       ? state.financials.cash
-      : (tutorialGrant ? state.financials.cash : state.financials.cash - def.capex);
+      : (tutorialGrant ? state.financials.cash : state.financials.cash - effectiveCapex);
     const updatedUnits = [...state.units, newUnit];
     const newSuggestion = GameManager.computeNextSuggestion(updatedUnits, state.currentLevel);
 

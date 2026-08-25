@@ -486,6 +486,72 @@ function wq(over: Partial<WaterQuality>): WaterQuality {
     'SEED. placement debits exactly def.capex — no hidden seed surcharge (§AL)');
 }
 
+// ── SEED II: direct unseeded placement (backlog #1 follow-up) ───────────────
+{
+  const capex = UNIT_DEFINITIONS['activated_sludge_cas'].capex;
+  const bpCas = blueprintFromTemplate('activated_sludge_cas');
+  const credit = estimateSeedSludgeCAPEX(bpCas ? workingVolumeM3(bpCas.design.geometry) : 0);
+  const unseededPrice = capex - credit;
+
+  // U1. Option places an unseeded reactor and debits capex − haul-in credit.
+  const gsU = GameManager.createInitialState(0, false);
+  const rU = GameManager.placeUnit(gsU, 'activated_sludge_cas', 5, 20, 0, { seededWithSludge: false });
+  const uU = rU.success ? rU.newState.units[rU.newState.units.length - 1] : null;
+  assert(rU.success && uU !== null && uU!.commissioning?.seededWithSludge === false,
+    'SEED. unseeded placement option hands over an unseeded reactor');
+  assert(rU.success && rU.newState.financials.cash === gsU.financials.cash - unseededPrice,
+    'SEED. unseeded placement debits def.capex minus the seed haul-in credit');
+  assert(unseededPrice > 0 && unseededPrice < capex,
+    'SEED. unseeded net price strictly between $0 and def.capex');
+
+  // U2. The discount is real: a wallet sized to the unseeded price builds
+  //     UNSEEDED but can no longer afford the contractor-seeded default.
+  const gsT = GameManager.createInitialState(0, false);
+  gsT.financials.cash = unseededPrice;
+  const rTSeeded = GameManager.placeUnit(gsT, 'activated_sludge_cas', 5, 20);
+  assert(!rTSeeded.success,
+    'SEED. seeded placement rejected when cash covers only the unseeded price');
+  const rTUnseeded = GameManager.placeUnit(gsT, 'activated_sludge_cas', 5, 20, 0, { seededWithSludge: false });
+  assert(rTUnseeded.success && rTUnseeded.newState.financials.cash === 0,
+    'SEED. unseeded placement succeeds exactly at the discounted price');
+
+  // U3. One dollar short of the discounted price rejects atomically.
+  const gsT2 = GameManager.createInitialState(0, false);
+  gsT2.financials.cash = unseededPrice - 1;
+  const rT2 = GameManager.placeUnit(gsT2, 'activated_sludge_cas', 5, 20, 0, { seededWithSludge: false });
+  assert(!rT2.success && !!rT2.reason && rT2.reason.includes('Insufficient funds'),
+    'SEED. unseeded placement rejects atomically below the discounted price');
+
+  // U4. Sandbox honors the choice free of charge.
+  const gsS = GameManager.createInitialState(0, true);
+  const cashBefore = gsS.financials.cash;
+  const rS = GameManager.placeUnit(gsS, 'activated_sludge_cas', 5, 20, 0, { seededWithSludge: false });
+  const uS = rS.success ? rS.newState.units[rS.newState.units.length - 1] : null;
+  assert(rS.success && uS !== null && uS!.commissioning?.seededWithSludge === false &&
+    rS.newState.financials.cash === cashBefore,
+    'SEED. sandbox honors unseeded placement free of charge');
+
+  // U5. Non-CAS engineerable families ignore the flag — no phantom discount.
+  const gsC = GameManager.createInitialState(0, true);
+  const rC = GameManager.placeUnit(gsC, 'secondary_clarifier', 8, 18, 0, { seededWithSludge: false });
+  const uC = rC.success ? rC.newState.units[rC.newState.units.length - 1] : null;
+  assert(rC.success && uC !== null && uC!.commissioning?.seededWithSludge === true,
+    'SEED. non-CAS engineerable ignores the unseeded flag (stays contractor-seeded)');
+
+  // U6. Chained: unseeded start → later manual re-seed bills a fresh truckload.
+  let u6ok = false;
+  if (uU && uU.commissioning) {
+    const cashAfterPlace = rU.newState.financials.cash;
+    const rReseed = GameManager.setUnitCommissioning(rU.newState, uU.instanceId, {
+      phase: uU.commissioning.phase,
+      daysInPhase: uU.commissioning.daysInPhase,
+      seededWithSludge: true,
+    });
+    u6ok = rReseed.success && rReseed.newState.financials.cash === cashAfterPlace - credit;
+  }
+  assert(u6ok, 'SEED. later manual re-seed after unseeded start buys a fresh truckload');
+}
+
 // ── summary ─────────────────────────────────────────────────────────────────
 console.log(`\n${failed === 0 ? 'ALL ENGINEERING TESTS PASSED' : 'ENGINEERING TESTS FAILED'} (${passed} passed, ${failed} failed)`);
 if (failed > 0) {

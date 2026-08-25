@@ -1,7 +1,7 @@
 # AUTOPILOT STATE — Aquatycoon
 
 STATUS: OK
-Last run: 2026-08-26 (cron, iter 5 — seed-sludge haul-in economics, backlog #1)
+Last run: 2026-08-26 (cron, iter 6 — direct unseeded placement, backlog #1)
 Gate policy: `npm run build` + `npx tsc --noEmit` must be clean; suites:
 `npm test` (sim), `npm run test:ui` (= static ui-tests + ui-interaction-tests),
 `npm run test:eng`.
@@ -22,6 +22,19 @@ Never regress §AL. Respect §AI performance limits. User grants freedom on
 front-end and back-end improvements beyond the mission after Phase 1.
 
 ## Iteration log
+- iter 6 (2026-08-26): Direct unseeded placement (backlog #1). placeUnit grew
+  an options arg ({seededWithSludge}): false places a CAS basin UNSEEDED at
+  def.capex − estimateSeedSludgeCAPEX(template volume ≈$54k credit) instead of
+  the contractor-seeded full price; blueprint construction hoisted above the
+  cash gate so the discount shapes affordability itself. Non-CAS engineerable
+  families ignore the flag (no phantom discount where seeding does nothing);
+  sandbox stays free; later manual re-seed after an unseeded start still buys
+  a fresh truckload (chain verified). BuildToolbar renders a live Seed/
+  Unseeded toggle while placing CAS — quoted savings come from the same
+  template-geometry math the engine charges; App threads state+ref through
+  placeUnit and toasts the ~2-week ramp tradeoff. Build ✅ tsc ✅ sim ALL PASS
+  ✅ ui static T7f-h + interaction 26/26 ✅ eng 178/178 (9 new SEED II) ✅;
+  §AL default-placement guards untouched and green.
 - iter 5 (2026-08-26): Seed-sludge haul-in economics (backlog #1). NEW pure
   pricing `estimateSeedSludgeCAPEX(volume)` in CostEstimator (35% fill × $90/m³
   tanker price, $2,500 mobilization floor; default CAS basin ≈1728 m³ → ~$54k).
@@ -73,17 +86,13 @@ front-end and back-end improvements beyond the mission after Phase 1.
   balance restore (CAS template volumes; seededWithSludge jump-to-stable).
 
 ## Backlog (work top-down)
-1. Unseeded placement pre-select (follow-up): the cheaper-but-slow start is
-   currently reachable only by placing seeded then toggling off. Add a
-   seed/no-seed choice to the placement flow (toolbar toggle or confirm
-   dialog) wired through placeUnit options.
-2. Clarifier outlet quality probe reads zeros in Test S context — verify
+1. Clarifier outlet quality probe reads zeros in Test S context — verify
    `lastOutletQuality` propagation for clarifier units (cosmetic/debug).
-3. Idea pool (post-mission freedom): blower VFD upgrade tree; sludge
+2. Idea pool (post-mission freedom): blower VFD upgrade tree; sludge
    treatment line objectives; sound effects for placement.
-4. Pump runout/service-factor clamping in `findPumpDutyPoint`.
-5. EQ API: return `constituentMassKg` snapshot in `EqStepResult`.
-6. §AK Phase-1 audit of remaining 16 vertical-slice items:
+3. Pump runout/service-factor clamping in `findPumpDutyPoint`.
+4. EQ API: return `constituentMassKg` snapshot in `EqStepResult`.
+5. §AK Phase-1 audit of remaining 16 vertical-slice items:
    - 1–3: design/runtime data model, custom geometry, CAS sizing (partial)
    - 5–6: blower/equipment capacity, clarifier custom sizing (templates need
      peak-flow resize before raising diurnal strength to 1.0)

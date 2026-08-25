@@ -336,6 +336,31 @@ const noop = () => {};
   assert(!ghost.includes('ring-2 ring-cyan-400/50'),
     'T7e. place_unit with null unit highlights no card (dead-state made visible-safe)');
 
+  // Backlog #1: the seed/no-seed placement toggle only exists while actually
+  // placing a CAS basin, and its OFF state advertises the haul-in savings.
+  assert(!ghost.includes('Seed sludge'),
+    'T7f. No seed toggle when no build unit is selected');
+  const tbCas = (seeded: boolean) => renderToStaticMarkup(
+    React.createElement(BuildToolbar, {
+      toolMode: 'place_unit' as ToolMode,
+      onSetToolMode: noop,
+      selectedUnitTypeId: 'activated_sludge_cas',
+      onSelectUnitTypeId: noop,
+      currentRotation: 0,
+      onRotate: noop,
+      techTree: L1.techTree,
+      playerCash: L1.financials.cash,
+      isSandbox: true,
+      availableUnitIds: ['activated_sludge_cas'],
+      placeSeeded: seeded,
+      onTogglePlaceSeeded: noop,
+    })
+  );
+  assert(tbCas(true).includes('Seed sludge: On'),
+    'T7g. CAS placement shows the seed toggle ON by default');
+  assert(tbCas(false).includes('Unseeded') && tbCas(false).includes('$'),
+    'T7h. Seed OFF advertises the unseeded discount');
+
   // ── T8: OperatorConsole + PFD compliance truthfulness ──
   const gs = structuredClone(L1) as typeof L1;
   gs.finalEffluent = { ...goodEffluent(), pathogens: 12000 };

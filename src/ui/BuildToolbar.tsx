@@ -2,13 +2,16 @@ import React, { useState } from 'react';
 import {
   MousePointer, Cable, Trash2, RotateCw, Filter,
   Layers, Activity, Sparkles, Recycle, ArrowRightLeft,
-  Info, Star, Zap, Lock
+  Info, Star, Zap, Lock, Droplets
 } from 'lucide-react';
 import { UnitCategory, UnitDefinition, UnitTypeId } from '../types/simulation';
 import { ToolMode } from '../types/graphics';
 import { UNIT_DEFINITIONS } from '../sim/UnitProcessModels';
 import { SoundManager } from '../audio/SoundManager';
 import { TechNode } from '../types/game';
+import { estimateSeedSludgeCAPEX } from '../design/CostEstimator';
+import { blueprintFromTemplate } from '../design/UnitBlueprint';
+import { workingVolumeM3 } from '../design/Geometry';
 
 interface BuildToolbarProps {
   toolMode: ToolMode;
@@ -26,6 +29,10 @@ interface BuildToolbarProps {
   tutorialAllowedUnitId?: UnitTypeId | 'none';
   /** True during guided tutorial — enables recommendation badge/highlight UI */
   showRecommendationUi?: boolean;
+  /** Backlog #1: placement-time seed choice for the NEXT CAS basin (default true) */
+  placeSeeded?: boolean;
+  /** Flips the seed choice for the NEXT placed CAS basin */
+  onTogglePlaceSeeded?: () => void;
 }
 
 const CATEGORIES: { id: UnitCategory; label: string; icon: React.ReactNode }[] = [
@@ -51,7 +58,9 @@ export const BuildToolbar: React.FC<BuildToolbarProps> = ({
   availableUnitIds,
   suggestedUnitTypeId,
   tutorialAllowedUnitId,
-  showRecommendationUi = false
+  showRecommendationUi = false,
+  placeSeeded = true,
+  onTogglePlaceSeeded
 }) => {
   const [activeCategory, setActiveCategory] = useState<UnitCategory>('preliminary');
   const [hoveredDef, setHoveredDef] = useState<UnitDefinition | null>(null);
@@ -176,7 +185,31 @@ export const BuildToolbar: React.FC<BuildToolbarProps> = ({
             ))}
           </div>
 
-          {/* Rotation Button */}
+          {/* Seed-sludge choice (backlog #1): visible while placing a CAS basin.
+            The quoted credit comes from the same template-geometry math the
+            engine charges, so the label can never drift from the real price. */}
+        {toolMode === 'place_unit' && selectedUnitTypeId === 'activated_sludge_cas' && (() => {
+          const tpl = blueprintFromTemplate('activated_sludge_cas');
+          const seedCredit = tpl ? estimateSeedSludgeCAPEX(workingVolumeM3(tpl.design.geometry)) : 0;
+          return (
+            <button
+              onClick={() => { SoundManager.playClick(); onTogglePlaceSeeded?.(); }}
+              className={`shrink-0 flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-semibold border transition ${
+                placeSeeded
+                  ? 'bg-emerald-900/60 hover:bg-emerald-800/70 text-emerald-300 border-emerald-700/60'
+                  : 'bg-amber-900/50 hover:bg-amber-800/60 text-amber-300 border-amber-600/50'
+              }`}
+              title={placeSeeded
+                ? 'Next CAS basin ships contractor-seeded: full price, day-one performance.'
+                : `Next CAS basin starts UNSEEDED: saves $${seedCredit.toLocaleString()} haul-in, biomass ramps over ~2 weeks.`}
+            >
+              <Droplets size={13} />
+              <span>{placeSeeded ? 'Seed sludge: On' : `Unseeded (−$${seedCredit.toLocaleString()})`}</span>
+            </button>
+          );
+        })()}
+
+        {/* Rotation Button */}
           <button
             onClick={() => {
               SoundManager.playClick();

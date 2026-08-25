@@ -286,6 +286,57 @@ console.log('\n── C. PortSelector: pipe endpoint picking & cancel ──');
   await m.unmount();
 }
 
+// ═══ N. BuildToolbar — seed/no-seed placement toggle (backlog #1) ══════════
+console.log('\n── N. BuildToolbar: seed-sludge placement toggle ──');
+{
+  const togOn = spy<[]>();
+  const mOn = await mount(
+    <BuildToolbar
+      toolMode={'place_unit' as ToolMode}
+      onSetToolMode={spy<[ToolMode]>()}
+      selectedUnitTypeId={'activated_sludge_cas'}
+      onSelectUnitTypeId={spy<[string | null]>()}
+      currentRotation={0}
+      onRotate={spy<[]>()}
+      techTree={[]}
+      playerCash={500000}
+      isSandbox={true}
+      availableUnitIds={['activated_sludge_cas']}
+      placeSeeded={true}
+      onTogglePlaceSeeded={togOn}
+    />
+  );
+  const onBtn = buttonWithText(mOn.el, 'Seed sludge: On');
+  assert(onBtn !== null, 'Seed toggle renders ON while placing a CAS basin');
+  await act(async () => { onBtn!.dispatchEvent(new win.MouseEvent('click', { bubbles: true })); });
+  assert(togOn.calls.length === 1, 'Clicking the seed toggle fires onTogglePlaceSeeded once');
+
+  const togOff = spy<[]>();
+  const mOff = await mount(
+    <BuildToolbar
+      toolMode={'place_unit' as ToolMode}
+      onSetToolMode={spy<[ToolMode]>()}
+      selectedUnitTypeId={'activated_sludge_cas'}
+      onSelectUnitTypeId={spy<[string | null]>()}
+      currentRotation={0}
+      onRotate={spy<[]>()}
+      techTree={[]}
+      playerCash={500000}
+      isSandbox={true}
+      availableUnitIds={['activated_sludge_cas']}
+      placeSeeded={false}
+      onTogglePlaceSeeded={togOff}
+    />
+  );
+  const offBtn = buttonWithText(mOff.el, 'Unseeded');
+  assert(offBtn !== null && (offBtn.textContent ?? '').includes('$'),
+    'OFF state advertises the haul-in savings on the toggle');
+  await act(async () => { offBtn!.dispatchEvent(new win.MouseEvent('click', { bubbles: true })); });
+  assert(togOff.calls.length === 1, 'OFF-state toggle click also fires the callback');
+  await mOn.unmount();
+  await mOff.unmount();
+}
+
 // ── summary ────────────────────────────────────────────────────────────────
 console.log('');
 if (failures === 0) console.log(`ALL UI INTERACTION TESTS PASSED (${passes})`);

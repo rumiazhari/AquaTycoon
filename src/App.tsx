@@ -121,6 +121,13 @@ export const App: React.FC = () => {
   const rotationRef = useRef<0|90|180|270>(0);
   rotationRef.current = currentRotation;
 
+  // Placement-time seed choice (backlog #1 follow-up): ON (default) hands over
+  // a contractor-seeded reactor at full def.capex; OFF starts UNSEEDED at
+  // def.capex − seed haul-in credit and lets the culture ramp over ~2 weeks.
+  const [placeSeeded, setPlaceSeeded] = useState<boolean>(true);
+  const placeSeededRef = useRef<boolean>(true);
+  placeSeededRef.current = placeSeeded;
+
   const [pipeSourceId, setPipeSourceId]             = useState<string | null>(null);
   const pipeSourcePortRef = useRef<string | null>(null);
   const pipeSourcePosRef = useRef<[number, number, number] | null>(null);
@@ -565,7 +572,9 @@ export const App: React.FC = () => {
           return;
         }
       }
-      const result = GameManager.placeUnit(gs, typeId, tile.x, tile.y, rotation);
+      const result = GameManager.placeUnit(gs, typeId, tile.x, tile.y, rotation, {
+        seededWithSludge: placeSeededRef.current,
+      });
       if (result.success) {
         SoundManager.playPlace();
         pushHistory(gs);
@@ -582,7 +591,10 @@ export const App: React.FC = () => {
           setToast(`${def.name} built — covered by the training grant ($0)!`);
         } else {
           setGameState(result.newState);
-          setToast(`Placed ${def.name}! Now connect pipes or continue adding units.`);
+          const unseededNote = !placeSeededRef.current && typeId === 'activated_sludge_cas'
+            ? ' UNSEEDED start — give the culture ~2 weeks to ramp.'
+            : '';
+          setToast(`Placed ${def.name}!${unseededNote} Now connect pipes or continue adding units.`);
         }
       } else {
         SoundManager.playWarning();
@@ -1156,6 +1168,14 @@ export const App: React.FC = () => {
         suggestedUnitTypeId={gameState.suggestion?.unitTypeId}
         tutorialAllowedUnitId={tutorialAllowedUnitId}
         showRecommendationUi={tutorialActive}
+        placeSeeded={placeSeeded}
+        onTogglePlaceSeeded={() => {
+          const next = !placeSeededRef.current;
+          setPlaceSeeded(next);
+          setToast(next
+            ? 'Seed sludge ON — next CAS basin ships contractor-seeded (day-one performance).'
+            : 'Seed sludge OFF — next CAS basin starts unseeded and saves the haul-in fee.');
+        }}
       />
 
       {/* ── Unit Inspector ──────────────────────────────────────────────────── */}
