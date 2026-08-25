@@ -6,9 +6,23 @@ import { PipeRenderer } from './PipeRenderer';
 import { PipeConnection, PlacedUnit, UnitTypeId } from '../types/simulation';
 import { UNIT_DEFINITIONS } from '../sim/UnitProcessModels';
 import { getPortWorldPosition, getRotatedFootprint } from '../sim/PipeNetwork';
-import type { LevelBiome } from '../types/game';
+import type { LevelBiome, SimulationSpeed } from '../types/game';
+import { getDayNightFactor } from '../gameplay/GameTime';
 
 const lerpN = (a: number, b: number, t: number) => a + (b - a) * t;
+
+// ── Performance budget (Prompt 3.3 items 7–8): ONE shadow-casting light max ──
+/** Day shadow map resolution. Modest but clean for the low-poly style. */
+export const DAY_SHADOW_MAP_SIZE = 1024;
+/**
+ * Conservative pixel-ratio cap for integrated GPUs. High-DPI office displays
+ * no longer pay a 2× fill-rate tax; 1.25 stays crisp for this art style.
+ */
+export const MAX_PIXEL_RATIO = 1.25;
+/** Adaptive-resolution floor (never blurry beyond this). */
+const MIN_PIXEL_RATIO = 0.75;
+/** Adaptive resolution: seconds between quality adjustments (anti-oscillation). */
+const ADAPT_INTERVAL_SEC = 2.5;
 
 interface DayNightPalette {
   bg: THREE.Color;
@@ -94,19 +108,40 @@ export class SceneManager {
   private stars!: THREE.Points;
   private starsMat!: THREE.PointsMaterial;
 
-  // Smooth day/night blending (instance palettes so biomes can tint them)
+  // Unified simulation clock (Prompt 3.3 items 9–14): the visual world runs on
+  // SIMULATED time — pause freezes everything, fast-forward speeds the whole
+  // world up proportionally. Camera & UI stay on REAL time.
+  private gameTimeDays = 0;        // authoritative clock, pushed from GameManager
+  private worldTimeScale = 1;      // 0 = paused, 1 / 2 / 5
+  private visualSimElapsed = 0;    // simulated seconds accumulator for animations
+  /** Last day/night blend applied to the rig; -1 forces the first apply. */
+  private lastAppliedDayFactor = -1;
+
+  // Adaptive resolution state (item E): slow, stable, capped adjustments.
+  private basePixelRatio: number;
+  private currentPixelRatio: number;
+  private adaptTimer = 0;
+  private frameTimeAccum = 0;
+  private frameCount = 0;
+
+  // Dev-only FPS telemetry (item 19). Enabled with setTelemetryEnabled(true) or
+  // ?fps=1 — never shown in normal play.
+  private telemetryEnabled = false;
+  private telemetryFrames = 0;
+  private telemetryAccum = 0;
+
+  // Smooth day/night blending palettes (instance palettes so biomes can tint)
   private dayPal: DayNightPalette = makeDay();
   private nightPal: DayNightPalette = NIGHT_BASE();
-  private nightTarget = 0;
-  private nightFactor = 0;
 
   private animationFrameId: number | null = null;
-  private clock: THREE.Clock;
+  // NOTE: no THREE.Clock anywhere — world animation runs on visualSimElapsed,
+  // which accumulates simulated time only (pause freezes it, fast-forward
+  // scales it). Real-time needs use the rAF timestamp directly.
   private lastFrameTime: number = 0;
 
   constructor(container: HTMLDivElement, mapWidth: number = 24, mapDepth: number = 20) {
     this.container = container;
-    this.clock = new THREE.Clock();
 
     this.scene = new THREE.Scene();
     this.scene.background = this.dayPal.bg.clone();
@@ -123,9 +158,11 @@ export class SceneManager {
       alpha: false,
     });
     this.renderer.setSize(w, h);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.basePixelRatio = Math.min(window.devicePixelRatio, MAX_PIXEL_RATIO);
+    this.currentPixelRatio = this.basePixelRatio;
+    this.renderer.setPixelRatio(this.currentPixelRatio);
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.15;
 
@@ -147,9 +184,11 @@ export class SceneManager {
 
     this.dirLight = new THREE.DirectionalLight(this.dayPal.dirColor.getHex(), this.dayPal.dirIntensity);
     this.dirLight.position.set(45, this.dayPal.sunY, 30);
+    // THE single shadow-casting light in the whole scene (day only — the moon
+    // does not cast shadows at night; fake pools carry night readability).
     this.dirLight.castShadow = true;
-    this.dirLight.shadow.mapSize.width = 2048;
-    this.dirLight.shadow.mapSize.height = 2048;
+    this.dirLight.shadow.mapSize.width = DAY_SHADOW_MAP_SIZE;
+    this.dirLight.shadow.mapSize.height = DAY_SHADOW_MAP_SIZE;
     this.dirLight.shadow.camera.near = 1;
     this.dirLight.shadow.camera.far = 400;
     const sd = Math.max(mapWidth, mapDepth) * 0.85 + 22;
@@ -291,14 +330,26 @@ export class SceneManager {
       this.animationFrameId = requestAnimationFrame(animate);
       const dt = Math.min(0.05, (timestamp - this.lastFrameTime) / 1000);
       this.lastFrameTime = timestamp;
-      const elapsed = this.clock.getElapsedTime();
 
+      // ── REAL TIME (item 12): camera + UI-facing motion never scale with the
+      // simulation speed — panning/orbiting feels identical at pause and 5×.
       this.cameraController.update(dt);
 
-      // Smooth day/night blend
-      this.nightFactor += (this.nightTarget - this.nightFactor) * Math.min(1, dt * 1.6);
-      const nf = this.nightFactor;
-      if (Math.abs(this.nightTarget - this.nightFactor) > 0.001 || this.nightTarget === 1) {
+      // ── SIMULATED TIME (items 9/11/13): ONE authoritative world clock.
+      // Pause ⇒ simDt = 0 ⇒ vehicles/river/clouds/machinery freeze cleanly.
+      // 5× ⇒ every world animation advances 5× per real second. Exactly one
+      // requestAnimationFrame loop and one render per frame regardless (item 18).
+      const simDt = dt * this.worldTimeScale;
+      this.visualSimElapsed += simDt;
+
+      // ── DAY/NIGHT FROM THE ACTUAL GAME CLOCK (item 15): the lighting state
+      // is a pure function of gameTimeDays — dawn/day/sunset/night come from
+      // the simulated clock, so sunset progresses 5× faster at 5× and freezing
+      // mid-sunset at pause holds the blend. No independent boolean lerp.
+      const dayFactor = getDayNightFactor(this.gameTimeDays);
+      if (this.lastAppliedDayFactor < 0 || Math.abs(dayFactor - this.lastAppliedDayFactor) > 0.0008) {
+        this.lastAppliedDayFactor = dayFactor;
+        const nf = 1 - dayFactor; // 0 = full day, 1 = full night
         const bg = this.dayPal.bg.clone().lerp(this.nightPal.bg, nf);
         const fg = this.dayPal.fog.clone().lerp(this.nightPal.fog, nf);
         this.scene.background = bg;
@@ -313,14 +364,55 @@ export class SceneManager {
         this.starsMat.opacity = lerpN(this.dayPal.starOpacity, this.nightPal.starOpacity, nf);
         this.sunMesh.position.y = lerpN(this.dayPal.sunY, this.nightPal.sunY, nf);
         this.sunMesh.visible = this.sunMesh.position.y > -25 || nf < 0.5;
+        // Shadow budget (item C): AT MOST ONE shadow-casting light exists in
+        // the scene — the sun. At night even that switches off; night
+        // readability comes from hemisphere/ambient + stylized fake pools.
+        this.dirLight.castShadow = dayFactor > 0.4;
       }
 
-      this.terrainGrid.tick(dt, elapsed, nf);
+      // WORLD runs on simulated time (vehicles, river, foam, clouds, lamps)
+      this.terrainGrid.tick(simDt, this.visualSimElapsed, 1 - dayFactor);
 
+      // PROCESS MACHINERY on simulated time too
       for (const mesh of this.unitMeshMap.values()) {
-        UnitMeshBuilder.updateUnitAnimation(mesh, elapsed);
+        UnitMeshBuilder.updateUnitAnimation(mesh, this.visualSimElapsed);
       }
-      this._animateGhostSuggest(elapsed);
+      this._animateGhostSuggest(this.visualSimElapsed);
+
+      // Adaptive resolution (item E): slow & stable — evaluates once every few
+      // seconds, drops quickly when needed, climbs back cautiously, capped low.
+      this.frameTimeAccum += dt;
+      this.frameCount++;
+      this.adaptTimer += dt;
+      if (this.adaptTimer >= ADAPT_INTERVAL_SEC) {
+        const avgFps = this.frameCount / Math.max(1e-4, this.frameTimeAccum);
+        if (avgFps < 26 && this.currentPixelRatio > MIN_PIXEL_RATIO + 1e-3) {
+          this.currentPixelRatio = Math.max(MIN_PIXEL_RATIO, this.currentPixelRatio - 0.15);
+          this.renderer.setPixelRatio(this.currentPixelRatio);
+        } else if (avgFps > 55 && this.currentPixelRatio < this.basePixelRatio - 1e-3) {
+          this.currentPixelRatio = Math.min(this.basePixelRatio, this.currentPixelRatio + 0.05);
+          this.renderer.setPixelRatio(this.currentPixelRatio);
+        }
+        this.adaptTimer = 0;
+        this.frameTimeAccum = 0;
+        this.frameCount = 0;
+      }
+
+      // Dev-only telemetry (item 19): console lines, never on-screen HUD.
+      if (this.telemetryEnabled) {
+        this.telemetryFrames++;
+        this.telemetryAccum += dt;
+        if (this.telemetryAccum >= 1) {
+          const msPerFrame = (this.telemetryAccum / this.telemetryFrames) * 1000;
+          console.log(
+            `[aquateycoon-fps] ${this.telemetryFrames} fps · ${msPerFrame.toFixed(2)} ms/frame · ` +
+            `ratio ${this.currentPixelRatio.toFixed(2)} · ${dayFactor > 0.5 ? 'day' : 'night'} · ` +
+            `${this.worldTimeScale}× · shadow ${this.dirLight.castShadow ? 'on' : 'off'}`
+          );
+          this.telemetryFrames = 0;
+          this.telemetryAccum = 0;
+        }
+      }
 
       this.renderer.render(this.scene, this.cameraController.camera);
     };
@@ -382,12 +474,34 @@ export class SceneManager {
   }
 
   public syncPipes(pipes: PipeConnection[]) {
-    this.pipeRenderer.updatePipes(pipes, this.clock.getElapsedTime());
+    // Flow animation runs on SIMULATED time — pause freezes the pipe flow.
+    this.pipeRenderer.updatePipes(pipes, this.visualSimElapsed);
   }
 
-  /** Smoothly transitions the whole environment to day or night */
-  public setDayNight(isNight: boolean) {
-    this.nightTarget = isNight ? 1 : 0;
+  /**
+   * Pushes the authoritative game clock into the renderer. Lighting derives
+   * from this via getDayNightFactor — no independent real-time lerp.
+   */
+  public setGameClock(gameTimeDays: number) {
+    this.gameTimeDays = gameTimeDays;
+  }
+
+  /**
+   * Explicit world-speed control (item 14): 0 = paused, 1 = normal, 2 = fast,
+   * 5 = ultra. Scales ALL world animation; never the camera or UI.
+   */
+  public setSimulationSpeed(speed: SimulationSpeed) {
+    this.worldTimeScale = speed;
+  }
+
+  /** Alias matching the prompt's suggested API name. */
+  public setWorldTimeScale(scale: number) {
+    this.worldTimeScale = scale as SimulationSpeed;
+  }
+
+  /** Dev-only FPS/frame-time telemetry toggle (item 19). Off in production. */
+  public setTelemetryEnabled(enabled: boolean) {
+    this.telemetryEnabled = enabled;
   }
 
   /**
@@ -645,6 +759,8 @@ export class SceneManager {
     // Apply immediately for a snappy level transition
     this.scene.background = this.dayPal.bg.clone();
     (this.scene.fog as THREE.FogExp2).color.copy(this.dayPal.fog);
+    // Force the day/night rig to re-apply with the new biome palettes.
+    this.lastAppliedDayFactor = -1;
   }
 
   public dispose() {

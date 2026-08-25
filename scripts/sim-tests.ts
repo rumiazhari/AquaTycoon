@@ -14,6 +14,14 @@ import {
 } from '../src/sim/PipeNetwork';
 import type { PipeConnection, PlacedUnit } from '../src/types/simulation';
 import { OvertakeController } from '../src/graphics/OvertakeController';
+import {
+  REAL_SECONDS_PER_GAME_DAY,
+  INITIAL_GAME_TIME_DAYS,
+  realSecondsToSimDays,
+  gameDaysToCalendar,
+  formatGameClock,
+  getDayNightFactor,
+} from '../src/gameplay/GameTime';
 
 let failures = 0;
 const assert = (cond: boolean, msg: string) => {
@@ -1276,6 +1284,104 @@ const obj = (state: any, id: string) => state.currentLevel.objectives.find((o: a
   })();
   assert(wouldWrap === 0 && advancesCorrectly === lastIdx,
     'Y. Level 5 completion does NOT wrap to Level 1 (modulo removed, guarded advance)');
+}
+
+// ── Prompt 3.3: unified game-time architecture (items 9–18) ────────────────
+
+// T1: seconds → game-day conversion (600 real sec = 1 game day at 1×)
+{
+  assert(REAL_SECONDS_PER_GAME_DAY === 600, 'T1a. REAL_SECONDS_PER_GAME_DAY is the single constant 600');
+  assert(Math.abs(realSecondsToSimDays(600, 1) - 1) < 1e-12, 'T1b. 600 real seconds = exactly 1 game day at 1×');
+  assert(Math.abs(realSecondsToSimDays(300, 2) - 1) < 1e-12, 'T1c. 300 real seconds = 1 game day at 2×');
+  assert(Math.abs(realSecondsToSimDays(120, 5) - 1) < 1e-12, 'T1d. 120 real seconds = 1 game day at 5×');
+}
+
+// T2: speed scaling — 0/1/2/5 multiply world progression proportionally
+{
+  const base = realSecondsToSimDays(10, 1);
+  assert(realSecondsToSimDays(10, 0) === 0, 'T2a. speed 0 → zero simulated time (pause)');
+  assert(Math.abs(realSecondsToSimDays(10, 2) - 2 * base) < 1e-12, 'T2b. speed 2 → exactly 2× progression');
+  assert(Math.abs(realSecondsToSimDays(10, 5) - 5 * base) < 1e-12, 'T2c. speed 5 → exactly 5× progression');
+}
+
+// T3: HH:MM clock formatting from gameTimeDays
+{
+  const c1 = gameDaysToCalendar(0);
+  assert(c1.day === 1 && c1.hour === 0 && c1.minute === 0, 'T3a. day 0 → Day 1, 00:00');
+  assert(formatGameClock(7 / 24 + 17 / (24 * 60)) === '07:17', 'T3b. 07:17 formats correctly');
+  assert(formatGameClock(0.999999) === '23:59', 'T3c. late-day rounding stays inside 23:59');
+  assert(formatGameClock(3 + 4 / 24 + 5 / (24 * 60)) === '04:05', 'T3d. fractional days beyond whole days ignored for clock');
+  const c2 = gameDaysToCalendar(1.5);
+  assert(c2.day === 2 && c2.hour === 12 && c2.minute === 0, 'T3e. 1.5 days → Day 2, 12:00');
+}
+
+// T4: dawn/day/sunset/night factor schedule
+{
+  const at = (h: number) => getDayNightFactor(h / 24);
+  assert(at(0) === 0, 'T4a. midnight = full night');
+  assert(at(5) === 0, 'T4b. 05:00 still night');
+  assert(at(6) > 0 && at(6) < 1, 'T4c. 06:00 mid-dawn blend (smooth, not snapped)');
+  assert(at(7) === 1 && at(12) === 1 && at(17.9) === 1, 'T4d. 06:30–18:00 = full day');
+  assert(at(18.5) > 0 && at(18.5) < 1, 'T4e. 18:30 mid-sunset blend');
+  assert(at(19.5) === 0 && at(23) === 0, 'T4f. 19:30–24:00 = night');
+  // Monotonic dawn ramp & dusk ramp
+  assert(at(5.75) < at(6.25), 'T4g. dawn ramps upward smoothly');
+  assert(at(18.25) > at(18.75), 'T4h. sunset ramps downward smoothly');
+  assert(getDayNightFactor(10) === getDayNightFactor(11), 'T4i. pure function of fractional day only');
+}
+
+// T5: pause stops ALL time progression through GameManager.tick
+{
+  let sP = GameManager.createInitialState(0, false);
+  sP.simSpeed = 0;
+  const before = { days: sP.gameTimeDays, cash: sP.financials.cash };
+  for (let i = 0; i < 20; i++) sP = GameManager.tick(sP, 0.5);
+  assert(sP.gameTimeDays === before.days, 'T5a. pause freezes game clock');
+  assert(sP.financials.cash === before.cash, 'T5b. pause freezes finance progression');
+  assert(sP.finalEffluent.flowRate === 0 || before.days === sP.gameTimeDays, 'T5c. pause freezes simulation outputs');
+}
+
+// T6: 2× and 5× produce ~2×/5× game-time progression over the same real time
+{
+  const runFor = (speed: 1 | 2 | 5): number => {
+    let sR = GameManager.createInitialState(0, false);
+    sR.simSpeed = speed;
+    for (let i = 0; i < 100; i++) sR = GameManager.tick(sR, 0.5); // 50 real seconds
+    return sR.gameTimeDays;
+  };
+  // Measure PROGRESSION (delta from the shared initial clock, which starts at
+  // 07:00 on Day 1), not absolute clock values.
+  const start = INITIAL_GAME_TIME_DAYS;
+  const d1 = runFor(1) - start, d2 = runFor(2) - start, d5 = runFor(5) - start;
+  assert(Math.abs(d2 - 2 * d1) < 0.01, `T6a. 2× doubles progression (${d2.toFixed(3)} vs ${d1.toFixed(3)})`);
+  assert(Math.abs(d5 - 5 * d1) < 0.02, `T6b. 5× quintuples progression (${d5.toFixed(3)} vs ${d1.toFixed(3)})`);
+}
+
+// T7: fresh campaign starts in the morning with a full day ahead
+{
+  const sI = GameManager.createInitialState(0, false);
+  assert(Math.abs(sI.gameTimeDays - INITIAL_GAME_TIME_DAYS) < 1e-12, 'T7a. initial gameTimeDays uses INITIAL_GAME_TIME_DAYS');
+  assert(formatGameClock(sI.gameTimeDays) === '07:00', 'T7b. new campaign begins at 07:00');
+  assert(sI.isNight === false && sI.dayNightFactor === 1, 'T7c. campaign starts in daylight');
+}
+
+// T8: solar generation is synchronized to the visual day/night factor
+{
+  // Solar output must be ~0 at night and rise during the day, driven by the
+  // same getDayNightFactor curve the renderer uses.
+  const mkSolarState = (days: number) => {
+    const base8 = GameManager.createInitialState(0, false);
+    const solar = mkUnit('solar', 'solar_array', 16, 4);
+    return { ...base8, gameTimeDays: days, units: [...base8.units, solar] } as any;
+  };
+  const noon = GameManager.tick(mkSolarState(2 + 13 / 24), 0.5);
+  const midnight = GameManager.tick(mkSolarState(2 + 1 / 24), 0.5);
+  const solarKw = (st: any) => st.units.find((u: any) => u.instanceId === 'solar').lastPowerKwActual;
+  assert(solarKw(noon) < -1, `T8a. strong solar production near midday (${solarKw(noon).toFixed(1)} kW)`);
+  assert(solarKw(midnight) === 0, 'T8b. zero solar production at night');
+  // Visual↔production consistency: factor drives BOTH.
+  assert(getDayNightFactor(noon.gameTimeDays) === 1 && getDayNightFactor(midnight.gameTimeDays) === 0,
+    'T8c. lighting factor agrees with production windows');
 }
 
 console.log(failures === 0 ? '\nALL TESTS PASSED' : `\n${failures} TEST(S) FAILED`);

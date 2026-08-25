@@ -166,9 +166,11 @@ export class TerrainGrid {
   private cloudData: { y: number; z: number; speed: number; sx: number; sy: number; sz: number }[] = [];
   private lampBulbMat: THREE.MeshStandardMaterial | null = null;
   private windowMat: THREE.MeshStandardMaterial | null = null;
-  private siteLights: THREE.SpotLight[] = [];
-  private lampLights: THREE.SpotLight[] = [];
   private lampPoolMat: THREE.MeshBasicMaterial | null = null;
+  // Stylized fake site lighting (NO real SpotLights — see _buildSiteLighting)
+  private siteHeadMat: THREE.MeshStandardMaterial | null = null;
+  private siteConeMat: THREE.MeshBasicMaterial | null = null;
+  private sitePoolMat: THREE.MeshBasicMaterial | null = null;
   private restrictionGroup: THREE.Group | null = null;
   private restrictionRectKey: string = '';
   private flowParticles: THREE.InstancedMesh | null = null;
@@ -464,6 +466,13 @@ export class TerrainGrid {
       this.cloudMesh.instanceMatrix.needsUpdate = true;
     }
 
+    // Site floodlighting: stylized FAKE lighting only (items 7–8A) — emissive
+    // heads, additive cones and pool decals fade in at dusk. Zero real lights,
+    // zero shadow passes; night cost ≈ a handful of unlit quads.
+    if (this.siteHeadMat) this.siteHeadMat.emissiveIntensity = lerpN(0.05, 3.2, nightFactor);
+    if (this.siteConeMat) this.siteConeMat.opacity = nightFactor * 0.16;
+    if (this.sitePoolMat) this.sitePoolMat.opacity = nightFactor * 0.5;
+    // Street lamps: warm bulb glow + additive road pools (no real spotlights).
     if (this.lampBulbMat) this.lampBulbMat.emissiveIntensity = lerpN(0.05, 2.4, nightFactor);
     if (this.windowMat) this.windowMat.emissiveIntensity = lerpN(0.05, 1.15, nightFactor);
     // River is unlit — blend its palette manually so it darkens at night
@@ -471,16 +480,6 @@ export class TerrainGrid {
     if (this.flowStreakMat) this.flowStreakMat.color.copy(FLOW_STREAK_DAY).lerp(FLOW_STREAK_NIGHT, nightFactor);
     if (this.ringMat) this.ringMat.color.copy(FOAM_DAY).lerp(FOAM_NIGHT, nightFactor);
     if (this.foamMat) this.foamMat.color.copy(FOAM_DAY).lerp(FOAM_NIGHT, nightFactor);
-    // Site corner floodlights switch on at dusk (with real shadows)
-    for (const light of this.siteLights) {
-      light.intensity = nightFactor * 320;
-      light.visible = nightFactor > 0.02;
-    }
-    // Street lamps: warm light pools + real spotlights near the plant, night only
-    for (const light of this.lampLights) {
-      light.intensity = nightFactor * 90;
-      light.visible = nightFactor > 0.02;
-    }
     if (this.lampPoolMat) this.lampPoolMat.opacity = nightFactor * 0.75;
   }
 
@@ -786,9 +785,10 @@ export class TerrainGrid {
     this.cloudData = [];
     this.lampBulbMat = null;
     this.windowMat = null;
-    this.siteLights = [];
-    this.lampLights = [];
     this.lampPoolMat = null;
+    this.siteHeadMat = null;
+    this.siteConeMat = null;
+    this.sitePoolMat = null;
     this.restrictionGroup = null;
     this.restrictionRectKey = '';
     this.flowParticles = null;
@@ -808,18 +808,40 @@ export class TerrainGrid {
     this.nextVehicleId = 1;
   }
 
-  // ══════════════ SITE FLOODLIGHTING (night visibility) ═══════════════
+  // ══════════════ SITE FLOODLIGHTING (stylized FAKE lighting) ═══════════════
+  //
+  // Prompt 3.3 items 7–8B: NO real SpotLights and NO shadow passes at night.
+  // Night readability comes from (1) emissive floodlight heads, (2) additive
+  // light-pool decals on the plant floor, (3) translucent fake light cones,
+  // and (4) the global hemisphere/moon rig owned by SceneManager.
 
   private _buildSiteLighting() {
     const w = this.W;
     const d = this.D;
 
-    // Visual floodlight masts standing EXACTLY on the four corners of the
-    // plant slab (slightly inset so the base sits on the concrete).
+    // Shared animated materials (tick() drives their intensity with nightFactor)
     const mastMat = std(0x6b7480, 0.6, 0.4);
-    const headMat = new THREE.MeshStandardMaterial({
+    this.siteHeadMat = new THREE.MeshStandardMaterial({
       color: 0xfff8e0, emissive: 0xfff2c4, emissiveIntensity: 0.05,
     });
+    this.siteConeMat = new THREE.MeshBasicMaterial({
+      color: 0xffe9b8,
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
+    this.sitePoolMat = new THREE.MeshBasicMaterial({
+      map: this._makeWarmGlowTexture(),
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+
+    // Visual floodlight masts standing EXACTLY on the four corners of the
+    // plant slab (slightly inset so the base sits on the concrete).
     const inset = 0.45;
     const corners: [number, number][] = [
       [inset, inset],
@@ -827,54 +849,76 @@ export class TerrainGrid {
       [inset, d - inset],
       [w - inset, d - inset],
     ];
+    const poolGeo = new THREE.PlaneGeometry(17, 17);
+
     for (const [cx, cz] of corners) {
       const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.13, 7.5, 8), mastMat);
       mast.position.set(cx, 3.75, cz);
-      mast.castShadow = true;
       this.envGroup.add(mast);
       const crossbar = tbox(1.1, 0.09, 0.09, mastMat);
       crossbar.position.set(cx, 7.4, cz);
       crossbar.rotation.y = cx < w / 2 ? Math.PI / 4 : -Math.PI / 4;
       this.envGroup.add(crossbar);
-      const head = tbox(0.55, 0.16, 0.35, headMat);
+      const head = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.16, 0.35), this.siteHeadMat);
       head.position.set(cx, 7.28, cz);
       head.lookAt(w / 2, 0, d / 2);
       this.envGroup.add(head);
+
+      // Fake light cone: open-ended additive cylinder hanging under the head,
+      // aimed at the same interior point the old spotlight used to target.
+      const target = new THREE.Vector3(
+        cx < w / 2 ? w * 0.35 : w * 0.65,
+        0,
+        cz < d / 2 ? d * 0.35 : d * 0.65
+      );
+      const coneGeo = new THREE.CylinderGeometry(0.5, 4.6, 11, 12, 1, true);
+      coneGeo.translate(0, -5.5, 0); // apex at the origin, body extending down -Y
+      const cone = new THREE.Mesh(coneGeo, this.siteConeMat);
+      cone.position.set(cx, 7.25, cz);
+      cone.quaternion.setFromUnitVectors(
+        new THREE.Vector3(0, -1, 0),
+        target.clone().sub(cone.position).normalize()
+      );
+      cone.renderOrder = 22;
+      this.envGroup.add(cone);
+
+      // Stylized light-pool decal where the cone lands (additive, unlit).
+      const pool = new THREE.Mesh(poolGeo, this.sitePoolMat);
+      pool.position.set(target.x, 0.085, target.z);
+      pool.rotation.x = -Math.PI / 2;
+      pool.renderOrder = 21;
+      this.envGroup.add(pool);
     }
 
-    // Real SpotLights (one per corner) with SHADOW CASTING so the whole plant
-    // is readable at night — pure light, no visible cone meshes.
-    for (const [cx, cz] of corners) {
-      const spot = new THREE.SpotLight(0xffe9b8, 0, 95, 1.05, 0.55, 1.35);
-      spot.position.set(cx, 7.3, cz);
-      spot.target.position.set(cx < w / 2 ? w * 0.35 : w * 0.65, 0, cz < d / 2 ? d * 0.35 : d * 0.65);
-      spot.castShadow = true;
-      spot.shadow.mapSize.set(1024, 1024);
-      spot.shadow.camera.near = 1;
-      spot.shadow.camera.far = 120;
-      spot.shadow.bias = -0.0004;
-      this.envGroup.add(spot);
-      this.envGroup.add(spot.target);
-      this.siteLights.push(spot);
-    }
-
-    // Gate floodlight — mounted on a short mast atop the welcome sign post,
-    // aiming into the plant yard (no floating lights over the road)
-    const gateMastMat = std(0x6b7480, 0.6, 0.4);
-    const gateMast = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.08, 2.4, 8), gateMastMat);
+    // Gate lantern — a short mast on the welcome-sign post carrying ONLY an
+    // emissive lamp head plus a small pool decal on the yard side (item B).
+    const gateMast = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.08, 2.4, 8), mastMat);
     gateMast.position.set(w / 2, 3.7, d + 0.35);
-    gateMast.castShadow = true;
     this.envGroup.add(gateMast);
+    const gateLamp = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.14, 0.24), this.siteHeadMat);
+    gateLamp.position.set(w / 2, 4.85, d + 0.35);
+    this.envGroup.add(gateLamp);
+    const gatePool = new THREE.Mesh(new THREE.PlaneGeometry(9, 9), this.sitePoolMat);
+    gatePool.rotation.x = -Math.PI / 2;
+    gatePool.position.set(w / 2, 0.085, d - 3);
+    gatePool.renderOrder = 21;
+    this.envGroup.add(gatePool);
+  }
 
-    const gateSpot = new THREE.SpotLight(0xffe9b8, 0, 42, 0.9, 0.6, 1.3);
-    gateSpot.position.set(w / 2, 4.8, d + 0.35);
-    gateSpot.target.position.set(w / 2, 0, d - 4);
-    gateSpot.castShadow = true;
-    gateSpot.shadow.mapSize.set(512, 512);
-    gateSpot.shadow.bias = -0.0004;
-    this.envGroup.add(gateSpot);
-    this.envGroup.add(gateSpot.target);
-    this.siteLights.push(gateSpot);
+  /** Shared soft radial glow texture for fake light-pool decals. */
+  private _makeWarmGlowTexture(): THREE.CanvasTexture {
+    const c = document.createElement('canvas');
+    c.width = 128; c.height = 128;
+    const ctx = c.getContext('2d')!;
+    const grad = ctx.createRadialGradient(64, 64, 4, 64, 64, 62);
+    grad.addColorStop(0, 'rgba(255,226,168,0.95)');
+    grad.addColorStop(0.45, 'rgba(255,214,140,0.45)');
+    grad.addColorStop(1, 'rgba(255,214,140,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 128, 128);
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
   }
 
   // ══════════════════ HOVER / GHOST PLACEMENT INDICATORS ══════════════════
@@ -1490,8 +1534,11 @@ export class TerrainGrid {
     // Conifers
     const conifer = new THREE.InstancedMesh(coneGeo, coniferMat, N_CONIFER);
     const coniferTrunks = new THREE.InstancedMesh(trunkGeo, trunkMat, N_CONIFER);
-    conifer.castShadow = true;
-    coniferTrunks.castShadow = true;
+    // Shadow budget (item D): distant forests do NOT cast dynamic shadows —
+    // hundreds of metres of tree shadows cost real GPU for nothing at this
+    // camera height. Ground tone + hemisphere shading carries them.
+    conifer.castShadow = false;
+    coniferTrunks.castShadow = false;
 
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
@@ -1534,8 +1581,8 @@ export class TerrainGrid {
     const broadMat = new THREE.MeshStandardMaterial({ roughness: 0.88 });
     const broad = new THREE.InstancedMesh(blobGeo, broadMat, N_BROAD);
     const broadTrunks = new THREE.InstancedMesh(trunkGeo, trunkMat, N_BROAD);
-    broad.castShadow = true;
-    broadTrunks.castShadow = true;
+    broad.castShadow = false;
+    broadTrunks.castShadow = false;
 
     let nB = 0;
     for (let tries = 0; tries < N_BROAD * 14 && nB < N_BROAD; tries++) {
@@ -1596,7 +1643,7 @@ export class TerrainGrid {
     const rockGeo = new THREE.DodecahedronGeometry(0.4, 0);
     const N_ROCK_IN = Math.round(N_ROCK * 0.3);
     const rocks = new THREE.InstancedMesh(rockGeo, new THREE.MeshStandardMaterial({ color: 0x7d7f83, roughness: 0.95 }), N_ROCK);
-    rocks.castShadow = true;
+    rocks.castShadow = false;
     const ringGeo = new THREE.RingGeometry(0.42, 0.56, 20);
     this.ringMat = new THREE.MeshBasicMaterial({
       color: 0xf2f6f8, transparent: true, opacity: 0.8, side: THREE.DoubleSide, depthWrite: false,
@@ -1693,8 +1740,8 @@ export class TerrainGrid {
     const roofMat = new THREE.MeshStandardMaterial({ roughness: 0.85 });
     const houses = new THREE.InstancedMesh(bodyGeo, houseMat, MAX_HOUSES);
     const roofs = new THREE.InstancedMesh(roofGeo, roofMat, MAX_ROOFS);
-    houses.castShadow = true; houses.receiveShadow = true;
-    roofs.castShadow = true;
+    houses.castShadow = false; houses.receiveShadow = true;
+    roofs.castShadow = false;
 
     const windowTex = this._makeWindowTexture();
     this.windowMat = new THREE.MeshStandardMaterial({
@@ -1710,7 +1757,7 @@ export class TerrainGrid {
     towerGeo.translate(0, 0.5, 0);
     const MAX_TOWERS = Math.round(Math.min(340, Math.max(140, ((this.W * 0.4 + this.padX) * (this.D + this.padZ)) / 52)));
     const towers = new THREE.InstancedMesh(towerGeo, this.windowMat, MAX_TOWERS);
-    towers.castShadow = true; towers.receiveShadow = true;
+    towers.castShadow = false; towers.receiveShadow = true;
     const roofSlabMat = new THREE.MeshStandardMaterial({ color: 0x39404d, roughness: 0.9 });
     const towerRoofs = new THREE.InstancedMesh(towerGeo, roofSlabMat, MAX_TOWERS);
 
@@ -1810,7 +1857,7 @@ export class TerrainGrid {
       const y = this.terrainHeight(sx, sz);
       const silo = new THREE.Mesh(new THREE.CylinderGeometry(1.3, 1.3, 5.2, 14), siloMat);
       silo.position.set(sx, y + 2.6, sz);
-      silo.castShadow = true;
+      silo.castShadow = false;
       this.envGroup.add(silo);
       const cap = new THREE.Mesh(new THREE.SphereGeometry(1.3, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2), siloMat);
       cap.position.set(sx, y + 5.2, sz);
@@ -1821,7 +1868,7 @@ export class TerrainGrid {
       new THREE.MeshStandardMaterial({ color: 0x9aa2ab, roughness: 0.8 })
     );
     stack.position.set(this.W * 0.38, this.terrainHeight(this.W * 0.38, -this.padZ * 0.4) + 4.5, -this.padZ * 0.4);
-    stack.castShadow = true;
+    stack.castShadow = false;
     this.envGroup.add(stack);
 
     void eul; void q; void m; // retained for future builders
@@ -1925,7 +1972,7 @@ export class TerrainGrid {
     }
     cacti.count = n;
     cacti.instanceMatrix.needsUpdate = true;
-    cacti.castShadow = true;
+    cacti.castShadow = false;
     this.envGroup.add(cacti);
 
     // Date palms near the riverbanks
@@ -1957,7 +2004,7 @@ export class TerrainGrid {
     palms.count = np; fronds.count = nf;
     palms.instanceMatrix.needsUpdate = true;
     fronds.instanceMatrix.needsUpdate = true;
-    palms.castShadow = true; fronds.castShadow = true;
+    palms.castShadow = false; fronds.castShadow = false;
     this.envGroup.add(palms);
     this.envGroup.add(fronds);
 
@@ -2020,7 +2067,7 @@ export class TerrainGrid {
           std(0xa39b90, 0.92, 0.03)
         );
         stack.position.set(sx, fy + stackH / 2, sz);
-        stack.castShadow = true;
+        stack.castShadow = false;
         this.envGroup.add(stack);
         const bandMat = new THREE.MeshBasicMaterial({ color: 0xd9d2c8 });
         for (let b = 1; b <= 2; b++) {
@@ -2050,7 +2097,7 @@ export class TerrainGrid {
           std(tIdx === 0 ? 0xb8bfc6 : 0xc9b08a, 0.6, 0.3)
         );
         tank.position.set(fx + Math.cos(rot + 1.4) * 7 + tIdx * 3, fy + 1.2, fz - Math.sin(rot + 1.4) * 7);
-        tank.castShadow = true;
+        tank.castShadow = false;
         this.envGroup.add(tank);
       }
     }
@@ -2066,7 +2113,7 @@ export class TerrainGrid {
     const blobGeo = new THREE.IcosahedronGeometry(1, 1);
     const mat = new THREE.MeshStandardMaterial({ roughness: 0.9, flatShading: true });
     const blobs = new THREE.InstancedMesh(blobGeo, mat, N * 2);
-    blobs.castShadow = true;
+    blobs.castShadow = false;
 
     const xMin = -this.padX + 3;
     const xMax = this.W + this.padX - 3;
@@ -2130,7 +2177,6 @@ export class TerrainGrid {
     const mesh = (geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number) => {
       const m = new THREE.Mesh(geo, mat);
       m.position.set(x, y, z);
-      m.castShadow = true;
       m.receiveShadow = true;
       this.envGroup.add(m);
       return m;
@@ -2166,7 +2212,7 @@ export class TerrainGrid {
     const n = Math.round(this.cfg.villageCottages * 1.6);
     const bodies = new THREE.InstancedMesh(bodyGeo, new THREE.MeshStandardMaterial({ roughness: 0.9 }), n);
     const roofs = new THREE.InstancedMesh(roofGeo, new THREE.MeshStandardMaterial({ roughness: 0.85 }), n);
-    bodies.castShadow = true; roofs.castShadow = true;
+    bodies.castShadow = false; roofs.castShadow = false;
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
     const eul = new THREE.Euler();
@@ -2219,7 +2265,6 @@ export class TerrainGrid {
     // All lamps stand on the SOUTH verge of the road (the north side is the
     // plant slab) and never in the river. Bulb arms reach over the road edge.
     const LAMP_Z = zR + 4.6;         // pole position (grass verge)
-    const BULB_Z = zR + 4.6 - 1.65;  // arm tip, just over the road edge
     const spots: { x: number; side: number }[] = [];
     const xMin = -this.padX + 6;
     const xMax = this.W + this.padX - 6;
@@ -2231,7 +2276,7 @@ export class TerrainGrid {
     const poles = new THREE.InstancedMesh(poleGeo, poleMat, spots.length);
     const arms = new THREE.InstancedMesh(armGeo, poleMat, spots.length);
     const bulbs = new THREE.InstancedMesh(bulbGeo, this.lampBulbMat, spots.length);
-    poles.castShadow = true;
+    poles.castShadow = false;
 
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
@@ -2295,24 +2340,10 @@ export class TerrainGrid {
     pools.renderOrder = 20;
     this.envGroup.add(pools);
 
-    // ── Real SpotLights for lamps near the plant & crossing (night only) ──
-    // They add true dynamic lighting/shadows where the player is looking;
-    // every distant lamp is already visibly lit by its bulb + light pool.
-    this.lampLights = [];
-    spots.forEach(sp => {
-      if (Math.abs(sp.x - this.W / 2) > this.W / 2 + 40) return; // central zone only
-      const y = Math.max(0, this.terrainHeight(sp.x, LAMP_Z));
-      const bx = sp.x;
-      const by = y + 2.8;
-      const bz = BULB_Z;
-
-      const light = new THREE.SpotLight(0xffe2a8, 0, 22, 1.05, 0.6, 1.45);
-      light.position.set(bx, by, bz);
-      light.target.position.set(bx, 0, bz - sp.side * 1.7); // pool of light on the road lane
-      this.envGroup.add(light);
-      this.envGroup.add(light.target);
-      this.lampLights.push(light);
-    });
+    // ── NO real SpotLights here (item 8B): the player perceives "the lamp
+    // illuminates the road" purely from the emissive bulb + additive ground
+    // pool above. Physically correct point illumination is unnecessary for a
+    // top-down tycoon view, and every real light cost a render pass at night.
   }
 
   // ════════════ TUTORIAL BUILD-RESTRICTION OVERLAY ════════════════════

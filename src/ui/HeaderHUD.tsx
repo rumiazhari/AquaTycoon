@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { GameState } from '../gameplay/GameManager';
 import { SimulationSpeed } from '../types/game';
+import { formatGameClock } from '../gameplay/GameTime';
 import { SoundManager } from '../audio/SoundManager';
 import { collectViolations } from '../sim/AdvisoryEngine';
 
@@ -52,7 +53,9 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({
   };
 
   const dayNumber = Math.floor(gameTimeDays) + 1;
-  const hourNumber = Math.floor((gameTimeDays % 1) * 24);
+  // True HH:MM from the simulated clock (item 16). React only re-renders at the
+  // 500 ms simulation tick — never per animation frame.
+  const clockText = formatGameClock(gameTimeDays);
 
   return (
     <header className="absolute top-0 left-0 right-0 z-20 flex flex-col items-center pointer-events-none">
@@ -81,7 +84,7 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({
 
           <div className="hidden lg:block px-2.5 py-1 rounded-lg bg-slate-900/80 border border-slate-700/80 font-mono">
             <div className="text-[11px] font-bold text-sky-300 leading-none">Day {dayNumber}</div>
-            <div className="text-[9px] text-slate-400">{gameState.isNight ? '🌙 Night' : '☀️ Day'} {hourNumber.toString().padStart(2, '0')}:00</div>
+            <div className="text-[9px] text-slate-400">{gameState.isNight ? '🌙 Night' : '☀️ Day'} {clockText}</div>
           </div>
 
           {/* Power system readout: demand vs on-site green generation */}

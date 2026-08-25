@@ -748,7 +748,9 @@ export const App: React.FC = () => {
         if (sceneRef.current) {
           sceneRef.current.syncUnits(next.units);
           sceneRef.current.syncPipes(next.pipes);
-          sceneRef.current.setDayNight(next.isNight);
+          // Push the AUTHORITATIVE simulated clock into the renderer — the
+          // day/night lighting derives from it (item 15). No boolean lerp.
+          sceneRef.current.setGameClock(next.gameTimeDays);
         }
         return next;
       });
@@ -756,6 +758,22 @@ export const App: React.FC = () => {
     return () => {
       if (simIntervalRef.current) clearInterval(simIntervalRef.current);
     };
+  }, []);
+
+  // ── DEV-ONLY FPS TELEMETRY (Prompt 3.3 item 19) ───────────────────────────
+  // Opt-in via ?fps=1 or localStorage['aquateycoon.devFps']='1'. Logs one line
+  // per second to the console (day vs night frame-time comparison). No HUD
+  // clutter, no production cost.
+  useEffect(() => {
+    const urlFlag = typeof window !== 'undefined' &&
+      new URLSearchParams(window.location.search).get('fps') === '1';
+    const lsFlag = (() => {
+      try { return window.localStorage.getItem('aquateycoon.devFps') === '1'; }
+      catch { return false; }
+    })();
+    sceneRef.current?.setTelemetryEnabled(urlFlag || lsFlag);
+    // Re-apply after HMR/scene rebuilds
+    return () => { sceneRef.current?.setTelemetryEnabled(false); };
   }, []);
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -1034,7 +1052,12 @@ export const App: React.FC = () => {
       {/* ── Header HUD ──────────────────────────────────────────────────────── */}
       <HeaderHUD
         gameState={gameState}
-        onSetSpeed={s => setGameState(prev => ({ ...prev, simSpeed: s }))}
+        onSetSpeed={s => {
+          // Explicit speed sync (item 14): the React sim and the Three.js world
+          // always share one multiplier — no implicit state reads.
+          setGameState(prev => ({ ...prev, simSpeed: s }));
+          sceneRef.current?.setSimulationSpeed(s);
+        }}
         onOpenLevelModal={() => setLevelModal(true)}
         onOpenTechTree={() => setTechModal(true)}
         onOpenPFD={() => setPfdModal(true)}

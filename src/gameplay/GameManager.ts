@@ -7,6 +7,7 @@ import { emptyWater } from '../sim/WaterStream';
 import { SimulationEngine } from '../sim/SimulationEngine';
 import { analyzeActiveLiquidPath, hasActiveProcessTypeOnPath } from './PlantTopology';
 import { TUTORIAL_STEPS } from './TutorialSteps';
+import { REAL_SECONDS_PER_GAME_DAY, INITIAL_GAME_TIME_DAYS, getDayNightFactor } from './GameTime';
 
 export interface NextStepSuggestion {
   unitTypeId: UnitTypeId;
@@ -34,6 +35,8 @@ export interface GameState {
   levelVictoryModalOpen: boolean;
   sandboxCustomInfluent: WaterQuality;
   isNight: boolean;
+  /** Smooth day/night blend factor in [0,1] (0=night, 1=day) from the game clock. */
+  dayNightFactor: number;
   suggestion: NextStepSuggestion | null;
   complianceStreakDays: number;
   tutorialActive: boolean;
@@ -135,7 +138,7 @@ export class GameManager {
       },
       gameMode: isSandbox ? 'sandbox' : 'campaign',
       simSpeed: 1,
-      gameTimeDays: 0,
+      gameTimeDays: INITIAL_GAME_TIME_DAYS,
       financials,
       units: initialUnits,
       pipes: [],
@@ -148,6 +151,7 @@ export class GameManager {
       levelVictoryModalOpen: false,
       sandboxCustomInfluent: { ...level.influentSpec },
       isNight: false,
+      dayNightFactor: getDayNightFactor(INITIAL_GAME_TIME_DAYS),
       suggestion: initialSuggestion,
       complianceStreakDays: 0,
       tutorialActive: false,
@@ -450,19 +454,21 @@ export class GameManager {
     if (state.simSpeed === 0) return state;
 
     const speedMultiplier = state.simSpeed;
-    const simDeltaDays = (deltaSec * speedMultiplier) / 60; // 1 real minute = 1 game day at 1x speed
+    const simDeltaDays = (deltaSec * speedMultiplier) / REAL_SECONDS_PER_GAME_DAY;
     const newDays = state.gameTimeDays + simDeltaDays;
-    const isNight = (Math.floor(newDays * 24) % 24) >= 19 || (Math.floor(newDays * 24) % 24) < 6;
+    // Day/night derived from the actual simulated clock (smooth blend factor).
+    const dayNightFactor = getDayNightFactor(newDays);
+    const isNight = dayNightFactor < 0.5;
 
     // Influent choice
     const activeInfluent = state.gameMode === 'sandbox' ? state.sandboxCustomInfluent : state.currentLevel.influentSpec;
 
-    // Environmental factors driving renewable generation:
-    // daylight is a bell curve between 06:00 and 19:00; wind meanders slowly.
-    const hourOfDay = (newDays % 1) * 24;
-    const daylight = (hourOfDay >= 6 && hourOfDay < 19)
-      ? Math.max(0, Math.sin(((hourOfDay - 6) / 13) * Math.PI))
-      : 0;
+    // Environmental factors driving renewable generation.
+    // SOLAR uses the SAME smooth day-night factor as the visual sky (Prompt 3.3
+    // item 15): sunrise visually matches production beginning, midday = peak,
+    // sunset matches the decline, night = zero. WIND meanders on simulated
+    // days, never wall-clock time.
+    const daylight = getDayNightFactor(newDays);
     const wind = 0.15 + 0.85 * Math.max(0, 0.5 + 0.5 * Math.sin(newDays * 2.9) * Math.sin(newDays * 1.31 + 1.7));
 
     // Solve process engineering mass-balance
@@ -609,6 +615,7 @@ export class GameManager {
       isLevelComplete: state.isLevelComplete || allObjectivesMet,
       levelVictoryModalOpen: state.levelVictoryModalOpen || becameComplete,
       isNight,
+      dayNightFactor,
       suggestion,
       complianceStreakDays
     };
