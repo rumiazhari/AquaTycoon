@@ -38,12 +38,13 @@ export function evaluateClarifierLoad(
   const qForward = Math.max(0, forwardFlowM3d);
   const sor = qForward / A;
   const solidsKgDay = (Math.max(0, totalFeedM3d) * mlssFeedMgL) / 1000;
-  const slr = solidsKgDay / A;
+  const slrKgM2Day = solidsKgDay / A;
+  const slrKgM2Hour = slrKgM2Day / 24;
 
   // State-based settling capacity (Metcalf&Eddy ranges):
-  // SOR > ~33 m/d or SLR > ~6 kg/m²·d pushes the blanket up.
+  // SOR > ~33 m/d or SLR > ~6 kg/m²·h (≈144 kg/m²·d) pushes the blanket up.
   const sorOverload = sor > 33 ? (sor - 33) / 20 : 0;
-  const slrOverload = slr > 6 ? (slr - 6) / 4 : 0;
+  const slrOverload = slrKgM2Hour > 6 ? (slrKgM2Hour - 6) / 4 : 0;
   const overloadPressure = Math.max(sorOverload, slrOverload);
 
   // Blanket rises under overload, falls when lightly loaded.
@@ -62,7 +63,7 @@ export function evaluateClarifierLoad(
   return {
     planAreaM2: A,
     sorM3M2Day: sor,
-    slrKgM2Day: slr,
+    slrKgM2Day: slrKgM2Day,
     peakSorM3M2Day: sor * PEAK_FACTOR,
     blanketLevelFraction,
     escapeTssMgL: escapeTss,

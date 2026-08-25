@@ -1,0 +1,112 @@
+
+> aquatycoon-wastewater-model@1.1.0 test:ui
+> tsx scripts/ui-tests.tsx && tsx scripts/ui-interaction-tests.tsx
+
+PASS  T1a. Pipes click followed by null unit selection stays in connect_pipe (old bug sequence)
+PASS  T1b. Switching tools atomically clears the stale placement unit
+PASS  T1c. onSelectUnitTypeId(null) NEVER enters place_unit
+PASS  T1d. Selecting a build unit enters place_unit WITH that unit in one transition
+PASS  T1e. Null selection in Pipes mode does not kick the player out of Pipes
+PASS  T1f. cancel_placement resets to select cleanly
+PASS  T2a. Good effluent passes every criterion
+PASS  T2b. No violations for good effluent
+PASS  T2c. Permit table covers ALL parameters incl. pH band and turbidity (10 rows)
+PASS  T2d. Zero-pathogen limit displayed literally as "≤ 0" (never clamped to 1)
+PASS  T2e. Pathogens 500 vs limit 0 FAILS a true-zero permit
+PASS  T2f. Pathogens exactly 0 PASSES a true-zero permit
+PASS  T2g. True-zero pathogen violation detected and ranked
+PASS  T2h. Both pH bounds evaluated as separate criteria (matches SimulationEngine)
+PASS  T2i. Turbidity violation detected (was invisible in the old UI checks)
+PASS  T2j. High-pH violation detected (was invisible in the old UI checks)
+PASS  T2k. Low-pH violation detected
+PASS  T2l. Criterion message byte-identical to engine format
+PASS  T3a. Influent inlet is on the active train
+PASS  T3b. Screen fed by the inlet is on the active train
+PASS  T3c. Sludge-fed unit is NOT claimed as part of the main liquid train
+PASS  T3d. Sludge-fed unit is connected but off-train (not "no pipes attached")
+PASS  T3e. Zero-pipe unit flagged fully disconnected
+PASS  T3f. Main-train order follows real liquid edges from the inlet
+PASS  T3g. Off-train list contains exactly the non-main-line units
+PASS  T4-1920×1080: card always inside viewport at 1920×1080
+PASS  T4-1366×768: card always inside viewport at 1366×768
+PASS  T4-1280×720: card always inside viewport at 1280×720
+PASS  T4-1024×768: card always inside viewport at 1024×768
+PASS  T4-~800px width: card always inside viewport at ~800px width
+PASS  T4z. Tiny viewport never produces negative placement coordinates
+PASS  T5a. Dry unit reports "No Flow" (not Active & Steady)
+PASS  T5b. Disabled unit reports "Inactive"
+PASS  T5c. Flowing healthy unit reports Active & Steady
+PASS  T5d. Toxic load surfaces as a warning status, not fake health
+PASS  T5e. Valid numeric 0 renders as 0 (never swapped for a default)
+PASS  T5f. Old magic fallbacks gone from MLSS/SVI cells
+PASS  T5g. Undefined SVI renders as an explicit em-dash placeholder
+PASS  T6a. Missing prerequisite names the actual requirement (not "Prerequisites Locked")
+PASS  T6b. Insufficient cash says exactly how much is missing ("Need $50.000 more")
+PASS  T6c. Sandbox ignores cash requirements
+PASS  T6d. Exactly-enough cash unlocks (>= comparison)
+PASS  T6e. Unlocked node reports its own state
+PASS  T7a. Pipes button visually active in connect_pipe mode
+PASS  T7b. Inspect button not styled active while Pipes is active
+PASS  T7c. Demolish button visually active in demolish mode
+PASS  T7d. Inspect button visually active in select mode
+PASS  T7e. place_unit with null unit highlights no card (dead-state made visible-safe)
+PASS  T7f. No seed toggle when no build unit is selected
+PASS  T7g. CAS placement shows the seed toggle ON by default
+PASS  T7h. Seed OFF advertises the unseeded discount
+PASS  T8a. Operator Console lists Turbidity row
+PASS  T8b. Operator Console lists pH row
+PASS  T8c. Failing pathogen sample shows FAIL in the report
+PASS  T8d. Pathogen limit never faked up to 1 CFU
+PASS  T8e. At least one explicit FAIL badge rendered
+PASS  T8f. PFD regulatory table includes Turbidity and pH rows
+PASS  T8g. PFD shows FAIL for actual violations (no all-PASS lie)
+PASS  T8h. PFD shows pass-count summary
+PASS  T9a. Empty topology explains there is no active train
+PASS  T9b. Disconnected units get their own section
+PASS  T9c. Zero outfall flow is disclosed next to the standards table
+PASS  T9d. Missing outlet data renders as "—", never a fabricated 0 mg/L
+PASS  T9e. Old fake-zero expression pattern absent
+PASS  T10a. Inspector shows No Flow for a dry unit
+PASS  T10b. HUD chip refuses "WATER CLEAN" when nothing reaches the outfall
+PASS  T11a. Blanket "Prerequisites Locked" wording removed
+PASS  T11b. Rendered modal shows the concrete blocker ("Need $25.000 more")
+PASS  T12a. PFD renders the true-zero limit as ≤ 0
+PASS  T12b. 30 CFU against a 0 limit shows FAIL
+
+ALL UI TESTS PASSED (70)
+
+── A. BuildToolbar: Inspect / Pipes / Demolish tool switching ──
+  ✅ Inspect button renders
+  ✅ Clicking Inspect switches to select mode
+  ✅ Switching tools clears any pending unit-type selection
+  ✅ Clicking Pipes enters connect_pipe mode
+  ✅ Clicking Demolish from pipe mode enters demolish mode
+  ✅ Active Demolish tool is highlighted rose
+  ✅ Inactive Inspect tool loses its highlight while another tool is active
+  ✅ Bar Screen build card visible in Preliminary category
+  ✅ Clicking a unit card arms place_unit mode
+  ✅ Clicking Bar Screen card selects bar_screen as the active unit type
+
+── B. UnitInspector: selection panel interactions ──
+  ✅ Inspector shows the selected unit definition name
+  ✅ Zero-flow truthfulness: no-flow units say so instead of fake numbers
+  ✅ Header X closes only the inspector (no param/demolish side effects)
+  ✅ Demolish action offered for a regular unit
+  ✅ Demolish click targets the inspected instance id
+  ✅ Both bar_screen setpoint sliders render
+  ✅ Bar Spacing slider has a wired onChange handler
+  ✅ Bar Spacing onChange commits ('u1','barSpacingMm',25) — got [["u1","barSpacingMm",25]]
+
+── C. PortSelector: pipe endpoint picking & cancel ──
+  ✅ Live connection status shown (FREE vs IN USE)
+  ✅ Clicking a FREE port selects that exact port
+  ✅ Connected non-highlighted port row is disabled (cannot double-connect)
+  ✅ Cancel button aborts pipe targeting without selecting anything
+
+── N. BuildToolbar: seed-sludge placement toggle ──
+  ✅ Seed toggle renders ON while placing a CAS basin
+  ✅ Clicking the seed toggle fires onTogglePlaceSeeded once
+  ✅ OFF state advertises the haul-in savings on the toggle
+  ✅ OFF-state toggle click also fires the callback
+
+ALL UI INTERACTION TESTS PASSED (26)

@@ -349,7 +349,7 @@ function DiagnosticsTab({ unit, bp }: { unit: PlacedUnit; bp: PlacedUnit['bluepr
         <>
           <Divider />
           <Row k="Surface overflow rate" v={`${fmt(clar.sorM3M2Day, 1)} m/d`} good={clar.sorM3M2Day < 24} bad={clar.sorM3M2Day > 33} />
-          <Row k="Solids loading" v={`${fmt(clar.slrKgM2Day, 2)} kg/m²·d`} bad={clar.slrKgM2Day > 6} />
+          <Row k="Solids loading" v={`${fmt(clar.slrKgM2Day, 2)} kg/m²·d`} bad={clar.slrKgM2Day > 144} />
           <Row k="Blanket level" v={`${fmt(clar.blanketLevelFraction * 100, 0)} %`} bad={clar.blanketLevelFraction > 0.7} />
           <Row k="Escape TSS" v={`${fmt(clar.escapeTssMgL, 0)} mg/L`} bad={clar.escapeTssMgL > 20} />
         </>

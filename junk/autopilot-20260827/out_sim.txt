@@ -1,0 +1,232 @@
+
+> aquatycoon-wastewater-model@1.1.0 test
+> tsx scripts/sim-tests.ts
+
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.2% at unitInlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at unitInlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at unitInlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at unitInlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at unitInlet). Check for pathological recycle topologies.
+PASS  RAS loop stable: effluent 3688 vs influent 3500 m3/d (old bug gave ~14000)
+PASS  Level 4 achievable: A2O effluent TN = 4.33 mg/L (< 5)
+PASS  Forward flow preserved through A2O: 12000
+PASS  Clarifier passes forward flow: eff=9950 (target ~10000), RAS=7500
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.7% at flow:uv::outlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at unitInlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at unitInlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at unitInlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at unitInlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at unitInlet). Check for pathological recycle topologies.
+PASS  Level 1 fully compliant at defaults (compliance 100%)
+PASS  Cascade re-aeration lifts DO 1.8 → 4.3 mg/L
+PASS  Advisor: no-pipe plant → directs the player to the manual Pipes tool
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.7% at flow:uv::outlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at unitInlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at unitInlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at unitInlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at unitInlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at unitInlet). Check for pathological recycle topologies.
+PASS  Under-tuned plant violates (82% compliance) — advisor has something to fix
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.4% at unitInlet). Check for pathological recycle topologies.
+PASS  Recovery exists: DO→4.5 predicts NH4 2.3 mg/L & DO 7.0 mg/L (both PASS)
+PASS  Advisor generated 3 advisory card(s)
+PASS  Solar: -42 kW at full sun, 0 kW at night
+PASS  Wind: -85 kW rated, -17 kW at 20% wind
+PASS  Solar+wind feed the grid: 127 kW green generation
+PASS  UV consequence: raw feed survives as 3.5e+5 CFU, polished feed drops to 64 CFU
+PASS  Chlorine demand: septic feed leaves 6.8e+5 vs 8.0e+1 CFU after nitrification
+PASS  RO consequence: fouled permeate BOD 1.2 vs clean 0.0
+PASS  Pump consequence: unscreened opex $44/d & 10.8 kW vs screened $20/d
+PASS  A. series line conserves forward flow: 9942 m³/d from 10,000 (no duplication, no collapse)
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.1% at flow:clar::outlet). Check for pathological recycle topologies.
+PASS  B. RAS ratio Qras/Qforward = 0.76 (target ≈ 0.75, old bug ≈ 3.0)
+PASS  C. clarifier forward = Qclar/(1+r): 9950 ≈ 10000 m³/d (RAS 7500)
+PASS  D. splitter 60/40: 5977 + 3985 = 9962 m³/d
+PASS  E. branching an unsplit outlet is rejected: "Screened Water on Mechanical Bar Screen already feeds one line — flow ca…"
+PASS  E+. engine divides duplicated source across pipes: 4981 + 4981 ≠ 20,000
+PASS  F. primary sludge line carries real sludge: 150 m³/d @ 6713 mg/L TSS
+PASS  F+. thickened sludge concentrates into digester: 24 m³/d @ 39996 mg/L TSS
+PASS  F++. digester produces biogas: 139 Nm³/d
+PASS  G. secondary clarifier sludge_outlet → CAS ras_inlet accepted (ok)
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.1% at flow:clar::sludge_outlet). Check for pathological recycle topologies.
+PASS  G+. RAS pipe carries recycle flow: 7532 m³/d
+PASS  H. rotated ports stay aligned with rendered footprint at 0/90/180/270°
+PASS  H+. rotating moves port positions: outlet moved 3.54 tiles at 90°
+PASS  I. digester emits GasStream: 2335 Nm³/d @ 65% CH₄
+PASS  I+. gas port has NO entry in liquid portStreams (clean)
+PASS  I++. gas pipe carries gasFlowRate=900 with zero WaterQuality flow
+PASS  J. digester gas_outlet → UV inlet rejected: "Biogas cannot enter Polished Inflow on UV Disinfection Chamber: no ins…"
+PASS  J+. gas cannot even feed its own unit's inlet
+PASS  J++. sludge_outlet → thickener inlet remains valid plumbing
+PASS  J+++. duplicate connection to the same target port rejected
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.9% at unitInlet). Check for pathological recycle topologies.
+PASS  K. biogas + renewables generate: 129.5 kW green
+PASS  K+. digester CHP produces real power: -2.5 kW (negative=gen)
+PASS  K++. grid import (0.0) < green generation — self-consumption is real
+PASS  L. RO: perm 4500 + brine 5500 = 10000 ≈ 10000 m³/d
+PASS  L+. RO brine concentrates BOD: 35.7 > 20
+PASS  L++. RO permeate is clean: BOD 0.80 << 20
+PASS  M. thickener solids balance: in=10000 kg/d, out=10000 kg/d (thick=9500, sup=500)
+PASS  M+. thickener concentrates: 40000 > 10000
+PASS  N. clarifier emits distinct RAS (7500) and WAS (50) streams
+PASS  N+. RAS flow 7500 m³/d (>5000 = 75% of forward)
+PASS  N++. WAS purge 50 m³/d (capped, distinct path)
+PASS  O. A2O has no external recycle_outlet (was flow-creating bug): 
+PASS  O+. A2O emits no gas (process gas is internal)
+PASS  O++. A2O forward flow preserved: 12000 (not 16000 or 40000)
+PASS  O+++. A2O achieves low TN: 4.31 mg/L — internal IR enables ANAMMOX/DENIT
+PASS  A. MBR normal balance |Qin−Qperm−Qwas|/Qin = 0.00% < 1%
+PASS  A+. MBR fouled balance error 0.00% < 1%
+PASS  B. disconnected MBR does NOT satisfy obj_mbr
+PASS  C. connected MBR satisfies obj_mbr (TSS 0.000 ≤ 0.1)
+PASS  D. disconnected RO does NOT satisfy obj_ro
+PASS  E. connected RO multi-barrier satisfies obj_ro (BOD 1.00, TSS 0.000)
+PASS  F. pathogen_zero NOT achieved while effluent has 2.0e+2 CFU (target exactly 0)
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.7% at flow:uv::outlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.1% at unitInlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.1% at unitInlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.1% at unitInlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.1% at unitInlet). Check for pathological recycle topologies.
+PASS  G/H. cumulative 71026 m³ accumulated but obj_volume NOT latched — current-flow semantics verified (3625 m³/d < 10,000)
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.7% at flow:uv::outlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at unitInlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at unitInlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at unitInlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at unitInlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at unitInlet). Check for pathological recycle topologies.
+PASS  G+. obj_volume passes on CURRENT throughput (17942 ≥ 5,000 m³/d)
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.7% at flow:uv::outlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at unitInlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at unitInlet). Check for pathological recycle topologies.
+PASS  I. obj_aeration tracks REACTOR DO (setpoint 0.5 → actual 0.0), not satisfied despite flow
+PASS  J. obj_energy unmet while self-sufficiency is 0%
+PASS  J+. adding renewables raises green generation to 127 kW
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 3.0% at flow:unit_1787699772351_7t07::outlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.1% at flow:unit_1787699772351_7t07::outlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at flow:unit_1787699772351_7t07::outlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at flow:unit_1787699772351_7t07::outlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at flow:unit_1787699772351_7t07::outlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at flow:unit_1787699772351_7t07::outlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.6% at flow:unit_1787699772351_7t07::outlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.5% at flow:unit_1787699772351_7t07::outlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.6% at flow:unit_1787699772351_7t07::outlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.5% at flow:unit_1787699772351_7t07::outlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.6% at flow:unit_1787699772351_7t07::outlet). Check for pathological recycle topologies.
+PASS  K. compliance streak resets on process failure (2.9d → 0.0d)
+PASS  L. disconnected Equalization Basin does NOT satisfy obj_eq
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.5% at flow:uvM::outlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at flow:uvM::outlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at flow:uvM::outlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at flow:uvM::outlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at flow:uvM::outlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at flow:uvM::outlet). Check for pathological recycle topologies.
+PASS  M. disconnected sand filter does NOT satisfy obj_sand (TSS 30.0)
+PASS  N. placeUnit rejects unavailable unit: "Reverse Osmosis (RO) Skid is not available in this level"
+PASS  O. placeUnit rejects locked-tech unit: "Membrane Bioreactor (MBR) is not available in this level"
+PASS  P. unlockTech rejects missing prerequisites: "Requires prior research: 3-Stage Biological Nutrient Removal (A2O / Bardenpho)"
+PASS  Q. valid tech unlock succeeds: tech_compact_tanks
+PASS  R. zero-pipe plant: only the inlet is active, no path to outfall
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.7% at flow:uv::outlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at unitInlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at unitInlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at unitInlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at unitInlet). Check for pathological recycle topologies.
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.0% at unitInlet). Check for pathological recycle topologies.
+PASS  R+. RAS loop terminates; 8 units active, influent→outfall=true
+PASS  R++. CAS detected as active on-path process
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.7% at unitInlet). Check for pathological recycle topologies.
+place fail: uv_disinfection Insufficient funds ($55.000 required)
+FAIL  S. Level 1 canonical staged build COMPLETES (score 82%, cash $34878)
+PASS  T. L3 advisor suggests AOP when toxic/COD remain high (advanced_oxidation_aop)
+PASS  U. L3 advisor suggests chemical P when TP remains high (chemical_phosphorus)
+PASS  W. L4 advisor recognizes missing sand filtration (sand_filter)
+PASS  V. L4 advisor directs to sludge/energy recovery chain (sludge_thickener)
+PASS  X. L5 obj_volume tracks CURRENT throughput (17855 m³/d → achieved=true)
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.7% at flow:unit_1787699772497_v058::outlet). Check for pathological recycle topologies.
+PASS  Z1. Live objective unlatch — BOD met at steady state (bod=4.4 ≤ 25)
+FAIL  Z2. Live objective unlatch — profit positive at steady state ($-645/d)
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 1.1% at unitInlet). Check for pathological recycle topologies.
+PASS  Z3. Live objective UNLATCHED — BOD deteriorated above 25 (bod=494.8)
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 6.6% at unitInlet). Check for pathological recycle topologies.
+PASS  Z4. Live objective re-achievable after recovery (bod=4.8 ≤ 25)
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 0.7% at flow:unit_1787699772567_ufao::outlet). Check for pathological recycle topologies.
+FAIL  Z5. All Level 1 objectives valid simultaneously → complete
+FAIL  Z6. isLevelComplete latches true on all-met
+[AquaTycoon sim] hydraulic network did not fully converge within 24 passes (worst residual 1.1% at unitInlet). Check for pathological recycle topologies.
+PASS  Z7. Post-completion: live BOD objective still unlatched (can flip false)
+FAIL  Z8. isLevelComplete STAYS latched true despite deterioration
+PASS  AA1. vehicle A acquires road-wide reservation
+PASS  AA2. vehicle B (same dir) cannot acquire while A holds
+PASS  AA3. vehicle C (opposite dir) cannot acquire — single road-wide lock
+PASS  AA4. B cannot begin while A in prepare (retained)
+PASS  AA4b. C cannot begin while A in overtake (retained)
+PASS  AA4c. A still holds through return
+PASS  AA5. reservation released after A reaches cooldown/home lane
+PASS  AA6. B may acquire after release
+PASS  AA7. release by non-holder is refused (no stale-lock injection)
+PASS  AA8. canBeginOvertake=false for a vehicle already manoeuvring
+PASS  AA9. canBeginOvertake=false while vehicle cooldown > 0
+PASS  Y. Level 5 completion does NOT wrap to Level 1 (modulo removed, guarded advance)
+PASS  T1a. REAL_SECONDS_PER_GAME_DAY is the single constant 600
+PASS  T1b. 600 real seconds = exactly 1 game day at 1×
+PASS  T1c. 300 real seconds = 1 game day at 2×
+PASS  T1d. 120 real seconds = 1 game day at 5×
+PASS  T2a. speed 0 → zero simulated time (pause)
+PASS  T2b. speed 2 → exactly 2× progression
+PASS  T2c. speed 5 → exactly 5× progression
+PASS  T3a. day 0 → Day 1, 00:00
+PASS  T3b. 07:17 formats correctly
+PASS  T3c. late-day rounding stays inside 23:59
+PASS  T3d. fractional days beyond whole days ignored for clock
+PASS  T3e. 1.5 days → Day 2, 12:00
+PASS  T4a. midnight = full night
+PASS  T4b. 05:00 still night
+PASS  T4c. 06:00 mid-dawn blend (smooth, not snapped)
+PASS  T4d. 06:30–18:00 = full day
+PASS  T4e. 18:30 mid-sunset blend
+PASS  T4f. 19:30–24:00 = night
+PASS  T4g. dawn ramps upward smoothly
+PASS  T4h. sunset ramps downward smoothly
+PASS  T4i. pure function of fractional day only
+PASS  T5a. pause freezes game clock
+PASS  T5b. pause freezes finance progression
+PASS  T5c. pause freezes simulation outputs
+PASS  T6a. 2× doubles progression (0.167 vs 0.083)
+PASS  T6b. 5× quintuples progression (0.417 vs 0.083)
+PASS  T7a. initial gameTimeDays uses INITIAL_GAME_TIME_DAYS
+PASS  T7b. new campaign begins at 07:00
+PASS  T7c. campaign starts in daylight
+PASS  T8a. strong solar production near midday (-42.0 kW)
+PASS  T8b. zero solar production at night
+PASS  T8c. lighting factor agrees with production windows
+PASS  W1a. surface normal stays +Y for yaws {0, π/4, π/2, π, −π/2, …}
+PASS  W1b. sanity: the OLD double-rotation pattern yields normal −Z (vertical quad)
+PASS  W2a. position always equals basePosition ± bounded oscillation
+PASS  W2b. pure determinism: same (base,t) → identical position, any call order
+PASS  W2c. width pulse stays within ±13% of base width
+PASS  W2d. length never mutates
+PASS  W2e. yaw is constant per particle (no accidental verticals over time)
+PASS  W3a. max displacement after 10k frames = 0.060000 ≤ amplitude 0.06
+PASS  W3b. position is periodic in time — no secular (cumulative) term exists
+PASS  W4a. animated streak matrix keeps normal +Y
+PASS  W4b. streak yaw equals atan2(ΔcenterX, 2Δ) — follows the meander tangent
+PASS  R1a. corridor heights clamped ≤ support grade (bridge approaches clean)
+PASS  R1b. below-grade channel bed passes through unclamped
+PASS  R2a. natural terrain restored at/after clear end
+PASS  R2b. height rises monotonically outward (no trench, no re-raise)
+PASS  P1a. WATER_DAY is a blue
+PASS  P1b. WATER_DUSK is a blue
+PASS  P1c. WATER_NIGHT is a blue
+PASS  P1d. day brighter than dusk
+PASS  P1e. dusk brighter than night
+PASS  P1f. night water is not pure black
+PASS  P2a. nf=0 → WATER_DAY exactly
+PASS  P2b. nf=1 → WATER_NIGHT exactly
+PASS  P2c. nf=0.5 hits WATER_DUSK exactly (3-stop curve, not a DAY↔NIGHT lerp)
+PASS  P2d. midpoint differs from a plain two-stop lerp (dusk stop is real)
+PASS  P2e. luminance decreases monotonically with nightFactor (no dips/spikes)
+PASS  C1a. NATURE_ROAD_CLEARANCE = paved half-width + shoulder + margin
+PASS  C1b. at least as strict as the tightest previous magic distance (5.2)
+PASS  C1c. not wider than the widest previous distance (6.5 — no over-clearing)
+
+5 TEST(S) FAILED
