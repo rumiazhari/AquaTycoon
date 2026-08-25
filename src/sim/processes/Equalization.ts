@@ -17,6 +17,11 @@ const CONSTITUENT_KEYS: Array<keyof WaterQuality> = [
   'do', 'ph', 'turbidity', 'toxicIndex',
 ];
 
+/** Fraction of working volume kept as permanent minimum operating pool
+ *  (water below the pump intake). Gives every slug something to blend with,
+ *  even when the basin is otherwise empty. 8% ≈ typical dead storage. */
+const EQ_MIN_POOL_FRACTION = 0.08;
+
 export interface EqStepResult {
   /** Mixed-tank discharge for this step (m³/d averaged over dt). */
   outflowM3d: number;
@@ -53,24 +58,20 @@ export function stepEqualization(
   let storage = unit.eqStorage ?? initEqStorage();
 
   const qIn = Math.max(0, inlet.flowRate);
-  // Pump-controlled outflow: target rate, limited by available storage.
+  // Pump-controlled outflow: target rate, limited by what is actually
+  // available ABOVE the minimum pool (the intake cannot draw the pool itself).
+  const poolM3 = capacityM3 * EQ_MIN_POOL_FRACTION;
+  const usableAbovePool = Math.max(0, storage.storedVolumeM3 - poolM3);
   const maxOut = (outflowTargetM3h ?? 160) * 24;
-  let qOut = Math.min(maxOut, qIn + storage.storedVolumeM3 / Math.max(dtDays, 1e-6));
+  let qOut = Math.min(maxOut, qIn + usableAbovePool / Math.max(dtDays, 1e-6));
 
   let overflowM3d = 0;
 
-  if (storage.storedVolumeM3 < 1e-6 && qIn <= qOut) {
-    // Empty tank passing through: still mix a slug (short-circuit ~ HRT≈0).
-    storage = initEqStorage();
-    return {
-      outflowM3d: qIn,
-      effluent: { ...inlet },
-      overflowed: false,
-      overflowM3d: 0,
-      storedVolumeM3: 0,
-      levelFraction: 0,
-    };
-  }
+  // Minimum operating pool: a real EQ basin's pump intake sits above the
+  // floor, so the basin NEVER pumps bone-dry. This residual volume is always
+  // available for blending — a slug entering an "empty" basin still mixes
+  // into the pool instead of passing straight through (that raw passthrough
+  // was the old mass-balance gap: zero attenuation even for spiked loads).
 
   // Volume integration with overflow clamp.
   const rawNextV = storage.storedVolumeM3 + (qIn - qOut) * dtDays;
@@ -86,30 +87,37 @@ export function stepEqualization(
     storage.storedVolumeM3 = rawNextV;
   }
 
-  // Mass balance per constituent. pH is NOT mass-conserving — blend toward
-  // tank value weighted by flows; DO relaxes toward saturation in storage.
+  // Mass balance per constituent — EXACT CSTR integration over the step
+  // (dM/dt = qIn·Cin − qOut·M/mixV solved analytically; unconditionally
+  // stable, no transient overshoot even when dt exceeds the pool residence
+  // time). Concentrations live in mixV = max(stored volume, minimum pool):
+  // the pool is real water below the pump intake and dilutes every slug.
+  const mixV = Math.max(storage.storedVolumeM3, poolM3);
   const M = storage.constituentMassKg;
   for (const key of CONSTITUENT_KEYS) {
     if (key === 'ph') continue;
     const cin = Number(inlet[key]) || 0;
     const massInKgDay = (qIn * cin) / 1000; // mg/L × m³ → kg via /1000
-    const ctank = storage.storedVolumeM3 > 0.01 ? (M[key] ?? 0) / storage.storedVolumeM3 * 1000 : 0;
-    const massOutKgDay = (qOut * ctank) / 1000;
-    M[key] = Math.max(0, (M[key] ?? 0) + (massInKgDay - massOutKgDay) * dtDays);
+    if (qOut <= 1e-9 || dtDays <= 1e-9) {
+      M[key] = Math.max(0, (M[key] ?? 0) + massInKgDay * dtDays);
+    } else {
+      const tauDays = mixV / qOut;              // residence time of mixed volume
+      const mEquilibriumKg = massInKgDay * tauDays;
+      const m0 = Math.max(0, M[key] ?? 0);
+      M[key] = Math.max(0, mEquilibriumKg + (m0 - mEquilibriumKg) * Math.exp(-dtDays / tauDays));
+    }
   }
 
   // Tank concentrations for output stream.
-  const V = Math.max(1e-6, storage.storedVolumeM3);
   const eff: WaterQuality = { ...inlet };
   for (const key of CONSTITUENT_KEYS) {
     if (key === 'ph' || key === 'flowRate') continue;
-    (eff as any)[key] = storage.storedVolumeM3 > 0.01 ? (M[key] / V) * 1000 : 0;
+    (eff as any)[key] = (M[key] / mixV) * 1000;
   }
   // pH blends toward tank history (weak buffering); DO decays in storage.
   const prevPhStored = M['ph'] ?? 7.2;
-  const blendedPh = storage.storedVolumeM3 > 0.01
-    ? prevPhStored * 0.7 + ((Number(inlet.ph)) * qIn * dtDays) / Math.max(1e-6, storage.storedVolumeM3) * 0.3
-    : inlet.ph;
+  const inletPh = Number.isFinite(inlet.ph) ? inlet.ph : 7.2;
+  const blendedPh = prevPhStored * 0.7 + inletPh * 0.3;
   M['ph'] = blendedPh;
   eff.ph = blendedPh;
   eff.do = Math.max(0.2, (eff.do ?? 0) - 0.4);

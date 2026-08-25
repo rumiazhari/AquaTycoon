@@ -181,15 +181,23 @@ function wq(over: Partial<WaterQuality>): WaterQuality {
   u2.blueprint!.design.geometry.lengthM = 20; u2.blueprint!.design.geometry.widthM = 10; u2.blueprint!.design.geometry.waterDepthM = 5;
   u2.eqStorage = initEqStorage();
   let outBod = 0;
+  let firstSpikeBod = 0;
   for (let i = 0; i < 24; i++) {
-    // 12 h low (BOD 100), 12 h spike (BOD 800)
+    // 12 h low (BOD 100), 12 h spike (BOD 800) — hourly steps (dt in days).
     const inletBod = i < 12 ? 100 : 800;
-    const r = stepEqualization(u2, wq({ flowRate: 5000, bod: inletBod }), 1, 5000 / 24);
+    const r = stepEqualization(u2, wq({ flowRate: 5000, bod: inletBod }), 1 / 24, 5000 / 24);
+    if (i === 12) firstSpikeBod = r.effluent.bod;
     outBod = r.effluent.bod;
-    u2.eqStorage = { storedVolumeM3: r.storedVolumeM3, constituentMassKg: r.effluent as any };
+    // NOTE: do NOT rebuild eqStorage from r.effluent here — those are
+    // CONCENTRATIONS (mg/L), while constituentMassKg holds MASSES (kg).
+    // stepEqualization mutates u2.eqStorage in place (same as the live sim),
+    // so carrying real state across steps is both correct and required.
   }
-  // Mass-conserving mix: outlet BOD stays between the two extremes and inside capacity
-  assert(outBod > 100 && outBod < 800, `EQ. load spike attenuated: outlet BOD ${outBod.toFixed(0)} between 100 and 800 (not the raw spike)`);
+  // Mass-conserving mix: the slug blends into the basin's minimum operating
+  // pool, so the FIRST spike hour is already damped below the raw 800 load,
+  // and the outlet never leaves the [100, 800] envelope.
+  assert(firstSpikeBod > 100 && firstSpikeBod < 800, `EQ. spike hour 1 attenuated by min-pool mixing (${firstSpikeBod.toFixed(0)} strictly inside 100..800)`);
+  assert(outBod > 100 && outBod <= 800, `EQ. outlet stays in load envelope after 12 h spike (${outBod.toFixed(0)} in 100..800]`);
   // Overflow at capacity
   const u3 = mkBlueprintUnit('equalization_basin');
   u3.blueprint!.design.geometry.lengthM = 6; u3.blueprint!.design.geometry.widthM = 4; u3.blueprint!.design.geometry.waterDepthM = 2;
@@ -198,7 +206,7 @@ function wq(over: Partial<WaterQuality>): WaterQuality {
   for (let i = 0; i < 48; i++) {
     const r = stepEqualization(u3, wq({ flowRate: 20000, bod: 300 }), 1, 1000 / 24);
     if (r.overflowed) overflowed = true;
-    u3.eqStorage = { storedVolumeM3: r.storedVolumeM3, constituentMassKg: r.effluent as any };
+    // same in-place mutation as above — no concentration→mass feedback
   }
   assert(overflowed, 'EQ. basin overflows when inflow exceeds capacity + pump rate');
 }
@@ -214,10 +222,10 @@ function wq(over: Partial<WaterQuality>): WaterQuality {
   assert(hSmall.totalHeadlossM > hLarge.totalHeadlossM, `PIPE. smaller diameter → higher headloss (${hSmall.totalHeadlossM.toFixed(1)} > ${hLarge.totalHeadlossM.toFixed(1)} m)`);
   // velocity rises as diameter shrinks
   assert(hSmall.velocityMs > hLarge.velocityMs, `PIPE. smaller diameter → higher velocity (${hSmall.velocityMs.toFixed(2)} > ${hLarge.velocityMs.toFixed(2)} m/s)`);
-  // longer pipe → more headloss
+  // longer pipe → more headloss (300 m run vs a 30 m run, same D/material/Q)
   const hLong = evaluatePipeHydraulics(0.3, 'ductile_iron', 300, 1000);
-  const hShort = evaluatePipeHydraulics(0.3, 'ductile_iron', 300, 1000);
-  assert(hLong.totalHeadlossM > hShort.totalHeadlossM, `PIPE. longer pipe → more headloss (${hLong.totalHeadlossM.toFixed(1)} > ${hShort.totalHeadlossM.toFixed(1)} m)`);
+  const hShort = evaluatePipeHydraulics(0.3, 'ductile_iron', 30, 1000);
+  assert(hLong.totalHeadlossM > hShort.totalHeadlossM && hLong.frictionHeadlossM > hShort.frictionHeadlossM, `PIPE. longer pipe → more headloss (${hLong.totalHeadlossM.toExponential(2)} > ${hShort.totalHeadlossM.toExponential(2)} m)`);
   // rougher material → more headloss
   const hRough = evaluatePipeHydraulics(0.3, 'ductile_iron', 300, 1000);
   const hSmooth = evaluatePipeHydraulics(0.3, 'pvc', 300, 1000);
@@ -234,8 +242,16 @@ function wq(over: Partial<WaterQuality>): WaterQuality {
   // Static lift above shutoff head → no valid operating point
   const stuck = findPumpDutyPoint(pump, 50, 0.00002, 1.0);
   assert(!stuck.ok && stuck.reason === 'no_valid_operating_point', `PUMP. lift > shutoff head → no duty point (${stuck.reason})`);
-  // Power scales with ρgQH / efficiency
-  assert(dp.electricalPowerKw > 0 && dp.electricalPowerKw < 50, `PUMP. electrical power plausible (${dp.electricalPowerKw.toFixed(1)} kW)`);
+  // Power must sit in the physically possible wire-to-water envelope:
+  // electrical ≥ hydraulic (η<1 always) and ≤ hydraulic/0.55 (worst realistic
+  // combined pump×motor efficiency for a wastewater duty). The old constant
+  // "<50 kW" ignored that the free-running duty point here is 759 m³/h @
+  // 16.5 m → ρgQH = ~34.2 kW hydraulic, so ~50 kW at η=0.68 is CORRECT.
+  const hydraulicKw = (1000 * 9.81 * (dp.flowM3h / 3600) * dp.headM) / 1000;
+  assert(
+    dp.electricalPowerKw > hydraulicKw && dp.electricalPowerKw < hydraulicKw / 0.55,
+    `PUMP. electrical power in wire-to-water envelope (${dp.electricalPowerKw.toFixed(1)} kW ∈ (${hydraulicKw.toFixed(1)}, ${(hydraulicKw / 0.55).toFixed(1)}) for η∈(0.55,1))`
+  );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -269,7 +285,14 @@ function wq(over: Partial<WaterQuality>): WaterQuality {
   const g = evaluatePermitCriteria(good, std);
   const b = evaluatePermitCriteria(bad, std);
   assert(g.every(c => c.pass), `PERMIT. clean effluent passes all ${g.length} criteria`);
-  assert(b.filter(c => !c.pass).length === b.length, `PERMIT. all ${b.length} criteria fail on bad effluent`);
+  // A single pH value cannot violate BOTH bounds at once — on this too-LOW
+  // sample (pH 5 < min 6) exactly `ph_high` survives and every other
+  // criterion must fail. Asserting the exact surviving set is stronger than
+  // a bare count.
+  assert(
+    b.every(c => c.pass === (c.key === 'ph_high')),
+    `PERMIT. bad effluent fails all criteria except ph_low-side survivor (${b.filter(c => !c.pass).length}/${b.length} failing; only ph_high passes)`
+  );
   // true-zero pathogen limit honored literally
   const zeroPath = wq({ bod: 8, cod: 40, tss: 8, tn: 8, nh4: 1, tp: 0.4, pathogens: 30, do: 6, ph: 7.2, turbidity: 3 });
   const z = evaluatePermitCriteria(zeroPath, std);

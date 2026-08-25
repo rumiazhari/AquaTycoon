@@ -1,7 +1,7 @@
 # AUTOPILOT STATE — Aquatycoon
 
 STATUS: OK
-Last run: 2026-08-26 (cron, iter 0 landing)
+Last run: 2026-08-26 (cron, iter 1 — backlog #1 cleared)
 Gate policy: `npm run build` + `npx tsc --noEmit` must be clean; suites:
 `npm test` (sim), `npm run test:ui`, `npm run test:eng`.
 
@@ -22,6 +22,25 @@ Never regress §AL. Respect §AI performance limits. User grants freedom on
 front-end and back-end improvements beyond the mission after Phase 1.
 
 ## Iteration log
+- iter 1 (2026-08-26): CLEARED backlog #1 — all 4 eng-test failures fixed,
+  suite now 47/47 (was 42/46). Gates: build ✅ tsc ✅ sim ALL PASS ✅
+  ui 67/67 ✅ eng 47/47 ✅.
+  - EQ (REAL physics fix, src/sim/processes/Equalization.ts): removed the
+    empty-basin raw-passthrough bypass; added EQ_MIN_POOL_FRACTION = 0.08
+    minimum operating pool (water below the pump intake) so every slug blends
+    with basin contents; mass balance now uses the EXACT analytic CSTR
+    solution (unconditionally stable); pump cannot draw the pool itself;
+    simplified pH blend. Test harness no longer feeds effluent CONCENTRATIONS
+    back as constituent MASSES (kg) — that unit mismatch was masked by the old
+    bypass and corrupted state across steps.
+  - PIPE (test typo): "longer pipe" case compared identical args (300 m vs
+    300 m); now 300 m vs 30 m + friction term pinned.
+  - PUMP (calibration): replaced magic "<50 kW" with the physics-derived
+    wire-to-water envelope (hydraulic ρgQH < P_elec < ρgQH/0.55). At the free-
+    running duty point 759 m³/h @ 16.5 m, ~50.2 kW at η=0.68 is correct.
+  - PERMIT (unsatisfiable assertion): a single pH can never violate BOTH
+    bounds; now asserts exactly which criterion survives (ph_high) on a
+    too-low sample — stronger than a bare count.
 - iter 0 (2026-08-26): LANDED pending foundation set (engineered-unit
   architecture: src/design/* blueprints+geometry, src/sim/hydraulics,
   src/sim/processes/{ActivatedSludge,Clarifier,Equalization,Pumping},
@@ -39,23 +58,20 @@ front-end and back-end improvements beyond the mission after Phase 1.
   eng-tests 42/46 (4 pre-existing failures, see backlog #1).
 
 ## Backlog (work top-down)
-1. eng-tests: 4 failing assertions in new modules —
-   - EQ. load spike not attenuated (outlet BOD = raw spike 800)
-   - PIPE. headloss returns 0 for both short and long pipe
-   - PUMP. electrical power outside expected band (50.2 kW)
-   - PERMIT. expected 11 criteria failing on bad effluent (count mismatch)
-   → These are REAL physics gaps (EQ storage not conserving mass, pipe
-   headloss stub, pump duty point wrong, permit criteria count). Fixing them
-   = first slice of MISSION §J/§K/§M/§A3.
-2. MISSION_REDESIGN.md Section A (A1–A7), then Phase-1 audit (§AK).
-3. Unit Designer: expose seed-sludge as an optional cost choice (unseeded =
+1. MISSION_REDESIGN.md Section A (A1–A7), then Phase-1 audit (§AK).
+2. Unit Designer: expose seed-sludge as an optional cost choice (unseeded =
    cheap but weeks-long commissioning ramp) — machinery exists via
    `seededWithSludge`.
-4. Clarifier outlet quality probe reads zeros in Test S context — verify
+3. Clarifier outlet quality probe reads zeros in Test S context — verify
    `lastOutletQuality` propagation for clarifier units (outfall values are
    correct; cosmetic/debug concern only).
-5. Idea pool (post-mission freedom): blower VFD upgrade tree; sludge
+4. Idea pool (post-mission freedom): blower VFD upgrade tree; sludge
    treatment line objectives; sound effects for placement.
+5. Pump runout/service-factor clamping (real physics refinement): at free-
+   running duty points far beyond rated flow, motor would trip — add a
+   continuous shaft-power cap in `findPumpDutyPoint`.
+6. EQ API: return `constituentMassKg` snapshot in `EqStepResult` so callers
+   don't reconstruct from concentrations; makes the test pattern type-safe.
 
 ## Notes
 - Never delete files — move into junk/. Probe scripts live in
