@@ -1,7 +1,7 @@
 # AUTOPILOT STATE — Aquatycoon
 
 STATUS: OK
-Last run: 2026-08-26 (cron, iter 20 — wired per-contract design flow into DesignValidator placement context, retiring the VALIDATOR_REFERENCE_FLOW_M3D heuristic; gates: build ✅ tsc ✅ sim ✅ ui ✅ eng 300/300 ✅)
+Last run: 2026-08-26 (cron, iter 21 — MBR migration slice 1: real membrane design basis (flux/area/TMP) + §R membrane catalog + validator warnings; gates: build ✅ tsc ✅ sim ✅ ui ✅ eng 317/317 ✅)
 
 Gate policy: `npm run build` + `npx tsc --noEmit` must be clean; suites:
 `npm test` (sim), `npm run test:ui` (= static ui-tests + ui-interaction-tests),
@@ -38,6 +38,7 @@ front-end and back-end improvements beyond the mission after Phase 1.
 - iter 19 (2026-08-26): §AK items 16/17 CLOSED — campaign L1/L2/L3 levels updated with new objectives (obj_pump, obj_cas_sizing) and Test S revised for staged pump+UV build. Gates: build ✅ tsc ✅ sim ALL PASS ✅ ui ✅.
 - iter 19 (2026-08-26): §AK item 13 ✅ Show Calculation panel rolled out across all four engineerable unit types (CAS, clarifier, equalization basin, pump station) — each DiagnosticsTab now renders per‑process CalcBlock derivations with honest substituted equations and live numbers. §AK items 16/17 remain: updated campaign L1/L2/L3 levels with tests.
 - iter 20 (2026-08-26): Wired per-contract design flow through placement context into DesignValidator. Added `OperatorControls.designFlowM3d?`; `estimateDesignFlow` now returns `unit.blueprint?.controls?.designFlowM3d ?? VALIDATOR_REFERENCE_FLOW_M3D`, retiring the Phase-1 heuristic's stated exit condition (§AK item 17 follow-up). Backward-compatible: absent contract flow falls back to the shared basis. New eng tests PF23/PF23b pin the override (8000 m³/d → CAS reports `blower_undersized`) and the clean fallback. Gates: build ✅ tsc ✅ sim ALL PASS ✅ ui 70+52 ✅ eng 300/300 ✅. New ui‑interaction-tests.tsx section added verifying every CalcBlock's equation string and EconomicsTab civil‑derivation math.
+- iter 21 (2026-08-26): MBR migration SLICE 1 — real membrane design basis (Mission §Q+§R), replacing the legacy binary fouled/not-fouled. NEW `src/sim/processes/MBR.ts`: flux/area formulas (J=Qp·1000/(Am·24), Am=Qp·1000/(24·J)), clean + fouling/scour-adjusted design-basis TMP (TMP0=J/permeability, TMP=TMP0·(1+kF·foulLoad)), flux classification bands (≤18/≤25/≤30 LMH), and a §R membrane material catalog (PVDF/PES/ceramic) with comparative engineering attributes — no '+10% better'. `UnitBlueprint`: `MembraneDesign` equipment layer + `DEFAULT_MEMBRANE_DESIGN` (9×850 m² PVDF @20 LMH, adequate scour) + `blueprintFromTemplate('mbr_membrane')` wired with legacy 1728 m³ geometry. `Geometry.defaultGeometryFor('mbr_membrane')` added. `DesignValidator`: new `mbr_membrane` case emits engineering warnings — flux class (conservative→normal→aggressive/critical), TMP headroom vs material rating, sub-minimum air-scour. 10 new eng tests MBR01–10 (317/317); fresh template validates CLEAN. Gates: build ✅ tsc ✅ sim ALL PASS ✅ ui 26/26+52/52 ✅ eng 317/317 ✅.
 
 ## Backlog (work top-down)
 1. ✅ RESOLVED (iter 9): Fix Level-1 completion economy — SLR unit mismatch fixed; all 5 sim tests pass.
@@ -58,7 +59,7 @@ front-end and back-end improvements beyond the mission after Phase 1.
    - 15: engineering warnings ✅ phase 1+2 (+pipe velocity iter 12); membrane‑flux check lands with the MBR migration
    - 16–17: ✅ RESOLVED (iter 19): updated campaign L1/L2/L3 levels with new objectives (obj_pump, obj_cas_sizing) and revised Test S for staged pump+UV build.
 
-Next goal (iter 20): §AK item 17 follow-up DONE — per-contract design flow now flows through placement context. Next: begin MBR migration (or user freedom post-mission work) — gate by eng tests.
+Next goal (iter 21): MBR migration SLICE 1 DONE — design-basis flux/area/TMP + §R catalog + validator warnings live (fresh template clean). Slice 2: runtime membrane resistance/fouling progression (TMP ∝ flux × R, R rises with TSS/flux/time, falls via backwash/CIP) and a Show-Calculation block in the MBR DiagnosticsTab — gate by eng + ui tests.
 
 ## Notes
 - Never delete files — move into junk/. Probes live in junk/autopilot-20260826/ (delim-scan, probe-range-events, probe-input-death, probe-input-matrix, probe-checkbox-delegation document the React‑event investigation); scratch gate‑run logs in junk/autopilot-20260827/.
