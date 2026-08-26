@@ -49,7 +49,7 @@ import {
   constructionStats,
   constructionSummaryLine,
 } from '../src/design/ConstructionNetwork';
-import { evaluateConstructionEffects, filtrationLiveSets, chemicalReagentOpexPerDay, CHEMICAL_REAGENT_COST_PER_M3_PER_PUMP } from '../src/design/ConstructionAdapter';
+import { evaluateConstructionEffects, filtrationLiveSets, chemicalReagentOpexPerDay, CHEMICAL_REAGENT_COST_PER_M3_PER_PUMP, brineDisposalOpexPerDay, RO_BRINE_DISPOSAL_COST_PER_M3_HANDLED, RO_BRINE_DISPOSAL_COST_PER_M3_UNHANDLED } from '../src/design/ConstructionAdapter';
 import {
   estimateBaffleCAPEX,
   validateBafflePlacement,
@@ -4111,12 +4111,13 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
     const badgesNoBasin = recognizeProcess([], [], [mkRo('ro1',22,5)], [cableRo(22,5,22,5)]);
     assert(badgesNoBasin.length===0, 'RO11. no basins -> no RO badge even with powered skid (got '+badgesNoBasin.length+')');
   }
-  // RO12: one powered ro_skid -> Tertiary RO cyan, unpowered -> dormant amber
+  // RO12: one powered ro_skid -> Tertiary RO haulage amber (brine premium until tank added), unpowered -> dormant amber
   {
     const basin = mkBasinRo();
     const badgesLive = recognizeProcess([basin], [], [mkRo('ro1',22,5)], [cableRo(22,5,22,5)]);
     assert(hasRo(badgesLive,'tertiary'), 'RO12. powered ro_skid -> Tertiary RO badge');
-    assert(badgesLive.find((b)=>b.id==='tertiary').tone==='cyan', 'RO12b. powered RO tone cyan');
+    assert(badgesLive.find((b)=>b.id==='tertiary').tone==='amber', 'RO12b. powered RO without brine -> amber haulage (brine premium)');
+    assert(badgesLive.find((b)=>b.id==='tertiary').label.includes('haulage') || badgesLive.find((b)=>b.id==='tertiary').detail.includes('brine tank'), 'RO12b2. detail mentions haulage/brine tank: '+badgesLive.find((b)=>b.id==='tertiary').detail);
     const badgesDormant = recognizeProcess([basin], [], [mkRo('ro1',22,5)], []);
     assert(hasRo(badgesDormant,'tertiary-dormant'), 'RO12c. unpowered ro_skid -> RO dormant badge');
     assert(badgesDormant.find((b)=>b.id==='tertiary-dormant').tone==='amber', 'RO12d. dormant tone amber');
@@ -4302,6 +4303,184 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
     assert(ce.totalBrineTanks===1 && ce.poweredBrineTanks===0, 'ROP12b. brine unpowered so 0 powered (got '+ce.poweredBrineTanks+'/'+ce.totalBrineTanks+')');
     const ceBoth = evaluateConstructionEffects([healthyBasin], [mixer, ro1, brine1], [cableRop(6,6,22,5), cableRop(22,5,22,5), cableRop(25,5,22,5)]);
     assert(ceBoth.poweredBrineTanks===1, 'ROP12c. brine powered 1 (got '+ceBoth.poweredBrineTanks+')');
+  }
+}
+
+// ═════════════════════════════════════════════════════════════
+// RO SLICE 3: brine disposal economics — zero-liquid loop pressure
+// One powered brine_tank handles one live skid cheaply (0.005/m³), unhandled
+// is hauled off-site at 0.022/m³ (≈4.4× premium). Flow-scaled so large
+// flows create real tycoon pressure; handled vs hauled shown in summary + badge.
+// ═════════════════════════════════════════════════════════════
+{
+  const mkBasinBr = (x=5,y=5,w=8,h=6,id='bBr1') => ({ x, y, w, h, depthM:4, id, createdAtDay:0 });
+  const basinBr = mkBasinBr();
+  const mkRoBr = (id,x,y) => ({ id, typeId:'ro_skid', x, y, createdAtDay:0 });
+  const mkBrineBr = (id,x,y) => ({ id, typeId:'brine_tank', x, y, createdAtDay:0 });
+  const mkMixerBr = (id,x,y) => ({ id, typeId:'submersible_mixer', x, y, createdAtDay:0 });
+  const cableBr = (ax,ay,bx,by) => ({ id:'cb_'+ax+'_'+ay+'_'+bx+'_'+by, type:'power_cable', ax, ay, bx, by, createdAtDay:0 });
+
+  // BR01: pure helper — 0 skids or 0 flow -> $0
+  {
+    assert(brineDisposalOpexPerDay(0, 0, 3500) === 0, 'BR01. 0 skids -> $0 brine even at 3500');
+    assert(brineDisposalOpexPerDay(1, 0, 0) === 0, 'BR01b. 1 skid at 0 flow -> $0');
+    assert(brineDisposalOpexPerDay(1, 1, 0) === 0, 'BR01c. 1 skid handled at 0 flow -> $0');
+  }
+  // BR02: linear in skids and flow — one handled vs one unhandled at L1 3500
+  {
+    const oneHandled = brineDisposalOpexPerDay(1, 1, 3500);
+    assert(Math.abs(oneHandled - 3500*RO_BRINE_DISPOSAL_COST_PER_M3_HANDLED) < 0.01, 'BR02. 1 handled at 3500 -> $'+oneHandled.toFixed(2)+' ~ '+(3500*RO_BRINE_DISPOSAL_COST_PER_M3_HANDLED).toFixed(2));
+    assert(Math.abs(oneHandled - 17.5) < 0.1, 'BR02b. 1 handled at L1 ~17.5/d got '+oneHandled.toFixed(1));
+    const oneUnhandled = brineDisposalOpexPerDay(1, 0, 3500);
+    assert(Math.abs(oneUnhandled - 3500*RO_BRINE_DISPOSAL_COST_PER_M3_UNHANDLED) < 0.01, 'BR02c. 1 unhandled at 3500 -> $'+oneUnhandled.toFixed(2)+' ~ '+(3500*RO_BRINE_DISPOSAL_COST_PER_M3_UNHANDLED).toFixed(2));
+    assert(Math.abs(oneUnhandled - 77) < 0.5, 'BR02d. 1 unhandled at L1 ~77/d got '+oneUnhandled.toFixed(1));
+    assert(Math.abs(oneUnhandled - oneHandled*4.4) < 0.5, 'BR02e. unhandled 4.4× handled: '+oneUnhandled.toFixed(1)+' vs '+oneHandled.toFixed(1));
+  }
+  // BR03: two skids stacking — handled vs mixed handling
+  {
+    const twoHandled = brineDisposalOpexPerDay(2, 2, 3500);
+    assert(Math.abs(twoHandled - 35) < 0.2, 'BR03. 2 handled at 3500 -> $35/d got '+twoHandled.toFixed(1));
+    const oneEach = brineDisposalOpexPerDay(2, 1, 3500);
+    assert(Math.abs(oneEach - (17.5+77)) < 0.5, 'BR03b. 1 handled +1 hauled -> $94.5 got '+oneEach.toFixed(1));
+    const twoUnhandled = brineDisposalOpexPerDay(2, 0, 3500);
+    assert(Math.abs(twoUnhandled - 154) < 0.5, 'BR03c. 2 unhandled -> $154/d got '+twoUnhandled.toFixed(1));
+  }
+  // BR04: L4 large flow scales — 3 skids unhandled at 12000
+  {
+    const threeUnhandledL4 = brineDisposalOpexPerDay(3, 0, 12000);
+    assert(Math.abs(threeUnhandledL4 - 792) < 1, 'BR04. 3 unhandled at L4 12000 -> $792/d got '+threeUnhandledL4.toFixed(1));
+    const threeHandledL4 = brineDisposalOpexPerDay(3, 3, 12000);
+    assert(Math.abs(threeHandledL4 - 180) < 1, 'BR04b. 3 handled at L4 -> $180/d got '+threeHandledL4.toFixed(1));
+  }
+  // BR05: evaluateConstructionEffects — active dosing with flow yields brine, without flow yields 0 or hauled hint
+  {
+    const mixer = mkMixerBr('mxBr',6,6);
+    const ro1 = mkRoBr('roBr1',22,5);
+    const brine1 = mkBrineBr('brBr1',23,5);
+    // No brine tank, 1 live skid, flow 3500 -> unhandled 1, brine $77, summary includes brine + hauled
+    const ceUnhandled = evaluateConstructionEffects([basinBr], [mixer, ro1] as any, [cableBr(6,6,22,5), cableBr(22,5,22,5)] as any, [] as any, 3500);
+    assert(ceUnhandled.liveRoSkids===1 && ceUnhandled.handledBrineSkids===0 && ceUnhandled.unhandledBrineSkids===1, 'BR05. 1 live unhandled (got '+ceUnhandled.handledBrineSkids+'/'+ceUnhandled.unhandledBrineSkids+')');
+    assert(Math.abs(ceUnhandled.brineOpexPerDay - 77) < 0.5, 'BR05b. brine $77/d unhandled (got '+ceUnhandled.brineOpexPerDay.toFixed(1)+')');
+    assert(ceUnhandled.summary.includes('brine') && ceUnhandled.summary.includes('hauled'), 'BR05c. summary mentions brine hauled: '+ceUnhandled.summary);
+    // With brine tank powered, same skid becomes handled -> $17.5
+    const ceHandled = evaluateConstructionEffects([basinBr], [mixer, ro1, brine1] as any, [cableBr(6,6,22,5), cableBr(22,5,22,5), cableBr(23,5,22,5)] as any, [] as any, 3500);
+    assert(ceHandled.handledBrineSkids===1 && ceHandled.unhandledBrineSkids===0, 'BR05d. 1 handled (got '+ceHandled.handledBrineSkids+'/'+ceHandled.unhandledBrineSkids+')');
+    assert(Math.abs(ceHandled.brineOpexPerDay - 17.5) < 0.2, 'BR05e. brine $17.5/d handled (got '+ceHandled.brineOpexPerDay.toFixed(1)+')');
+    assert(ceHandled.summary.includes('brine') && ceHandled.summary.includes('handled'), 'BR05f. summary mentions brine handled: '+ceHandled.summary);
+  }
+  // BR06: no basin or no flow -> brine OPEX 0 even with powered RO (backward compat)
+  {
+    const ro1 = mkRoBr('roBr1',22,5);
+    const brine1 = mkBrineBr('brBr1',23,5);
+    const ceNoBasin = evaluateConstructionEffects([], [ro1] as any, [cableBr(22,5,22,5)] as any, [] as any, 3500);
+    assert(ceNoBasin.brineOpexPerDay===0, 'BR06. no basin -> $0 brine even with live RO and flow (got '+ceNoBasin.brineOpexPerDay+')');
+    assert(ceNoBasin.unhandledBrineSkids===1, 'BR06b. no basin still counts unhandled for badge logic but cost gated');
+    const mixer = mkMixerBr('mxBr',6,6);
+    const ceNoFlow = evaluateConstructionEffects([basinBr], [mixer, ro1] as any, [cableBr(6,6,22,5), cableBr(22,5,22,5)] as any, [] as any, 0);
+    assert(ceNoFlow.brineOpexPerDay===0, 'BR06c. 0 flow -> $0 brine (got '+ceNoFlow.brineOpexPerDay+')');
+  }
+  // BR07: summary omits brine when no RO, includes brine handling detail when live
+  {
+    const mixer = mkMixerBr('mxBr',6,6);
+    const ceNone = evaluateConstructionEffects([basinBr], [mixer] as any, [cableBr(6,6,22,5)] as any, [] as any, 3500);
+    assert(!ceNone.summary.includes('brine'), 'BR07. no RO -> summary omits brine: '+ceNone.summary);
+    const ro1 = mkRoBr('roBr1',22,5);
+    const brine1 = mkBrineBr('brBr1',23,5);
+    const ceMixed = evaluateConstructionEffects([basinBr], [mixer, ro1, mkRoBr('roBr2',24,5), brine1] as any, [cableBr(6,6,22,5), cableBr(22,5,22,5), cableBr(24,5,22,5), cableBr(23,5,22,5)] as any, [] as any, 3500);
+    assert(ceMixed.liveRoSkids===2 && ceMixed.handledBrineSkids===1 && ceMixed.unhandledBrineSkids===1, 'BR07b. 2 live 1 handled 1 hauled (got '+ceMixed.handledBrineSkids+'/'+ceMixed.unhandledBrineSkids+')');
+    assert(ceMixed.summary.includes('brine') && ceMixed.summary.includes('handled') && ceMixed.summary.includes('hauled'), 'BR07c. mixed handling summary: '+ceMixed.summary);
+  }
+  // BR08: badge reflects handling — unhandled -> haulage amber, fully handled -> zero-liquid cyan
+  {
+    const basin = mkBasinBr();
+    const badgesUnhandled = recognizeProcess([basin] as any, [], [mkRoBr('roBr1',22,5)] as any, [cableBr(22,5,22,5)] as any);
+    assert(badgesUnhandled.some(b=>b.id==='tertiary') && badgesUnhandled.find(b=>b.id==='tertiary')!.tone==='amber', 'BR08. unhandled brine -> amber haulage badge');
+    assert(badgesUnhandled.find(b=>b.id==='tertiary')!.detail.includes('haulage') || badgesUnhandled.find(b=>b.id==='tertiary')!.detail.includes('brine tank'), 'BR08b. detail mentions haulage/brine tank: '+badgesUnhandled.find(b=>b.id==='tertiary')!.detail);
+    const badgesHandled = recognizeProcess([basin] as any, [], [mkRoBr('roBr1',22,5), mkBrineBr('brBr1',23,5)] as any, [cableBr(22,5,22,5), cableBr(23,5,22,5)] as any);
+    assert(badgesHandled.find(b=>b.id==='tertiary')!.tone==='cyan', 'BR08c. handled -> cyan zero-liquid badge');
+    assert(badgesHandled.find(b=>b.id==='tertiary')!.detail.includes('zero-liquid'), 'BR08d. handled detail zero-liquid: '+badgesHandled.find(b=>b.id==='tertiary')!.detail);
+  }
+  // BR09: tick financials — brine added to dailyOpex/dailySludge and netProfit reduced, handling saves ~4×
+  {
+    let gs:any = GameManager.createInitialState(0, true);
+    let r = GameManager.placeCustomBasin(gs, { x:5, y:5, w:4, h:4 }); gs=r.newState;
+    r = GameManager.placeProcessEquipment(gs, 'submersible_mixer', 6,6); gs=r.newState;
+    r = GameManager.placeProcessEquipment(gs, 'ro_skid', 22,5); gs=r.newState;
+    r = GameManager.placeUtilityConnection(gs, 'power_cable', 6,6,22,5); gs=r.newState;
+    const scr = { instanceId:'scrBr', typeId:'bar_screen', gridX:10, gridY:10, rotation:0, volume:200, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:0, lastOpexActual:0 } as any;
+    gs.units.push(scr);
+    gs.pipes.push(
+      { id:'pBr1', fromUnitId:'inlet_0', fromPortId:'outlet', toUnitId:'scrBr', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'} as any,
+      { id:'pBr2', fromUnitId:'scrBr', fromPortId:'outlet', toUnitId:'outfall_0', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'} as any
+    );
+    for(let i=0;i<10;i++) gs = GameManager.tick(gs, 0.5);
+    assert(gs.finalEffluent.flowRate > 10, 'BR09a. flow established '+gs.finalEffluent.flowRate.toFixed(0));
+    const flow = gs.finalEffluent.flowRate;
+    const expectUnhandled = brineDisposalOpexPerDay(1, 0, flow);
+    // Baseline sludge comes from screens/primary sludge — isolate brine delta against a twin plant without RO
+    let gBase:any = GameManager.createInitialState(0, true);
+    r = GameManager.placeCustomBasin(gBase, { x:5, y:5, w:4, h:4 }); gBase=r.newState;
+    r = GameManager.placeProcessEquipment(gBase, 'submersible_mixer', 6,6); gBase=r.newState;
+    r = GameManager.placeUtilityConnection(gBase, 'power_cable', 6,6,22,5); gBase=r.newState;
+    const scrBase = { instanceId:'scrBase', typeId:'bar_screen', gridX:10, gridY:10, rotation:0, volume:200, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:0, lastOpexActual:0 } as any;
+    gBase.units.push(scrBase);
+    gBase.pipes.push(
+      { id:'pBase1', fromUnitId:'inlet_0', fromPortId:'outlet', toUnitId:'scrBase', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'} as any,
+      { id:'pBase2', fromUnitId:'scrBase', fromPortId:'outlet', toUnitId:'outfall_0', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'} as any
+    );
+    for(let i=0;i<10;i++) gBase = GameManager.tick(gBase, 0.5);
+    const baseSludge = gBase.financials.dailySludgeDisposalCost ?? 0;
+    const brineDeltaUnhandled = gs.financials.dailySludgeDisposalCost - baseSludge;
+    assert(Math.abs(brineDeltaUnhandled - expectUnhandled) < 1.5, 'BR09b. sludge delta ≈ unhandled brine $'+brineDeltaUnhandled.toFixed(1)+' ~ '+expectUnhandled.toFixed(1)+' (base '+baseSludge.toFixed(1)+')');
+    assert(gs.financials.dailyOpex >= expectUnhandled, 'BR09c. opex includes brine $'+gs.financials.dailyOpex.toFixed(1)+' >= '+expectUnhandled.toFixed(1));
+    assert(gs.overallStats.activeAlerts.some((a:any)=>a.id==='brine_haulage'), 'BR09d. haulage alert present when unhandled');
+    // Now add a powered brine tank to the same plant and verify savings
+    let gsHandled:any = JSON.parse(JSON.stringify(gs)); // not used, instead rebuild with brine
+    // Rebuild handled plant fresh
+    let gh:any = GameManager.createInitialState(0, true);
+    r = GameManager.placeCustomBasin(gh, { x:5, y:5, w:4, h:4 }); gh=r.newState;
+    r = GameManager.placeProcessEquipment(gh, 'submersible_mixer', 6,6); gh=r.newState;
+    r = GameManager.placeProcessEquipment(gh, 'ro_skid', 22,5); gh=r.newState;
+    r = GameManager.placeProcessEquipment(gh, 'brine_tank', 23,5); gh=r.newState;
+    r = GameManager.placeUtilityConnection(gh, 'power_cable', 6,6,22,5); gh=r.newState;
+    // power brine: cable 23,5
+    gh.utilityConnections.push({ id:'cb_br', type:'power_cable', ax:23, ay:5, bx:23, by:5, createdAtDay:0 } as any);
+    const scr2 = { instanceId:'scrBr2', typeId:'bar_screen', gridX:10, gridY:10, rotation:0, volume:200, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:0, lastOpexActual:0 } as any;
+    gh.units.push(scr2);
+    gh.pipes.push(
+      { id:'pBr1b', fromUnitId:'inlet_0', fromPortId:'outlet', toUnitId:'scrBr2', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'} as any,
+      { id:'pBr2b', fromUnitId:'scrBr2', fromPortId:'outlet', toUnitId:'outfall_0', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'} as any
+    );
+    for(let i=0;i<10;i++) gh = GameManager.tick(gh, 0.5);
+    const expectHandled = brineDisposalOpexPerDay(1, 1, gh.finalEffluent.flowRate);
+    const ghDelta = gh.financials.dailySludgeDisposalCost - baseSludge;
+    assert(Math.abs(ghDelta - expectHandled) < 1.8, 'BR09e. handled brine delta $'+ghDelta.toFixed(1)+' ~ '+expectHandled.toFixed(1)+' (gh sludge '+gh.financials.dailySludgeDisposalCost.toFixed(1)+' base '+baseSludge.toFixed(1)+')');
+    assert(gh.financials.dailyOpex < gs.financials.dailyOpex, 'BR09f. handled OPEX cheaper '+gh.financials.dailyOpex.toFixed(0)+' < '+gs.financials.dailyOpex.toFixed(0));
+    assert(!gh.overallStats.activeAlerts.some((a:any)=>a.id==='brine_haulage'), 'BR09g. haulage alert cleared when handled');
+    assert(gh.financials.netDailyProfit > gs.financials.netDailyProfit, 'BR09h. handled profit higher '+gh.financials.netDailyProfit.toFixed(0)+' > '+gs.financials.netDailyProfit.toFixed(0));
+  }
+  // BR10: no flow -> brine not charged even with live RO
+  {
+    let gs:any = GameManager.createInitialState(0, true);
+    let rr = GameManager.placeCustomBasin(gs, { x:5,y:5,w:4,h:4 }); gs=rr.newState;
+    rr = GameManager.placeProcessEquipment(gs, 'submersible_mixer', 6,6); gs=rr.newState;
+    rr = GameManager.placeProcessEquipment(gs, 'ro_skid', 22,5); gs=rr.newState;
+    rr = GameManager.placeUtilityConnection(gs, 'power_cable', 6,6,22,5); gs=rr.newState;
+    // No pipes -> no flow
+    const ce = evaluateConstructionEffects(gs.customBasins, gs.processEquipment, gs.utilityConnections, gs.customBaffles, gs.finalEffluent.flowRate);
+    assert(ce.brineOpexPerDay===0, 'BR10. evaluate with 0 flow -> $0 brine (got '+ce.brineOpexPerDay+')');
+    gs = GameManager.tick(gs, 0.5);
+    assert(gs.financials.dailySludgeDisposalCost===0, 'BR10b. tick with 0 flow -> $0 sludge brine (got '+gs.financials.dailySludgeDisposalCost+')');
+    assert(!gs.overallStats.activeAlerts.some((a:any)=>a.id==='brine_haulage'), 'BR10c. no haulage alert when no flow');
+  }
+  // BR11: two skids one brine tank -> mixed handling 1 handled 1 hauled, badge amber still
+  {
+    const basin = mkBasinBr();
+    const badgesMixed = recognizeProcess([basin] as any, [], [mkRoBr('ro1',22,5), mkRoBr('ro2',23,5), mkBrineBr('br1',24,5)] as any, [cableBr(22,5,22,5), cableBr(23,5,22,5), cableBr(24,5,22,5)] as any);
+    const tert = badgesMixed.find(b=>b.id==='tertiary')!;
+    assert(tert.tone==='amber' && tert.detail.includes('hauled'), 'BR11. 2 skids 1 brine -> amber still hauled: '+tert.detail);
+    const badgesFull = recognizeProcess([basin] as any, [], [mkRoBr('ro1',22,5), mkRoBr('ro2',23,5), mkBrineBr('br1',24,5), mkBrineBr('br2',25,5)] as any, [cableBr(22,5,22,5), cableBr(23,5,22,5), cableBr(24,5,22,5), cableBr(25,5,22,5)] as any);
+    assert(badgesFull.find(b=>b.id==='tertiary')!.tone==='cyan', 'BR11b. 2+2 fully handled -> cyan');
   }
 }
 

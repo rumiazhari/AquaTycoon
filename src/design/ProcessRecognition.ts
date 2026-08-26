@@ -319,7 +319,7 @@ export function recognizeProcess(
     }
   }
 
-  // ── 12. Tertiary RO (RO SLICE 1) — multi-barrier potable reuse ──────────────
+  // ── 12. Tertiary RO (RO SLICE 1 + SLICE 3) — multi-barrier potable reuse with brine loop ──────────────
   {
     const roItems = eq.filter(e => e.typeId === 'ro_skid' || e.typeId === 'brine_tank');
     const roSkids = roItems.filter(e => e.typeId === 'ro_skid');
@@ -327,14 +327,23 @@ export function recognizeProcess(
     const brineTanks = roItems.filter(e => e.typeId === 'brine_tank');
     const poweredBrine = brineTanks.filter(e => poweredSet.has(e.id)).length;
     if (poweredSkids > 0) {
-      const detail = brineTanks.length > 0
-        ? `${poweredSkids} RO skid${poweredSkids>1?'s':''} live + ${poweredBrine}/${brineTanks.length} brine — tertiary RO`
-        : `${poweredSkids} RO skid${poweredSkids>1?'s':''} — tertiary barrier (add brine tank)`;
+      const handled = Math.min(poweredSkids, poweredBrine);
+      const hauled = poweredSkids - handled;
+      let detail: string;
+      if (brineTanks.length === 0) {
+        detail = `${poweredSkids} RO skid${poweredSkids>1?'s':''} — tertiary barrier (add brine tank to cut haulage)`;
+      } else if (hauled > 0) {
+        detail = `${poweredSkids} RO live · ${handled}/${brineTanks.length} brine handled · ${hauled} hauled off-site — add ${hauled} powered brine tank${hauled>1?'s':''}`;
+      } else {
+        detail = `${poweredSkids} RO skid${poweredSkids>1?'s':''} live + ${poweredBrine}/${brineTanks.length} brine — zero-liquid loop`;
+      }
+      const label = hauled > 0 ? 'Tertiary RO — haulage' : 'Tertiary RO';
+      const tone: ProcessBadgeTone = hauled > 0 ? 'amber' : 'cyan';
       badges.push({
         id: 'tertiary',
-        label: poweredBrine > 0 || brineTanks.length === 0 ? 'Tertiary RO' : 'Tertiary RO — brine ready',
+        label,
         detail,
-        tone: 'cyan',
+        tone,
       });
     } else if (roSkids.length > 0) {
       badges.push({

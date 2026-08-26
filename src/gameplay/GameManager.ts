@@ -642,16 +642,20 @@ export class GameManager {
       // Power / OPEX: live-powered machines are summed honestly (blower/mixer/pump
       // only count with a power_cable; passive diffuser always live). Phase 7 slice 4
       // adds flow-scaled reagent consumable on top (active dosing pumps only).
+      // RO SLICE 3 adds flow-scaled brine haulage (one powered brine_tank handles one skid cheaply, otherwise premium).
       const reagentCost = (ce as any).reagentOpexPerDay ?? 0;
-      if (ce.extraPowerKw !== 0 || ce.extraOpexPerDay !== 0 || reagentCost !== 0) {
+      const brineCost = (ce as any).brineOpexPerDay ?? 0;
+      if (ce.extraPowerKw !== 0 || ce.extraOpexPerDay !== 0 || reagentCost !== 0 || brineCost !== 0) {
         const powerCostPerKwh = 0.15;
         const extraPowerCost = ce.extraPowerKw * 24 * powerCostPerKwh;
         // DailyOpex is power + chemicals/opex. Construction static OPEX is treated like
         // unit OPEX (40% chemical, 60% other) — sum = extraPowerCost + extraOpex.
         // Reagent consumable is 100% chemical on top (ferric/alum).
+        // Brine disposal is 100% sludge/disposal on top (evapo/haul).
         simResult.financials.dailyPowerCost += extraPowerCost;
         simResult.financials.dailyChemicalCost += ce.extraOpexPerDay * 0.4 + reagentCost;
-        simResult.financials.dailyOpex += extraPowerCost + ce.extraOpexPerDay + reagentCost;
+        simResult.financials.dailySludgeDisposalCost = (simResult.financials.dailySludgeDisposalCost ?? 0) + brineCost;
+        simResult.financials.dailyOpex += extraPowerCost + ce.extraOpexPerDay + reagentCost + brineCost;
         simResult.financials.netDailyProfit = simResult.financials.dailyRevenue - simResult.financials.dailyOpex - simResult.financials.dailyFines;
         // Power demand and self-sufficiency
         simResult.overallStats.totalPowerDemandKw += ce.extraPowerKw;
@@ -705,6 +709,28 @@ export class GameManager {
             ...simResult.overallStats.activeAlerts,
             { id: 'construction_septic', type: 'warning' as const, message: `Septic dead zone: ${n} ${label} without a powered mixer — add a mixer + power cable to prevent anaerobic decay.`, timestamp: Date.now() },
           ];
+        }
+      }
+      // RO SLICE 3: brine haulage warning when RO is live but insufficient powered brine handling
+      {
+        const brineUnhandled = (ce as any).unhandledBrineSkids ?? 0;
+        const brineHandled = (ce as any).handledBrineSkids ?? 0;
+        const brineLive = (ce as any).liveRoSkids ?? 0;
+        const hasFlow2 = simResult.finalEffluent.flowRate > 10;
+        if (brineUnhandled > 0 && hasFlow2 && brineLive > 0) {
+          if (!simResult.overallStats.activeAlerts.some(a => a.id === 'brine_haulage')) {
+            simResult.overallStats.activeAlerts.push({
+              id: 'brine_haulage',
+              type: 'warning' as const,
+              message: `Brine haulage: ${brineUnhandled} RO skid${brineUnhandled>1?'s':''} brine hauled off-site at premium ($${((ce as any).brineOpexPerDay ?? 0).toFixed(0)}/d) — add ${brineUnhandled} powered Brine Holding Tank${brineUnhandled>1?'s':''} to close the zero-liquid loop and cut disposal to ~¼ cost.`,
+              timestamp: Date.now(),
+            });
+          }
+        } else if ((brineUnhandled === 0 && brineHandled > 0) || !hasFlow2) {
+          // Clear stale haulage alert when handling closes the loop or flow stops
+          if (simResult.overallStats.activeAlerts.some(a => a.id === 'brine_haulage')) {
+            simResult.overallStats.activeAlerts = simResult.overallStats.activeAlerts.filter(a => a.id !== 'brine_haulage');
+          }
         }
       }
     }

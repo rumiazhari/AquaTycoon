@@ -64,6 +64,27 @@ export function chemicalReagentOpexPerDay(activeDosingPumps: number, flowM3d: nu
   return activeDosingPumps * flowM3d * CHEMICAL_REAGENT_COST_PER_M3_PER_PUMP;
 }
 
+/**
+ * RO SLICE 3 — brine disposal economics (zero-liquid loop pressure).
+ * Each live RO skid produces ~25% brine by volume (75% recovery). Without a
+ * powered brine tank the concentrate must be hauled off-site at a premium;
+ * a powered brine_tank handles one skid's brine (evapo/haul at reduced cost).
+ * Costs scale with treated flow so larger flows create real tycoon pressure.
+ *   handled   → $0.005 per m³ per skid  (≈ $17.5/d at L1 3500 with 1 skid)
+ *   unhandled → $0.022 per m³ per skid  (≈ $77/d at L1, 4.4× haulage premium)
+ * At L4 12 000 m³/d with 3 skids unhandled: ~$792/d — must build brine handling.
+ */
+export const RO_BRINE_RECOVERY_RATIO = 0.75;
+export const RO_BRINE_DISPOSAL_COST_PER_M3_HANDLED = 0.005;
+export const RO_BRINE_DISPOSAL_COST_PER_M3_UNHANDLED = 0.022;
+
+export function brineDisposalOpexPerDay(liveRoSkids: number, poweredBrineTanks: number, flowM3d: number): number {
+  if (liveRoSkids <= 0 || flowM3d <= 0) return 0;
+  const handled = Math.min(liveRoSkids, Math.max(0, poweredBrineTanks));
+  const unhandled = liveRoSkids - handled;
+  return flowM3d * (handled * RO_BRINE_DISPOSAL_COST_PER_M3_HANDLED + unhandled * RO_BRINE_DISPOSAL_COST_PER_M3_UNHANDLED);
+}
+
 export interface ConstructionTickEffect {
   /** Number of basins that actually hold a powered mixer (healthy). */
   healthyBasins: number;
@@ -103,6 +124,10 @@ export interface ConstructionTickEffect {
   activeDosingPumps: number;
   /** Phase 7 slice 4: flow-scaled reagent consumable cost (USD/day, 100% chemical). */
   reagentOpexPerDay: number;
+  /** RO SLICE 3 — brine disposal economics (flow-scaled haulage). */
+  brineOpexPerDay: number;
+  handledBrineSkids: number;
+  unhandledBrineSkids: number;
   /** RO SLICE 2 tertiary RO kit — live polishing counts. */
   totalRoSkids: number;
   poweredRoSkids: number;
@@ -531,6 +556,20 @@ export function evaluateConstructionEffects(
   const reagentOpexPerDay = bs.length > 0 && activeDosingPumps > 0 && flowM3d > 10
     ? chemicalReagentOpexPerDay(activeDosingPumps, flowM3d)
     : 0;
+  // RO SLICE 3: flow-scaled brine disposal — each live RO skid's 25% brine must be hauled; powered brine_tank handles one skid at reduced cost
+  const brineHandling = (() => {
+    if (bs.length === 0 || liveRoSkids <= 0 || flowM3d <= 10) return { brineOpexPerDay: 0, handledBrineSkids: 0, unhandledBrineSkids: liveRoSkids };
+    const handled = Math.min(liveRoSkids, poweredBrineTanks);
+    const unhandled = liveRoSkids - handled;
+    return {
+      brineOpexPerDay: brineDisposalOpexPerDay(liveRoSkids, poweredBrineTanks, flowM3d),
+      handledBrineSkids: handled,
+      unhandledBrineSkids: unhandled,
+    };
+  })();
+  const brineOpexPerDay = brineHandling.brineOpexPerDay;
+  const handledBrineSkids = brineHandling.handledBrineSkids;
+  const unhandledBrineSkids = brineHandling.unhandledBrineSkids;
 
   const parts: string[] = [];
   if (bs.length === 0) parts.push('no custom basins');
@@ -557,6 +596,14 @@ export function evaluateConstructionEffects(
   else if (bs.length > 0 && poweredRoSkids > 0) parts.push(`${poweredRoSkids} RO skid${poweredRoSkids>1?'s':''} dormant`);
   if (extraPowerKw > 0) parts.push(`${extraPowerKw} kW live`);
   if (reagentOpexPerDay > 0) parts.push(`$${Math.round(reagentOpexPerDay)}/d reagent`);
+  if (brineOpexPerDay > 0) {
+    const handledLabel = handledBrineSkids > 0 ? `${handledBrineSkids} handled` : 'no handling';
+    const unhandledLabel = unhandledBrineSkids > 0 ? `${unhandledBrineSkids} hauled` : 'all handled';
+    parts.push(`$${Math.round(brineOpexPerDay)}/d brine (${handledLabel}, ${unhandledLabel})`);
+  } else if (bs.length > 0 && liveRoSkids > 0) {
+    // No flow yet but RO live — hint brine handling
+    if (unhandledBrineSkids > 0) parts.push(`${unhandledBrineSkids} brine hauled`);
+  }
   if (parts.length === 0) parts.push('no construction effect');
   const summary = parts.join(' · ');
 
@@ -587,6 +634,9 @@ export function evaluateConstructionEffects(
     poweredDosingPumps,
     activeDosingPumps,
     reagentOpexPerDay,
+    brineOpexPerDay,
+    handledBrineSkids,
+    unhandledBrineSkids,
     totalRoSkids,
     poweredRoSkids,
     liveRoSkids,
