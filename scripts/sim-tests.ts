@@ -47,6 +47,7 @@ import {
   aeratedDiffuserIds,
   isEquipmentPowered,
   constructionStats,
+  constructionSummaryLine,
 } from '../src/design/ConstructionNetwork';
 import { evaluateConstructionEffects, filtrationLiveSets } from '../src/design/ConstructionAdapter';
 import {
@@ -3205,6 +3206,178 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
     assert(!has(badges,'membrane'), 'PR16. unpowered membrane → no membrane badge');
   }
 }
+
+// ═════════════════════════════════════════════════════════════
+// ═════════════════════════════════════════════════════════════
+// CONSTRUCTION-BUILDER Phase 7 slice 2: instrumentation kit (process sensors)
+// ═════════════════════════════════════════════════════════════
+{
+  const mkBasin = (x=5,y=5,w=8,h=6,id='bS1') => ({ x, y, w, h, depthM:4, id, createdAtDay:0 } as any);
+  const mkDo = (id:string,x:number,y:number) => ({ id, typeId:'do_probe', x, y, createdAtDay:0 } as any);
+  const mkFlow = (id:string,x:number,y:number) => ({ id, typeId:'flow_meter', x, y, createdAtDay:0 } as any);
+  const mkLevel = (id:string,x:number,y:number) => ({ id, typeId:'level_sensor', x, y, createdAtDay:0 } as any);
+  const mkMixer2 = (id:string,x:number,y:number) => ({ id, typeId:'submersible_mixer', x, y, createdAtDay:0 } as any);
+  const mkPump2 = (x=22,y=5) => ({ id:'puS', typeId:'process_pump', x, y, createdAtDay:0 } as any);
+  const cable2 = (ax:number,ay:number,bx:number,by:number) => ({ id:'c_'+ax+'_'+ay+'_'+bx+'_'+by, type:'power_cable', ax, ay, bx, by, createdAtDay:0 } as any);
+  const withBasin2 = () => {
+    let s:any = GameManager.createInitialState(0, true);
+    const r = GameManager.placeCustomBasin(s, { x:5, y:5, w:8, h:6 });
+    if (!r.success) throw new Error('withBasin failed: '+r.reason);
+    return r.newState;
+  };
+  const has2 = (badges:any[], id:string) => badges.some((b:any)=>b.id===id);
+
+  // IN01: do_probe mounts inside a basin (wet-installed), outside rejected
+  {
+    const s = withBasin2();
+    const rInside = GameManager.placeProcessEquipment(s, 'do_probe', 6, 6);
+    const rOutside = GameManager.placeProcessEquipment(s, 'do_probe', 0, 0);
+    assert(rInside.success, 'IN01. do_probe mounts inside a basin (got '+rInside.success+')');
+    assert(!rOutside.success && /basin/i.test(rOutside.reason??''), 'IN01b. do_probe outside basin rejected: '+(rOutside.reason??''));
+  }
+  // IN02: flow_meter mounts on open ground (dry), inside basin rejected
+  {
+    const s = withBasin2();
+    const rGround = GameManager.placeProcessEquipment(s, 'flow_meter', 22, 5);
+    const rInBasin = GameManager.placeProcessEquipment(s, 'flow_meter', 6, 6);
+    assert(rGround.success, 'IN02. flow_meter mounts on open ground');
+    assert(!rInBasin.success && /dry/i.test(rInBasin.reason??''), 'IN02b. flow_meter inside basin rejected: '+(rInBasin.reason??''));
+  }
+  // IN03: level_sensor mounts inside a basin (wet-installed)
+  {
+    const s = withBasin2();
+    const rIn = GameManager.placeProcessEquipment(s, 'level_sensor', 7, 7);
+    const rOut = GameManager.placeProcessEquipment(s, 'level_sensor', 1, 1);
+    assert(rIn.success, 'IN03. level_sensor mounts inside a basin');
+    assert(!rOut.success, 'IN03b. level_sensor outside basin rejected');
+  }
+  // IN04: tile exclusivity — second sensor on same tile rejected
+  {
+    const s = withBasin2();
+    const r1 = GameManager.placeProcessEquipment(s, 'do_probe', 6, 6);
+    const r2 = GameManager.placeProcessEquipment(r1.newState, 'level_sensor', 6, 6);
+    assert(r1.success && !r2.success && /already holds/i.test(r2.reason??''), 'IN04. tile exclusivity blocks second sensor on same tile');
+  }
+  // IN05: exact campaign CAPEX charges for each sensor type
+  {
+    let s:any = withBasin2();
+    s.gameMode='campaign'; s.tutorialActive=false; s.financials.cash=10_000_000;
+    const cash0 = s.financials.cash;
+    let r = GameManager.placeProcessEquipment(s, 'do_probe', 6, 6); s=r.newState;
+    assert(cash0 - s.financials.cash === 3200, 'IN05. do_probe CAPEX $3200 (got '+(cash0 - s.financials.cash)+')');
+    const cash1 = s.financials.cash;
+    r = GameManager.placeProcessEquipment(s, 'level_sensor', 7, 7); s=r.newState;
+    assert(cash1 - s.financials.cash === 4800, 'IN05b. level_sensor CAPEX $4800 (got '+(cash1 - s.financials.cash)+')');
+    const cash2 = s.financials.cash;
+    r = GameManager.placeProcessEquipment(s, 'flow_meter', 22, 5); s=r.newState;
+    assert(cash2 - s.financials.cash === 7500, 'IN05c. flow_meter CAPEX $7500 (got '+(cash2 - s.financials.cash)+')');
+  }
+  // IN06: unaffordable sensor rejected atomically
+  {
+    let s:any = withBasin2();
+    s.gameMode='campaign'; s.tutorialActive=false; s.financials.cash=100;
+    const r = GameManager.placeProcessEquipment(s, 'do_probe', 6, 6);
+    assert(!r.success, 'IN06. unaffordable do_probe rejected');
+    assert(s.financials.cash===100 && s.processEquipment.length===0, 'IN06b. state unchanged on rejection');
+  }
+  // IN07: powered model — sensor needs a power_cable on its exact tile to be live
+  {
+    const basin = mkBasin();
+    const do1 = mkDo('d1',6,6);
+    const flow1 = mkFlow('f1',18,5);
+    const level1 = mkLevel('l1',7,6);
+    const eq = [do1, flow1, level1, mkPump2()];
+    const st1 = constructionStats([basin] as any, eq as any, [cable2(6,6,22,5)] as any);
+    assert(st1.totalSensors===3 && st1.poweredSensors===1, 'IN07. 1/3 sensors powered with one cable (got '+st1.poweredSensors+'/'+st1.totalSensors+')');
+    const st3 = constructionStats([basin] as any, eq as any, [cable2(6,6,22,5), cable2(18,5,22,5), cable2(7,6,22,5)] as any);
+    assert(st3.poweredSensors===3, 'IN07b. 3/3 sensors powered with three cables (got '+st3.poweredSensors+')');
+    assert(st3.poweredDoProbes===1 && st3.poweredFlowMeters===1 && st3.poweredLevelSensors===1, 'IN07c. per-type powered counts 1/1/1');
+    assert(st3.totalDoProbes===1 && st3.totalFlowMeters===1 && st3.totalLevelSensors===1, 'IN07d. per-type total counts 1/1/1');
+  }
+  // IN08: livePower / liveOpex include powered sensors only (pump needs its own cable)
+  {
+    const basin = mkBasin();
+    const eq = [mkDo('d1',6,6), mkLevel('l1',7,6), mkFlow('f1',18,5), mkPump2()];
+    const stNone = constructionStats([basin] as any, eq as any, [] as any);
+    const stSensorsOnly = constructionStats([basin] as any, eq as any, [cable2(6,6,22,5), cable2(18,5,22,5)] as any);
+    assert(stNone.livePowerKw === 0, 'IN08. no cables → livePower 0 (nothing powered, pump dark)');
+    assert(stSensorsOnly.livePowerKw > stNone.livePowerKw, 'IN08b. powered sensors increase livePower '+stNone.livePowerKw+' → '+stSensorsOnly.livePowerKw);
+    assert(Math.abs(stSensorsOnly.livePowerKw - (11 + 0.3 + 0.45)) < 0.01 || Math.abs(stSensorsOnly.livePowerKw - (0.3 + 0.45)) < 0.01, 'IN08c. DO+flow powered (0.3+0.45='+stSensorsOnly.livePowerKw+')');
+    assert(stSensorsOnly.liveOpexPerDay > stNone.liveOpexPerDay, 'IN08d. powered sensors increase liveOpex '+stNone.liveOpexPerDay+' → '+stSensorsOnly.liveOpexPerDay);
+  }
+  // IN09: basin integrity — sensor prevents basin demolition
+  {
+    let s2:any = withBasin2();
+    const rS = GameManager.placeProcessEquipment(s2, 'do_probe', 6, 6);
+    const basinId = rS.newState.customBasins[0].id;
+    const demo = GameManager.demolishCustomBasin(rS.newState, basinId);
+    assert(!demo.success && /equipment/i.test(demo.reason??''), 'IN09. basin demolition refused while DO probe remains mounted');
+    const cleared = GameManager.demolishProcessEquipment(rS.newState, rS.newState.processEquipment.find((e:any)=>e.typeId==='do_probe')!.id);
+    const demo2 = GameManager.demolishCustomBasin(cleared.newState, basinId);
+    assert(demo2.success, 'IN09b. basin demolishes once sensor removed');
+  }
+  // IN10: Instrumented badge requires >=2 powered sensors (not 1)
+  {
+    const basin = mkBasin();
+    const badges0 = recognizeProcess([basin] as any, [], [mkDo('d1',6,6)] as any, [] as any);
+    assert(!has2(badges0,'instrumented'), 'IN10. single unpowered sensor → no Instrumented badge');
+    const badges1 = recognizeProcess([basin] as any, [], [mkDo('d1',6,6), mkLevel('l1',7,6), mkPump2()] as any, [cable2(6,6,22,5)] as any);
+    assert(!has2(badges1,'instrumented'), 'IN10b. 1 powered sensor → still no Instrumented badge');
+    const badges2 = recognizeProcess([basin] as any, [], [mkDo('d1',6,6), mkLevel('l1',7,6), mkFlow('f1',18,5), mkPump2()] as any, [cable2(6,6,22,5), cable2(7,6,22,5)] as any);
+    assert(has2(badges2,'instrumented'), 'IN10c. 2 powered sensors → Instrumented badge');
+    assert(badges2.find((b:any)=>b.id==='instrumented')!.detail.includes('2 sensors'), 'IN10d. detail mentions 2 sensors live');
+  }
+  // IN11: Instrumented badge shows type count — full triad when all 3 types live
+  {
+    const basin = mkBasin();
+    const badgesSame = recognizeProcess([basin] as any, [], [mkDo('d1',6,6), mkDo('d2',7,6), mkPump2()] as any, [cable2(6,6,22,5), cable2(7,6,22,5)] as any);
+    assert(badgesSame.find((b:any)=>b.id==='instrumented')!.detail.includes('1 sensor type'), 'IN11. 2 DO probes → 1 sensor type');
+    const badgesTriad = recognizeProcess([basin] as any, [], [mkDo('d1',6,6), mkFlow('f1',18,5), mkLevel('l1',7,6), mkPump2()] as any, [cable2(6,6,22,5), cable2(18,5,22,5), cable2(7,6,22,5)] as any);
+    assert(badgesTriad.find((b:any)=>b.id==='instrumented')!.detail.includes('full triad'), 'IN11b. full triad 3 types detected');
+  }
+  // IN12: unpowered sensors → no Instrumented badge even with 3 sensors present
+  {
+    const basin = mkBasin();
+    const badges = recognizeProcess([basin] as any, [], [mkDo('d1',6,6), mkFlow('f1',18,5), mkLevel('l1',7,6)] as any, [] as any);
+    assert(!has2(badges,'instrumented'), 'IN12. 3 unpowered sensors → no Instrumented badge');
+  }
+  // IN13: demolish sensor refunds 70% and updates stats
+  {
+    let s:any = withBasin2();
+    s.gameMode='campaign'; s.tutorialActive=false; s.financials.cash=10_000_000;
+    const builtDo = GameManager.placeProcessEquipment(s, 'do_probe', 6, 6);
+    const builtFlow = GameManager.placeProcessEquipment(builtDo.newState, 'flow_meter', 22, 5);
+    const builtLevel = GameManager.placeProcessEquipment(builtFlow.newState, 'level_sensor', 7, 6);
+    const idDo = builtLevel.newState.processEquipment.find((e:any)=>e.typeId==='do_probe')!.id;
+    const demo = GameManager.demolishProcessEquipment(builtLevel.newState, idDo);
+    const salvageDo = Math.round(3200*0.7);
+    assert(demo.success && demo.refunded===salvageDo, 'IN13. demolish DO probe refunds 70% ($'+salvageDo+')');
+    const stAfter = constructionStats((demo.newState as any).customBasins, (demo.newState as any).processEquipment, (demo.newState as any).utilityConnections) as any;
+    assert(stAfter.totalSensors===2 && stAfter.totalDoProbes===0, 'IN13b. stats after demolish: 2 sensors, 0 DO probes');
+  }
+  // IN14: summary line includes sensor live counts when present
+  {
+    const basin = mkBasin();
+    const st = constructionStats([basin] as any, [mkDo('d1',6,6), mkFlow('f1',18,5), mkPump2()] as any, [cable2(6,6,22,5), cable2(18,5,22,5)] as any);
+    const line = constructionSummaryLine(st);
+    assert(line.includes('sensors live'), 'IN14. summary line includes sensors live: '+line);
+  }
+  // IN15: baffled sensors in different zones both instrumented
+  {
+    const basin = { x:5,y:5,w:8,h:6, depthM:4, id:'bInst15', createdAtDay:0 } as any;
+    const baffles:any[] = [{ id:'bf1', basinId:'bInst15', orientation:'vertical', offsetTiles:4, createdAtDay:0 }];
+    const eq = [mkDo('d1',6,6), mkLevel('l1',10,6), mkFlow('f1',18,5), mkPump2()];
+    const badges = recognizeProcess([basin] as any, baffles as any, eq as any, [cable2(6,6,22,5), cable2(10,6,22,5), cable2(18,5,22,5)] as any);
+    assert(has2(badges,'instrumented'), 'IN15. baffled sensors in different zones still instrumented');
+    assert(badges.find((b:any)=>b.id==='instrumented')!.detail.includes('3 sensors'), 'IN15b. detail shows 3 sensors across zones');
+  }
+  // IN16: unknown equipment still rejected after catalog expansion
+  {
+    const s = withBasin2();
+    assert(!GameManager.placeProcessEquipment(s, 'flux_capacitor', 6, 6).success, 'IN16. unknown type still rejected after sensor expansion');
+  }
+}
+
 
 
 console.log(failures === 0 ? "\nALL TESTS PASSED" : `\n${failures} TEST(S) FAILED`);

@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, Wind, Trash2, Droplets, Fan, Cog, Waves, AlertTriangle, CheckCircle2, Columns3, ShieldCheck, Hexagon } from 'lucide-react';
+import { X, Wind, Trash2, Droplets, Fan, Cog, Waves, AlertTriangle, CheckCircle2, Columns3, ShieldCheck, Hexagon, Gauge, Activity, Ruler } from 'lucide-react';
 import { EQUIPMENT_TYPES } from '../design/ProcessEquipment';
 import type { ProcessEquipmentItem } from '../design/ProcessEquipment';
 import type { BasinZone } from '../design/BasinZone';
@@ -12,6 +12,9 @@ const ICONS: Record<string, React.ComponentType<{ size?: number; className?: str
   rotary_blower: Wind,
   membrane_cassette: ShieldCheck,
   mbbr_carrier: Hexagon,
+  do_probe: Activity,
+  flow_meter: Gauge,
+  level_sensor: Ruler,
 };
 
 interface EquipmentInspectorProps {
@@ -133,6 +136,18 @@ export const EquipmentInspector: React.FC<EquipmentInspectorProps> = ({ item, po
                 <>
                   <span className="text-xs font-bold text-amber-300">Dormant — zone needs a powered mixer</span>
                   <span className="text-[11px] text-slate-400">Carriers settled on the floor — not fluidised. Place a powered mixer in this zone to activate biofilm.</span>
+                </>
+              )
+            ) : (item.typeId === 'do_probe' || item.typeId === 'flow_meter' || item.typeId === 'level_sensor') ? (
+              powered ? (
+                <>
+                  <span className="text-xs font-bold text-teal-300">Telemetry live — sensor powered (teal shimmer)</span>
+                  <span className="text-[11px] text-slate-400">{item.typeId === 'do_probe' ? 'Reporting DO mg/L in this zone — feeds the Instrumented badge.' : item.typeId === 'flow_meter' ? 'Reporting m³/d on this ground tile — part of the instrumented plant.' : 'Reporting level/freeboard over this basin — part of the instrumented plant.'}</span>
+                </>
+              ) : (
+                <>
+                  <span className="text-xs font-bold text-amber-300">Dark — needs a Power cable on this tile</span>
+                  <span className="text-[11px] text-slate-400">Run a Power cable here to bring this sensor online (red glow while dark, teal when live).</span>
                 </>
               )
             ) : needsPower ? (

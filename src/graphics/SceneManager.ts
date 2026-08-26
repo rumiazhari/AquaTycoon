@@ -808,6 +808,7 @@ export class SceneManager {
       const isDiffuser = it.typeId === 'fine_bubble_diffuser';
       const isMembrane = it.typeId === 'membrane_cassette';
       const isCarrier = it.typeId === 'mbbr_carrier';
+      const isSensor = it.typeId === 'do_probe' || it.typeId === 'flow_meter' || it.typeId === 'level_sensor';
       const isPowered = !poweredIds || poweredIds.has(it.id);
       const isAerated = !aeratedIds || !isDiffuser || aeratedIds.has(it.id);
       // Phase 6 slice 2 filtration status for tinting
@@ -849,6 +850,15 @@ export class SceneManager {
               } else {
                 m.emissive.setHex(0x57534e);
                 m.emissiveIntensity = 0.14;
+              }
+            } else if (isSensor) {
+              // Phase 7 slice 2 instrumentation: powered sensors get a teal shimmer (live telemetry)
+              if (!isPowered) {
+                m.emissive.setHex(0x5a1a1a);
+                m.emissiveIntensity = 0.52;
+              } else {
+                m.emissive.setHex(0x14b8a6);
+                m.emissiveIntensity = 0.48;
               }
             } else if (isDiffuser) {
               // Diffusers: aerated = blue shimmer, idle = no glow
@@ -1014,6 +1024,75 @@ export class SceneManager {
         );
         cage.position.set(0, baseY, 0);
         g.add(cage);
+        break;
+      }
+      // ── PHASE 7 slice 2: instrumentation kit — process sensors ─────────
+      case 'do_probe': {
+        // Slender luminescent DO probe: stands on basin floor, shaft + sensor head
+        // mid-water with a small transmitter puck above the surface — distinctive yellow tip.
+        const shaftMat = new THREE.MeshStandardMaterial({ color: 0xe5e7eb, roughness: 0.35, metalness: 0.15 });
+        const tipMat = new THREE.MeshStandardMaterial({ color: 0xfacc15, roughness: 0.35, emissive: 0x442200, emissiveIntensity: 0.25 });
+        (shaftMat as any)._equipBase = true;
+        (tipMat as any)._equipBase = true;
+        const depth = Math.max(1, basinDepthM);
+        const shaftLen = Math.max(1.0, depth * 0.55);
+        const shaft = add(new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, shaftLen, 10), shaftMat));
+        shaft.position.set(0, shaftLen / 2 + 0.08, 0);
+        const base = add(new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.24, 0.12, 14), dark));
+        base.position.set(0, 0.06, 0);
+        const tip = add(new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 10), tipMat));
+        tip.position.set(0, shaftLen * 0.72, 0);
+        const transmitter = add(new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.14, 0.32), steel));
+        transmitter.position.set(0, shaftLen + 0.12, 0);
+        const cable = add(new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.35, 6), dark));
+        cable.position.set(0.18, shaftLen * 0.88, 0);
+        break;
+      }
+      case 'flow_meter': {
+        // Dry mag-flow spool: flanged inline tube + transmitter box with sight glass.
+        const tubeMat = new THREE.MeshStandardMaterial({ color: 0xd1d5db, roughness: 0.3, metalness: 0.55 });
+        const boxMat = new THREE.MeshStandardMaterial({ color: 0x14b8a6, roughness: 0.45 });
+        (tubeMat as any)._equipBase = true;
+        (boxMat as any)._equipBase = true;
+        const pl = add(new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.28, 1.9), plinth));
+        pl.position.set(0, 0.14, 0);
+        // spool tube (horizontal along X)
+        const spool = add(new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.32, 1.9, 16), tubeMat));
+        spool.rotation.z = Math.PI / 2;
+        spool.position.set(0, 0.62, 0);
+        // flanges
+        for (const dx of [-0.9, 0.9]) {
+          const flange = add(new THREE.Mesh(new THREE.CylinderGeometry(0.48, 0.48, 0.14, 16), steel));
+          flange.rotation.z = Math.PI / 2;
+          flange.position.set(dx, 0.62, 0);
+        }
+        const tx = add(new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.55, 0.42), boxMat));
+        tx.position.set(0, 1.15, 0);
+        const glass = add(new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.14, 0.02), new THREE.MeshStandardMaterial({ color: 0x0f172a, emissive: 0x14b8a6, emissiveIntensity: 0.55 })));
+        glass.position.set(0, 1.18, 0.22);
+        break;
+      }
+      case 'level_sensor': {
+        // Ultrasonic horn on a pole over the water surface — elevated transmitter.
+        const poleMat = new THREE.MeshStandardMaterial({ color: 0x9aa0a8, roughness: 0.5, metalness: 0.4 });
+        const hornMat = new THREE.MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.35 });
+        const housingMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.5 });
+        (poleMat as any)._equipBase = true;
+        (hornMat as any)._equipBase = true;
+        (housingMat as any)._equipBase = true;
+        const depth = Math.max(1, basinDepthM);
+        const poleH = Math.max(1.2, depth + 0.6);
+        const pole = add(new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, poleH, 10), poleMat));
+        pole.position.set(-0.32, poleH / 2 + 0.1, 0);
+        const arm = add(new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.08, 0.08), poleMat));
+        arm.position.set(0, poleH + 0.0, 0);
+        const horn = add(new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.10, 0.40, 16), hornMat));
+        horn.position.set(0.18, poleH - 0.22, 0);
+        horn.rotation.z = Math.PI; // facing down
+        const housing = add(new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.42, 0.30), housingMat));
+        housing.position.set(-0.32, poleH - 0.05, 0);
+        const lens = add(new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.04, 12), new THREE.MeshStandardMaterial({ color: 0x22d3ee, emissive: 0x0e7490, emissiveIntensity: 0.45 })));
+        lens.position.set(0.18, poleH - 0.42, 0);
         break;
       }
       default: {

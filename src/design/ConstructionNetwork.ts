@@ -127,6 +127,15 @@ export interface ConstructionStats {
   poweredMembranes: number;
   /** Phase 6 filtration stage: MBBR carrier media (passive, needs mixing). */
   totalCarriers: number;
+  /** Phase 7 slice 2 instrumentation: live process sensors. */
+  totalSensors: number;
+  poweredSensors: number;
+  totalDoProbes: number;
+  poweredDoProbes: number;
+  totalFlowMeters: number;
+  poweredFlowMeters: number;
+  totalLevelSensors: number;
+  poweredLevelSensors: number;
   /** Nameplate power of *powered* machines only (kW) — what the grid actually feeds. */
   livePowerKw: number;
   /** Nameplate power of all installed machines (kW). */
@@ -178,6 +187,14 @@ export function constructionStats(
     totalMembranes: equipment.filter(e => e.typeId === 'membrane_cassette').length,
     poweredMembranes: equipment.filter(e => e.typeId === 'membrane_cassette' && powered.has(e.id)).length,
     totalCarriers: equipment.filter(e => e.typeId === 'mbbr_carrier').length,
+    totalSensors: equipment.filter(e => e.typeId === 'do_probe' || e.typeId === 'flow_meter' || e.typeId === 'level_sensor').length,
+    poweredSensors: equipment.filter(e => (e.typeId === 'do_probe' || e.typeId === 'flow_meter' || e.typeId === 'level_sensor') && powered.has(e.id)).length,
+    totalDoProbes: equipment.filter(e => e.typeId === 'do_probe').length,
+    poweredDoProbes: equipment.filter(e => e.typeId === 'do_probe' && powered.has(e.id)).length,
+    totalFlowMeters: equipment.filter(e => e.typeId === 'flow_meter').length,
+    poweredFlowMeters: equipment.filter(e => e.typeId === 'flow_meter' && powered.has(e.id)).length,
+    totalLevelSensors: equipment.filter(e => e.typeId === 'level_sensor').length,
+    poweredLevelSensors: equipment.filter(e => e.typeId === 'level_sensor' && powered.has(e.id)).length,
     livePowerKw,
     installedPowerKw,
     liveOpexPerDay,
@@ -195,6 +212,7 @@ export function constructionSummaryLine(s: ConstructionStats): string {
   if (s.totalDiffusers > 0) parts.push(`${s.aeratedDiffusers}/${s.totalDiffusers} diffusers aerated`);
   if (s.totalMembranes > 0) parts.push(`${s.poweredMembranes}/${s.totalMembranes} membranes live`);
   if (s.totalCarriers > 0) parts.push(`${s.totalCarriers} carrier tile${s.totalCarriers>1?'s':''}`);
+  if (s.totalSensors > 0) parts.push(`${s.poweredSensors}/${s.totalSensors} sensors live`);
   if (s.totalUtilityConnections > 0) parts.push(`${s.totalUtilityConnections} utility line${s.totalUtilityConnections > 1 ? 's' : ''}`);
   if (parts.length === 0) return 'No custom construction yet — draw a basin to start.';
   return parts.join(' · ');

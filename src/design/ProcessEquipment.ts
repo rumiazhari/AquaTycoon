@@ -89,6 +89,34 @@ export const EQUIPMENT_TYPES: Record<string, EquipmentTypeDef> = {
     powerKw: 0, // passive carriers; rely on zone mixing (Phase 5) to stay fluidized
     blurb: 'Floating plastic carrier media. Biofilm grows on each carrier — boosts BOD removal when mixed & aerated.',
   },
+  // ── PHASE 7 slice 2: instrumentation kit — process sensors (observability layer) ───
+  do_probe: {
+    id: 'do_probe',
+    name: 'Dissolved-Oxygen Probe',
+    mounting: 'in_basin',
+    capexUsd: 3_200,
+    opexUsdPerDay: 4,
+    powerKw: 0.3, // small transmitter/head — needs a power feed to report live
+    blurb: 'Submerged luminescent DO probe. Reports mg/L in real time when powered — feed the instrumented badge.',
+  },
+  flow_meter: {
+    id: 'flow_meter',
+    name: 'Electromagnetic Flow Meter',
+    mounting: 'ground',
+    capexUsd: 7_500,
+    opexUsdPerDay: 9,
+    powerKw: 0.45,
+    blurb: 'Dry-installed mag-flow spool. Measures m³/d on open ground — needs power to report.',
+  },
+  level_sensor: {
+    id: 'level_sensor',
+    name: 'Ultrasonic Level Transmitter',
+    mounting: 'in_basin',
+    capexUsd: 4_800,
+    opexUsdPerDay: 6,
+    powerKw: 0.25,
+    blurb: 'Horn over the water surface. Reports level/freeboard when powered — completes the sensor triad.',
+  },
 };
 
 /** One installed machine. Occupies exactly ONE grid tile. */

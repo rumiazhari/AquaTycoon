@@ -108,6 +108,10 @@ export function recognizeProcess(
   let poweredMembranes = 0;
   let activeCarriers = 0;
   let aeratedCarriers = 0;
+  // Instrumentation kit — powered sensor counts
+  const sensorItems = eq.filter(e => e.typeId === 'do_probe' || e.typeId === 'flow_meter' || e.typeId === 'level_sensor');
+  let poweredSensors = 0;
+  for (const e of sensorItems) if (poweredSet.has(e.id)) poweredSensors++;
 
   const zoneIdForTile = (tx: number, ty: number): string | null => {
     for (const z of zones) if (tx >= z.x && tx < z.x + z.w && ty >= z.y && ty < z.y + z.h) return z.id;
@@ -262,6 +266,18 @@ export function recognizeProcess(
       label: 'Septic risk',
       detail: `${totalZones} zones with no mixing — add mixers to avoid septic dead pockets`,
       tone: 'amber',
+    });
+  }
+
+  // ── 10. Instrumented (Phase 7 slice 2) ─────────────────────────────
+  if (poweredSensors >= 2) {
+    const types = new Set(sensorItems.filter(e => poweredSet.has(e.id)).map(e => e.typeId));
+    const typeLabel = types.size >= 3 ? 'full triad (DO+flow+level)' : `${types.size} sensor type${types.size===1?'':'s'}`;
+    badges.push({
+      id: 'instrumented',
+      label: 'Instrumented',
+      detail: `${poweredSensors} sensor${poweredSensors===1?'':'s'} live (${typeLabel}) — telemetry online`,
+      tone: 'slate',
     });
   }
 
