@@ -58,6 +58,7 @@ import {
   pointNearBaffle,
   baffleLengthM,
 } from '../src/design/BasinZone';
+import { recognizeProcess, processSummaryLine } from '../src/design/ProcessRecognition';
 import * as THREE from 'three';
 
 let failures = 0;
@@ -3065,6 +3066,143 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
     base = rPowBl.newState;
     for (let i=0;i<20;i++) base = GameManager.tick(base, 0.5);
     assert(base.finalEffluent.bod < bodCarOnly, 'FM28. aerated carrier BOD '+bodCarOnly.toFixed(1)+' → '+base.finalEffluent.bod.toFixed(1)+' improved with aeration');
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// CONSTRUCTION-BUILDER Phase 7 slice 1: emergent process recognition badges
+// ═════════════════════════════════════════════════════════════════════════════
+{
+  const mkBasin = (x=5,y=5,w=8,h=6,id='bR1') => ({ x, y, w, h, depthM:4, id, createdAtDay:0 } as any);
+  const mkMixer = (id:string,x:number,y:number) => ({ id, typeId:'submersible_mixer', x, y, createdAtDay:0 } as any);
+  const mkDiff = (id:string,x:number,y:number) => ({ id, typeId:'fine_bubble_diffuser', x, y, createdAtDay:0 } as any);
+  const mkBlow = (id:string,x:number,y:number) => ({ id, typeId:'rotary_blower', x, y, createdAtDay:0 } as any);
+  const mkMem = (id:string,x:number,y:number) => ({ id, typeId:'membrane_cassette', x, y, createdAtDay:0 } as any);
+  const mkCar = (id:string,x:number,y:number) => ({ id, typeId:'mbbr_carrier', x, y, createdAtDay:0 } as any);
+  const mkPump = (x=20,y=5) => ({ id:'pu1', typeId:'process_pump', x, y, createdAtDay:0 } as any);
+  const cable = (ax:number,ay:number,bx:number,by:number) => ({ id:'c_'+ax+'_'+ay, type:'power_cable', ax, ay, bx, by, createdAtDay:0 } as any);
+  const air = (ax:number,ay:number,bx:number,by:number) => ({ id:'a_'+ax+'_'+ay, type:'air_pipe', ax, ay, bx, by, createdAtDay:0 } as any);
+  const has = (badges:any[], id:string) => badges.some((b:any)=>b.id===id);
+
+  // PR01: no basins → no badges
+  {
+    const badges = recognizeProcess([], [], [], []);
+    assert(badges.length===0, 'PR01. no basins → no badges (got '+badges.length+')');
+    assert(processSummaryLine(badges).includes('No process'), 'PR01b. summary says none');
+  }
+  // PR02: empty basin alone → no process badges (just a hole)
+  {
+    const badges = recognizeProcess([mkBasin()], [], [], []);
+    assert(badges.length===0, 'PR02. empty basin alone → no recognition badges');
+  }
+  // PR03: aerated basin → Aerated badge
+  {
+    const basin = mkBasin();
+    const badges = recognizeProcess([basin], [], [mkDiff('d1',6,6), mkBlow('bl1',22,5), mkPump()], [cable(22,5,20,5), air(22,5,6,6)]);
+    assert(has(badges,'aerated'), 'PR03. aerated basin → Aerated badge');
+    assert(badges.find((b:any)=>b.id==='aerated')!.detail.includes('1 diffuser'), 'PR03b. detail mentions diffuser');
+  }
+  // PR04: mixed basin → Mixed badge
+  {
+    const basin = mkBasin();
+    const badges = recognizeProcess([basin], [], [mkMixer('mx1',6,6), mkPump()], [cable(6,6,20,5)]);
+    assert(has(badges,'mixed'), 'PR04. mixed basin → Mixed badge');
+    assert(!has(badges,'aerated'), 'PR04b. not aerated');
+  }
+  // PR05: aerated+mixed co-located → Activated-sludge-like
+  {
+    const basin = mkBasin();
+    const badges = recognizeProcess([basin], [], [mkDiff('d1',6,6), mkBlow('bl1',22,5), mkMixer('mx1',7,6), mkPump()], [cable(22,5,20,5), cable(7,6,20,5), air(22,5,6,6)]);
+    assert(has(badges,'aerated') && has(badges,'mixed'), 'PR05. aerated+mixed → both base badges');
+    assert(has(badges,'activated'), 'PR05b. co-located → Activated-sludge-like badge');
+  }
+  // PR06: baffled basin → Compartmentalised badge
+  {
+    const basin = mkBasin(5,5,8,6,'bf06');
+    const baffles:any[] = [{ id:'bf1', basinId:'bf06', orientation:'vertical', offsetTiles:4, createdAtDay:0 }];
+    const badges = recognizeProcess([basin], baffles, [], []);
+    assert(has(badges,'compartment'), 'PR06. baffled → Compartmentalised badge');
+    assert(badges.find((b:any)=>b.id==='compartment')!.detail.includes('2 zones'), 'PR06b. detail shows zone count');
+  }
+  // PR07: baffled anoxic→aerobic train (one zone aerated, one not)
+  {
+    const basin = { x:5,y:5,w:8,h:6, depthM:4, id:'bf07', createdAtDay:0 } as any;
+    const baffles:any[] = [{ id:'bf1', basinId:'bf07', orientation:'vertical', offsetTiles:4, createdAtDay:0 }];
+    const badges = recognizeProcess(
+      [basin], baffles,
+      [mkDiff('d1',6,6), mkBlow('bl1',22,5), mkMixer('mx1',10,6), mkPump()],
+      [cable(22,5,20,5), air(22,5,6,6), cable(10,6,20,5)]
+    );
+    assert(has(badges,'anoxic-aerobic'), 'PR07. baffled aerated+non-aerated → Anoxic → Aerobic badge');
+  }
+  // PR08: same baffle but both zones aerated → no anoxic-aerobic
+  {
+    const basin = { x:5,y:5,w:8,h:6, depthM:4, id:'bf08', createdAtDay:0 } as any;
+    const baffles:any[] = [{ id:'bf1', basinId:'bf08', orientation:'vertical', offsetTiles:4, createdAtDay:0 }];
+    const badges = recognizeProcess(
+      [basin], baffles,
+      [mkDiff('d1',6,6), mkDiff('d2',10,6), mkBlow('bl1',22,5), mkBlow('bl2',23,5), mkPump()],
+      [cable(22,5,20,5), cable(23,5,20,5), air(22,5,6,6), air(23,5,10,6)]
+    );
+    assert(!has(badges,'anoxic-aerobic'), 'PR08. both zones aerated → no Anoxic→Aerobic badge');
+  }
+  // PR09: powered membrane live → Membrane barrier (MBR-like) live
+  {
+    const basin = mkBasin();
+    const badges = recognizeProcess([basin], [], [mkMixer('mx1',6,6), mkMem('mem1',7,6), mkPump()], [cable(6,6,20,5), cable(7,6,20,5)]);
+    assert(has(badges,'membrane'), 'PR09. live membrane → Membrane barrier badge');
+    assert(badges.find((b:any)=>b.id==='membrane')!.detail.includes('1 live'), 'PR09b. detail shows live');
+  }
+  // PR10: membrane in septic zone → degraded membrane badge
+  {
+    const basin = mkBasin();
+    const badges = recognizeProcess([basin], [], [mkMem('mem1',7,6)], [cable(7,6,20,5)]);
+    assert(has(badges,'membrane'), 'PR10. septic membrane → still membrane badge');
+    assert(badges.find((b:any)=>b.id==='membrane')!.detail.includes('fouled'), 'PR10b. septic shows fouled');
+  }
+  // PR11: active carriers → Biofilm media
+  {
+    const basin = mkBasin();
+    const badges = recognizeProcess([basin], [], [mkMixer('mx1',6,6), mkCar('car1',7,6)], [cable(6,6,20,5)]);
+    assert(has(badges,'biofilm'), 'PR11. active carriers → Biofilm media badge');
+  }
+  // PR12: dormant carriers (no mixing) → dormant badge
+  {
+    const basin = mkBasin();
+    const badges = recognizeProcess([basin], [], [mkCar('car1',7,6)], []);
+    assert(has(badges,'biofilm-dormant'), 'PR12. dormant carriers → Biofilm dormant badge');
+    assert(!has(badges,'biofilm'), 'PR12b. no active badge when dormant');
+  }
+  // PR13: hybrid IFAS-like (aerated + carriers in same zone)
+  {
+    const basin = mkBasin();
+    const badges = recognizeProcess(
+      [basin], [], [mkMixer('mx1',6,6), mkCar('car1',7,6), mkDiff('d1',7,7), mkBlow('bl1',22,5), mkPump()],
+      [cable(6,6,20,5), cable(22,5,20,5), air(22,5,7,7)]
+    );
+    assert(has(badges,'biofilm'), 'PR13. hybrid still has biofilm');
+    assert(has(badges,'ifas'), 'PR13b. aerated carriers → Hybrid IFAS-like badge');
+  }
+  // PR14: septic warning when mixed incomplete
+  {
+    const basin = { x:5,y:5,w:8,h:6, depthM:4, id:'bf14', createdAtDay:0 } as any;
+    const baffles:any[] = [{ id:'bf1', basinId:'bf14', orientation:'vertical', offsetTiles:4, createdAtDay:0 }];
+    const badges = recognizeProcess([basin], baffles, [mkMixer('mx1',6,6), mkPump()], [cable(6,6,20,5)]);
+    assert(has(badges,'septic'), 'PR14. incomplete mixing → Septic risk badge');
+    assert(has(badges,'mixed') && has(badges,'compartment'), 'PR14b. also has mixed+compartment');
+  }
+  // PR15: processSummaryLine joins labels
+  {
+    const basin = mkBasin();
+    const badges = recognizeProcess([basin], [], [mkDiff('d1',6,6), mkBlow('bl1',22,5), mkMixer('mx1',7,6), mkPump()], [cable(22,5,20,5), cable(7,6,20,5), air(22,5,6,6)]);
+    const line = processSummaryLine(badges);
+    assert(line.includes('Aerated') && line.includes('Mixed'), 'PR15. summary line joins badge labels: '+line);
+  }
+  // PR16: unpowered membrane → no membrane badge
+  {
+    const basin = mkBasin();
+    const badges = recognizeProcess([basin], [], [mkMixer('mx1',6,6), mkMem('mem1',7,6)], [cable(6,6,20,5)]); // membrane not cabled
+    assert(!has(badges,'membrane'), 'PR16. unpowered membrane → no membrane badge');
   }
 }
 

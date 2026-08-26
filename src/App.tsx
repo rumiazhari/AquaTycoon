@@ -35,6 +35,8 @@ import { UnitInspector } from './ui/UnitInspector';
 import { EquipmentInspector } from './ui/EquipmentInspector';
 import { BaffleInspector } from './ui/BaffleInspector';
 import { ConstructionStatusChip } from './ui/ConstructionStatusChip';
+import { ProcessBadgeStrip } from './ui/ProcessBadgeStrip';
+import { recognizeProcess } from './design/ProcessRecognition';
 import { PlantFlowDiagram } from './ui/PlantFlowDiagram';
 import { defaultMaterialForPipeType } from './design/PipeSizing';
 import { UnitDesigner } from './ui/UnitDesigner';
@@ -1862,6 +1864,8 @@ export const App: React.FC = () => {
 
       {/* ── Phase 4: construction status HUD (live power & aeration at a glance) ── */}
       <ConstructionStatusChip stats={GameManager.constructionStats(gameState)} zoneStats={GameManager.basinZoneStats(gameState)} />
+      {/* ── Phase 7: emergent process recognition badges (descriptive, read-only) ── */}
+      <ProcessBadgeStrip badges={recognizeProcess(gameState.customBasins ?? [], gameState.customBaffles ?? [], gameState.processEquipment ?? [], gameState.utilityConnections ?? [])} />
 
       {/* ── Unit Inspector ──────────────────────────────────────────────────── */}
       {selectedUnit && (
