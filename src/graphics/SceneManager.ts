@@ -772,7 +772,8 @@ export class SceneManager {
     selectedId?: string | null,
     poweredIds?: Set<string> | null,
     aeratedIds?: Set<string> | null,
-    filtration?: { liveMembraneIds?: Set<string>; degradedMembraneIds?: Set<string>; activeCarrierIds?: Set<string>; aeratedCarrierIds?: Set<string> } | null
+    filtration?: { liveMembraneIds?: Set<string>; degradedMembraneIds?: Set<string>; activeCarrierIds?: Set<string>; aeratedCarrierIds?: Set<string> } | null,
+    chemical?: { poweredStorageIds?: Set<string>; activeDosingIds?: Set<string>; poweredDosingIds?: Set<string> } | null
   ) {
     if (!this.equipGroup.parent) this.scene.add(this.equipGroup);
     const activeIds = new Set(items.map(i => i.id));
@@ -809,6 +810,8 @@ export class SceneManager {
       const isMembrane = it.typeId === 'membrane_cassette';
       const isCarrier = it.typeId === 'mbbr_carrier';
       const isSensor = it.typeId === 'do_probe' || it.typeId === 'flow_meter' || it.typeId === 'level_sensor';
+      const isStorage = it.typeId === 'chemical_storage_tank';
+      const isDosing = it.typeId === 'chemical_dosing_pump';
       const isPowered = !poweredIds || poweredIds.has(it.id);
       const isAerated = !aeratedIds || !isDiffuser || aeratedIds.has(it.id);
       // Phase 6 slice 2 filtration status for tinting
@@ -816,6 +819,9 @@ export class SceneManager {
       const filtDegraded = filtration?.degradedMembraneIds?.has(it.id) ?? false;
       const carrierActive = filtration?.activeCarrierIds?.has(it.id) ?? false;
       const carrierAerated = filtration?.aeratedCarrierIds?.has(it.id) ?? false;
+      const dosingActive = chemical?.activeDosingIds?.has(it.id) ?? false;
+      const dosingPowered = chemical?.poweredDosingIds?.has(it.id) ?? false;
+      const storagePowered = chemical?.poweredStorageIds?.has(it.id) ?? false;
       mesh.traverse(o => {
         const mm = o as THREE.Mesh;
         if (mm.isMesh && mm.material) {
@@ -859,6 +865,32 @@ export class SceneManager {
               } else {
                 m.emissive.setHex(0x14b8a6);
                 m.emissiveIntensity = 0.48;
+              }
+            } else if (isStorage) {
+              if (!isPowered) {
+                m.emissive.setHex(0x5a1a1a);
+                m.emissiveIntensity = 0.52;
+              } else if (storagePowered) {
+                m.emissive.setHex(0x65a30d);
+                m.emissiveIntensity = 0.48;
+              } else {
+                m.emissive.setHex(0x5a1a1a);
+                m.emissiveIntensity = 0.52;
+              }
+            } else if (isDosing) {
+              if (!isPowered) {
+                m.emissive.setHex(0x5a1a1a);
+                m.emissiveIntensity = 0.52;
+              } else if (dosingActive) {
+                m.emissive.setHex(0x84cc16);
+                m.emissiveIntensity = 0.52;
+              } else if (dosingPowered) {
+                // Powered but septic zone — not injecting effectively
+                m.emissive.setHex(0x92400e);
+                m.emissiveIntensity = 0.35;
+              } else {
+                m.emissive.setHex(0x5a1a1a);
+                m.emissiveIntensity = 0.52;
               }
             } else if (isDiffuser) {
               // Diffusers: aerated = blue shimmer, idle = no glow
@@ -1093,6 +1125,58 @@ export class SceneManager {
         housing.position.set(-0.32, poleH - 0.05, 0);
         const lens = add(new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.04, 12), new THREE.MeshStandardMaterial({ color: 0x22d3ee, emissive: 0x0e7490, emissiveIntensity: 0.45 })));
         lens.position.set(0.18, poleH - 0.42, 0);
+        break;
+      }
+      // ── PHASE 7 slice 3: chemical dosing kit ───────────────────────────
+      case 'chemical_storage_tank': {
+        // Ground bulk tank farm: horizontal cylindrical tank on a bund, with
+        // inlet piping and a small control kiosk. Distinct orange/brown palette.
+        const tankMat = new THREE.MeshStandardMaterial({ color: 0xe2d8c3, roughness: 0.55 });
+        const bundMat = new THREE.MeshStandardMaterial({ color: 0xa89060, roughness: 0.85 });
+        const valveMat = new THREE.MeshStandardMaterial({ color: 0x65a30d, roughness: 0.4 });
+        (tankMat as any)._equipBase = true;
+        (valveMat as any)._equipBase = true;
+        const bund = add(new THREE.Mesh(new THREE.BoxGeometry(3.0, 0.22, 2.2), bundMat));
+        bund.position.set(0, 0.11, 0);
+        const tank = add(new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.55, 2.4, 18), tankMat));
+        tank.rotation.z = Math.PI / 2;
+        tank.position.set(0, 0.85, 0);
+        const cradle1 = add(new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.45, 1.4), dark));
+        cradle1.position.set(-0.7, 0.40, 0);
+        const cradle2 = add(new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.45, 1.4), dark));
+        cradle2.position.set(0.7, 0.40, 0);
+        const kiosk = add(new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.7, 0.6), valveMat));
+        kiosk.position.set(1.25, 0.55, 0.75);
+        const pipe = add(new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 1.0, 10), steel));
+        pipe.rotation.z = Math.PI / 2;
+        pipe.position.set(-1.4, 0.85, 0);
+        break;
+      }
+      case 'chemical_dosing_pump': {
+        // In-basin dosing skid: compact skid with day tank + peristaltic pump head
+        // + injection lance descending to water. Lime-accented.
+        const skidMat = new THREE.MeshStandardMaterial({ color: 0xcbd5e1, roughness: 0.4, metalness: 0.15 });
+        const limeMat = new THREE.MeshStandardMaterial({ color: 0x84cc16, roughness: 0.5 });
+        const chemMat = new THREE.MeshStandardMaterial({ color: 0xfacc15, roughness: 0.3, transparent: true, opacity: 0.75 });
+        (skidMat as any)._equipBase = true;
+        (limeMat as any)._equipBase = true;
+        const depth = Math.max(1, basinDepthM);
+        const base = add(new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.14, 1.0), dark));
+        base.position.set(0, 0.07, 0);
+        const dayTank = add(new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.32, 0.6, 16), chemMat));
+        dayTank.position.set(-0.32, 0.44, 0);
+        const pumpHead = add(new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.35, 0.35), limeMat));
+        pumpHead.position.set(0.35, 0.34, 0);
+        const motor2 = add(new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.35, 12), dark));
+        motor2.rotation.z = Math.PI / 2;
+        motor2.position.set(0.35, 0.60, 0);
+        // Injection lance into water
+        const lanceLen = Math.max(0.8, depth * 0.45);
+        const lance = add(new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, lanceLen, 8), steel));
+        lance.position.set(0.35, lanceLen / 2 + 0.14, 0.22);
+        const nozzle = add(new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.12, 10), limeMat));
+        nozzle.position.set(0.35, 0.20, 0.22);
+        nozzle.rotation.x = Math.PI;
         break;
       }
       default: {

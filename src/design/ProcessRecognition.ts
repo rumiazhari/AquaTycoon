@@ -36,7 +36,7 @@ import {
   poweredEquipmentIds,
 } from './ConstructionNetwork';
 
-export type ProcessBadgeTone = 'emerald' | 'sky' | 'cyan' | 'violet' | 'amber' | 'slate';
+export type ProcessBadgeTone = 'emerald' | 'sky' | 'cyan' | 'violet' | 'amber' | 'slate' | 'lime';
 
 export interface ProcessBadge {
   /** Stable id for React keys / tests */
@@ -279,6 +279,44 @@ export function recognizeProcess(
       detail: `${poweredSensors} sensor${poweredSensors===1?'':'s'} live (${typeLabel}) — telemetry online`,
       tone: 'slate',
     });
+  }
+
+  // ── 11. Chemically dosed (Phase 7 slice 3) ───────────────────────────
+  {
+    const chemItems = eq.filter(e => e.typeId === 'chemical_storage_tank' || e.typeId === 'chemical_dosing_pump');
+    const poweredChem = chemItems.filter(e => poweredSet.has(e.id));
+    const poweredStorage = chemItems.filter(e => e.typeId === 'chemical_storage_tank' && poweredSet.has(e.id)).length;
+    const dosingPumps = chemItems.filter(e => e.typeId === 'chemical_dosing_pump');
+    let activeDosing = 0;
+    if (dosingPumps.length > 0) {
+      for (const e of dosingPumps) {
+        if (!poweredSet.has(e.id)) continue;
+        const zid = zoneIdForTile(e.x, e.y);
+        const healthy = zid ? (zoneHealthy.get(zid) ?? false) : false;
+        if (healthy) activeDosing++;
+      }
+    }
+    if (poweredChem.length >= 1) {
+      const detail = activeDosing > 0
+        ? `${activeDosing} dosing active${poweredStorage>0?` + ${poweredStorage} tank${poweredStorage>1?'s':''}`:''} — TP polishing live`
+        : poweredStorage > 0
+          ? `${poweredStorage} tank${poweredStorage>1?'s':''} live — dosing ready`
+          : `${poweredChem.length} chemical unit${poweredChem.length>1?'s':''} live — add dosing pump in mixed zone`;
+      const tone: ProcessBadgeTone = activeDosing > 0 ? 'lime' : 'amber';
+      badges.push({
+        id: 'chemical',
+        label: activeDosing > 0 ? 'Chemically dosed' : 'Chemical ready',
+        detail,
+        tone,
+      });
+    } else if (chemItems.length > 0) {
+      badges.push({
+        id: 'chemical-dormant',
+        label: 'Chemical (dormant)',
+        detail: `${chemItems.length} chemical unit${chemItems.length>1?'s':''} — needs power`,
+        tone: 'amber',
+      });
+    }
   }
 
   return badges;

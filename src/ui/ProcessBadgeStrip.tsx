@@ -1,6 +1,6 @@
 import React from 'react';
 import { ProcessBadge } from '../design/ProcessRecognition';
-import { Layers, Wind, Droplets, ShieldCheck, Hexagon, Activity, Columns3, AlertTriangle, Recycle, Gauge } from 'lucide-react';
+import { Layers, Wind, Droplets, ShieldCheck, Hexagon, Activity, Columns3, AlertTriangle, Recycle, Gauge, FlaskConical, Beaker } from 'lucide-react';
 
 const TONE_CLASSES: Record<ProcessBadge['tone'], string> = {
   emerald: 'text-emerald-200 border-emerald-500/30 bg-emerald-950/40',
@@ -9,6 +9,7 @@ const TONE_CLASSES: Record<ProcessBadge['tone'], string> = {
   violet: 'text-violet-200 border-violet-500/30 bg-violet-950/30',
   amber: 'text-amber-200 border-amber-500/40 bg-amber-950/30',
   slate: 'text-slate-300 border-slate-600 bg-slate-900',
+  lime: 'text-lime-200 border-lime-500/30 bg-lime-950/30',
 };
 
 const ICONS: Record<string, React.ComponentType<{ size?: number; className?: string }>> = {
@@ -23,6 +24,8 @@ const ICONS: Record<string, React.ComponentType<{ size?: number; className?: str
   ifas: Droplets,
   septic: AlertTriangle,
   instrumented: Gauge,
+  chemical: FlaskConical,
+  'chemical-dormant': Beaker,
 };
 
 interface Props {

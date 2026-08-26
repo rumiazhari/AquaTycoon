@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, Wind, Trash2, Droplets, Fan, Cog, Waves, AlertTriangle, CheckCircle2, Columns3, ShieldCheck, Hexagon, Gauge, Activity, Ruler } from 'lucide-react';
+import { X, Wind, Trash2, Droplets, Fan, Cog, Waves, AlertTriangle, CheckCircle2, Columns3, ShieldCheck, Hexagon, Gauge, Activity, Ruler, FlaskConical, Beaker } from 'lucide-react';
 import { EQUIPMENT_TYPES } from '../design/ProcessEquipment';
 import type { ProcessEquipmentItem } from '../design/ProcessEquipment';
 import type { BasinZone } from '../design/BasinZone';
@@ -15,6 +15,8 @@ const ICONS: Record<string, React.ComponentType<{ size?: number; className?: str
   do_probe: Activity,
   flow_meter: Gauge,
   level_sensor: Ruler,
+  chemical_storage_tank: FlaskConical,
+  chemical_dosing_pump: Beaker,
 };
 
 interface EquipmentInspectorProps {
@@ -26,6 +28,9 @@ interface EquipmentInspectorProps {
   filtrationDegraded?: boolean | null;
   carrierActive?: boolean | null;
   carrierAerated?: boolean | null;
+  dosingActive?: boolean | null;
+  dosingPowered?: boolean | null;
+  storagePowered?: boolean | null;
   onClose: () => void;
   onDemolish: (id: string) => void;
 }
@@ -37,7 +42,7 @@ const ROLE_TONE: Record<string, string> = {
   buffer: 'bg-slate-800 border-slate-600 text-slate-300',
 };
 
-export const EquipmentInspector: React.FC<EquipmentInspectorProps> = ({ item, powered, aerated, zone, filtrationLive, filtrationDegraded, carrierActive, carrierAerated, onClose, onDemolish }) => {
+export const EquipmentInspector: React.FC<EquipmentInspectorProps> = ({ item, powered, aerated, zone, filtrationLive, filtrationDegraded, carrierActive, carrierAerated, dosingActive, dosingPowered, storagePowered: _storagePowered, onClose, onDemolish }) => {
   const def = EQUIPMENT_TYPES[item.typeId];
   if (!def) return null;
   const Icon = ICONS[item.typeId] ?? Cog;
@@ -148,6 +153,35 @@ export const EquipmentInspector: React.FC<EquipmentInspectorProps> = ({ item, po
                 <>
                   <span className="text-xs font-bold text-amber-300">Dark — needs a Power cable on this tile</span>
                   <span className="text-[11px] text-slate-400">Run a Power cable here to bring this sensor online (red glow while dark, teal when live).</span>
+                </>
+              )
+            ) : item.typeId === 'chemical_storage_tank' ? (
+              powered ? (
+                <>
+                  <span className="text-xs font-bold text-lime-300">Chemical live — tank powered (lime shimmer)</span>
+                  <span className="text-[11px] text-slate-400">Bulk ferric/alum feed online — boosts TP precipitation. Pair with a powered dosing pump in a mixed zone for full polish.</span>
+                </>
+              ) : (
+                <>
+                  <span className="text-xs font-bold text-amber-300">Dark — needs a Power cable on this ground tile</span>
+                  <span className="text-[11px] text-slate-400">Run a Power cable here to keep the recirculation skid energized (red while dark, lime when live).</span>
+                </>
+              )
+            ) : item.typeId === 'chemical_dosing_pump' ? (
+              dosingActive ? (
+                <>
+                  <span className="text-xs font-bold text-lime-300">Dosing active — injecting coagulant (lime shimmer)</span>
+                  <span className="text-[11px] text-slate-400">Coagulant precipitates TP in this mixed zone. Keep the zone mixed and powered for full 22% TP removal per pump.</span>
+                </>
+              ) : dosingPowered ? (
+                <>
+                  <span className="text-xs font-bold text-amber-300">Dormant — zone needs a powered mixer</span>
+                  <span className="text-[11px] text-slate-400">Pump is powered but its zone is septic — add a powered mixer in this zone to activate chemical TP polishing (amber → lime).</span>
+                </>
+              ) : (
+                <>
+                  <span className="text-xs font-bold text-amber-300">Dark — needs a Power cable on this tile</span>
+                  <span className="text-[11px] text-slate-400">Run a Power cable here to energize the dosing skid (red while dark, lime when injecting).</span>
                 </>
               )
             ) : needsPower ? (

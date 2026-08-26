@@ -25,7 +25,7 @@ import { BASIN_DEFAULT_DEPTH_M, validateBasinPlacement } from './design/CustomBa
 import { EQUIPMENT_TYPES, validateEquipmentPlacement } from './design/ProcessEquipment';
 import { UTILITY_TYPES, UtilityConnectionType, validateUtilityConnection } from './design/UtilityConnection';
 import { poweredEquipmentIds, aeratedDiffuserIds } from './design/ConstructionNetwork';
-import { filtrationLiveSets } from './design/ConstructionAdapter';
+import { filtrationLiveSets, chemicalLiveSets } from './design/ConstructionAdapter';
 import { validateBafflePlacement } from './design/BasinZone';
 
 // UI Components
@@ -1901,19 +1901,29 @@ export const App: React.FC = () => {
           ? aeratedDiffuserIds(gameState.processEquipment ?? [], gameState.utilityConnections ?? []).has(item.id)
           : null;
         const zone = GameManager.zoneForEquipmentItem(gameState, item.id);
+        const filt = filtrationLiveSets(gameState.customBasins ?? [], gameState.processEquipment ?? [], gameState.utilityConnections ?? [], gameState.customBaffles ?? []);
+        const chem = chemicalLiveSets(gameState.customBasins ?? [], gameState.processEquipment ?? [], gameState.utilityConnections ?? [], gameState.customBaffles ?? []);
         return (
           <EquipmentInspector
             item={item}
             powered={powered}
             aerated={aerated}
             zone={zone}
+            filtrationLive={filt.liveMembraneIds.has(item.id)}
+            filtrationDegraded={filt.degradedMembraneIds.has(item.id)}
+            carrierActive={filt.activeCarrierIds.has(item.id)}
+            carrierAerated={filt.aeratedCarrierIds.has(item.id)}
+            dosingActive={chem.activeDosingIds.has(item.id)}
+            dosingPowered={chem.poweredDosingIds.has(item.id)}
+            storagePowered={chem.poweredStorageIds.has(item.id)}
             onClose={() => {
               setSelectedEquipmentId(null);
               sceneRef.current?.syncEquipment(
                 gameState.processEquipment ?? [], gameState.customBasins ?? [], null,
                 poweredEquipmentIds(gameState.processEquipment ?? [], gameState.utilityConnections ?? []),
                 aeratedDiffuserIds(gameState.processEquipment ?? [], gameState.utilityConnections ?? []),
-                filtrationLiveSets(gameState.customBasins ?? [], gameState.processEquipment ?? [], gameState.utilityConnections ?? [], gameState.customBaffles ?? [])
+                filtrationLiveSets(gameState.customBasins ?? [], gameState.processEquipment ?? [], gameState.utilityConnections ?? [], gameState.customBaffles ?? []),
+                chemicalLiveSets(gameState.customBasins ?? [], gameState.processEquipment ?? [], gameState.utilityConnections ?? [], gameState.customBaffles ?? [])
               );
             }}
             onDemolish={id => {
@@ -1926,7 +1936,8 @@ export const App: React.FC = () => {
                   res.newState.processEquipment ?? [], res.newState.customBasins ?? [], null,
                   poweredEquipmentIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
                   aeratedDiffuserIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
-                  filtrationLiveSets(res.newState.customBasins ?? [], res.newState.processEquipment ?? [], res.newState.utilityConnections ?? [], res.newState.customBaffles ?? [])
+                  filtrationLiveSets(res.newState.customBasins ?? [], res.newState.processEquipment ?? [], res.newState.utilityConnections ?? [], res.newState.customBaffles ?? []),
+                  chemicalLiveSets(res.newState.customBasins ?? [], res.newState.processEquipment ?? [], res.newState.utilityConnections ?? [], res.newState.customBaffles ?? [])
                 );
                 sceneRef.current?.syncUtilityConnections(res.newState.utilityConnections ?? [], null);
                 setToast(res.refunded && res.refunded > 0

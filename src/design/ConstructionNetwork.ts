@@ -136,6 +136,13 @@ export interface ConstructionStats {
   poweredFlowMeters: number;
   totalLevelSensors: number;
   poweredLevelSensors: number;
+  /** Phase 7 slice 3 chemical dosing kit */
+  totalChemicalUnits: number;
+  poweredChemicalUnits: number;
+  totalStorageTanks: number;
+  poweredStorageTanks: number;
+  totalDosingPumps: number;
+  poweredDosingPumps: number;
   /** Nameplate power of *powered* machines only (kW) — what the grid actually feeds. */
   livePowerKw: number;
   /** Nameplate power of all installed machines (kW). */
@@ -195,6 +202,12 @@ export function constructionStats(
     poweredFlowMeters: equipment.filter(e => e.typeId === 'flow_meter' && powered.has(e.id)).length,
     totalLevelSensors: equipment.filter(e => e.typeId === 'level_sensor').length,
     poweredLevelSensors: equipment.filter(e => e.typeId === 'level_sensor' && powered.has(e.id)).length,
+    totalChemicalUnits: equipment.filter(e => e.typeId === 'chemical_storage_tank' || e.typeId === 'chemical_dosing_pump').length,
+    poweredChemicalUnits: equipment.filter(e => (e.typeId === 'chemical_storage_tank' || e.typeId === 'chemical_dosing_pump') && powered.has(e.id)).length,
+    totalStorageTanks: equipment.filter(e => e.typeId === 'chemical_storage_tank').length,
+    poweredStorageTanks: equipment.filter(e => e.typeId === 'chemical_storage_tank' && powered.has(e.id)).length,
+    totalDosingPumps: equipment.filter(e => e.typeId === 'chemical_dosing_pump').length,
+    poweredDosingPumps: equipment.filter(e => e.typeId === 'chemical_dosing_pump' && powered.has(e.id)).length,
     livePowerKw,
     installedPowerKw,
     liveOpexPerDay,
@@ -213,6 +226,7 @@ export function constructionSummaryLine(s: ConstructionStats): string {
   if (s.totalMembranes > 0) parts.push(`${s.poweredMembranes}/${s.totalMembranes} membranes live`);
   if (s.totalCarriers > 0) parts.push(`${s.totalCarriers} carrier tile${s.totalCarriers>1?'s':''}`);
   if (s.totalSensors > 0) parts.push(`${s.poweredSensors}/${s.totalSensors} sensors live`);
+  if (s.totalChemicalUnits > 0) parts.push(`${s.poweredChemicalUnits}/${s.totalChemicalUnits} dosing live`);
   if (s.totalUtilityConnections > 0) parts.push(`${s.totalUtilityConnections} utility line${s.totalUtilityConnections > 1 ? 's' : ''}`);
   if (parts.length === 0) return 'No custom construction yet — draw a basin to start.';
   return parts.join(' · ');

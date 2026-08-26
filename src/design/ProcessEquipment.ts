@@ -117,6 +117,25 @@ export const EQUIPMENT_TYPES: Record<string, EquipmentTypeDef> = {
     powerKw: 0.25,
     blurb: 'Horn over the water surface. Reports level/freeboard when powered — completes the sensor triad.',
   },
+  // ── PHASE 7 slice 3: chemical dosing kit — TP polishing through coagulant injection ───
+  chemical_storage_tank: {
+    id: 'chemical_storage_tank',
+    name: 'Chemical Storage Tank',
+    mounting: 'ground',
+    capexUsd: 11_500,
+    opexUsdPerDay: 8,
+    powerKw: 0.6, // recirculation/dosing skid
+    blurb: 'Ground bulk storage for ferric/alum. Supplies the dosing pump — powered storage enables phosphorus polishing.',
+  },
+  chemical_dosing_pump: {
+    id: 'chemical_dosing_pump',
+    name: 'Chemical Dosing Pump',
+    mounting: 'in_basin',
+    capexUsd: 6_800,
+    opexUsdPerDay: 11,
+    powerKw: 0.9, // peristaltic injection
+    blurb: 'In-basin dosing skid. Injects coagulant at the point of use — TP polish when its zone is mixed and powered.',
+  },
 };
 
 /** One installed machine. Occupies exactly ONE grid tile. */

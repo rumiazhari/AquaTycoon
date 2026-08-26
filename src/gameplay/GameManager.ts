@@ -595,7 +595,7 @@ export class GameManager {
       );
       const hasFlow = simResult.finalEffluent.flowRate > 10;
       let effChanged = false;
-      if (hasFlow && (ce.bodMultiplier !== 1 || ce.tnMultiplier !== 1 || ce.tssMultiplier !== 1 || ce.codMultiplier !== 1 || ce.doBoostMgL !== 0)) {
+      if (hasFlow && (ce.bodMultiplier !== 1 || ce.tnMultiplier !== 1 || ce.tssMultiplier !== 1 || ce.codMultiplier !== 1 || ce.tpMultiplier !== 1 || ce.doBoostMgL !== 0)) {
         const eff = simResult.finalEffluent;
         const next = { ...eff } as WaterQuality;
         const cl = (v: number, lo = 0) => Number.isFinite(v) ? Math.max(lo, v) : lo;
@@ -606,7 +606,9 @@ export class GameManager {
         // NH₄ tracks with TN (nitrogen species share the load)
         next.nh4 = cl(eff.nh4 * ce.tnMultiplier);
         next.no3 = cl(eff.no3 * ce.tnMultiplier);
-        next.tp  = cl(eff.tp  * ce.tssMultiplier * 0.5 + eff.tp * 0.5);
+        // TP: construction precipitates phosphate chemically + via TSS barrier
+        // Chemical dosing tpMultiplier stacks with the TSS-derived TP credit.
+        next.tp  = cl(eff.tp  * (ce.tssMultiplier * 0.5 + 0.5) * ce.tpMultiplier);
         next.turbidity = cl(eff.turbidity * ce.tssMultiplier);
         next.do = Math.max(0, Math.min(14, cl(eff.do, 0) + ce.doBoostMgL));
         simResult.finalEffluent = next;

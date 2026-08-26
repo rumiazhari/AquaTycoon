@@ -1,7 +1,7 @@
 import React from 'react';
 import { ConstructionStats } from '../design/ConstructionNetwork';
 import { BasinZoneStats } from '../design/BasinZone';
-import { Zap, Waves, Droplets, Cable, Columns3, ShieldCheck, Hexagon, Gauge } from 'lucide-react';
+import { Zap, Waves, Droplets, Cable, Columns3, ShieldCheck, Hexagon, Gauge, FlaskConical } from 'lucide-react';
 
 interface Props {
   stats: ConstructionStats;
@@ -53,6 +53,13 @@ export const ConstructionStatusChip: React.FC<Props> = ({ stats, zoneStats }) =>
           <Gauge size={12} className={stats.poweredSensors>0 ? "text-teal-400" : "text-amber-400"} />
           <span className="font-bold">{stats.poweredSensors}/{stats.totalSensors} sensors live</span>
           <span className="opacity-70 hidden sm:inline">· {stats.totalDoProbes} DO · {stats.totalFlowMeters} flow · {stats.totalLevelSensors} level</span>
+        </span>
+      )}
+      {stats.totalChemicalUnits > 0 && (
+        <span className={`pointer-events-auto inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-mono shadow-lg ${stats.poweredChemicalUnits > 0 ? 'bg-lime-950/30 border-lime-500/30 text-lime-200' : 'bg-amber-950/30 border-amber-500/30 text-amber-200'}`}>
+          <FlaskConical size={12} className={stats.poweredChemicalUnits>0 ? "text-lime-400" : "text-amber-400"} />
+          <span className="font-bold">{stats.poweredChemicalUnits}/{stats.totalChemicalUnits} dosing live</span>
+          <span className="opacity-70 hidden sm:inline">· {stats.totalStorageTanks} tank{stats.totalStorageTanks!==1?'s':''} · {stats.totalDosingPumps} pump{stats.totalDosingPumps!==1?'s':''}</span>
         </span>
       )}
       {stats.totalUtilityConnections > 0 && (

@@ -76,11 +76,20 @@ export interface ConstructionTickEffect {
   totalCarriers: number;
   activeCarriers: number;
   aeratedCarriers: number;
+  /** Phase 7 slice 3: chemical dosing kit — TP polishing */
+  totalChemicalUnits: number;
+  poweredChemicalUnits: number;
+  totalStorageTanks: number;
+  poweredStorageTanks: number;
+  totalDosingPumps: number;
+  poweredDosingPumps: number;
+  activeDosingPumps: number;
   /** Effluent multipliers (<1 = improvement, >1 = penalty). */
   bodMultiplier: number;
   tnMultiplier: number;
   tssMultiplier: number;
   codMultiplier: number;
+  tpMultiplier: number;
   /** Dissolved-oxygen delta added to the final effluent (mg/L, may be negative). */
   doBoostMgL: number;
   /** Quick human summary for diagnostics. */
@@ -312,6 +321,83 @@ export function evaluateConstructionEffects(
     totalCarriers = eq.filter(e => e.typeId === 'mbbr_carrier').length;
   }
 
+  // ── Phase 7 slice 3: chemical dosing — TP polishing via coagulant injection ───
+  // Each powered dosing pump that sits in a HEALTHY (mixed) zone injects coagulant
+  // and precipitates orthophosphate (0.78× TP per active pump). Each powered bulk
+  // storage tank on open ground gives a smaller global 0.92× boost (pre-dissolved feed).
+  // Stacking is capped at 0.35× (65% removal max) — chemical alone cannot reach ultra-low P
+  // like a dedicated tertiary clarifier, but bridges the gap for custom builds.
+  let totalChemicalUnits = eq.filter(e => e.typeId === 'chemical_storage_tank' || e.typeId === 'chemical_dosing_pump').length;
+  let totalStorageTanks = eq.filter(e => e.typeId === 'chemical_storage_tank').length;
+  let totalDosingPumps = eq.filter(e => e.typeId === 'chemical_dosing_pump').length;
+  let activeDosingPumps = 0;
+  let poweredChemicalUnits = 0;
+  let poweredStorageTanks = 0;
+  let poweredDosingPumps = 0;
+  let tpMul = 1;
+  if (totalChemicalUnits > 0) {
+    const poweredSetChem = poweredEquipmentIds(eq as any, uc as any);
+    poweredChemicalUnits = eq.filter(e => (e.typeId === 'chemical_storage_tank' || e.typeId === 'chemical_dosing_pump') && poweredSetChem.has(e.id)).length;
+    poweredStorageTanks = eq.filter(e => e.typeId === 'chemical_storage_tank' && poweredSetChem.has(e.id)).length;
+    poweredDosingPumps = eq.filter(e => e.typeId === 'chemical_dosing_pump' && poweredSetChem.has(e.id)).length;
+    // Build/ensure zoneHealthy map for dosing pump health check
+    if (bs.length > 0 && poweredDosingPumps > 0) {
+      // Ensure zoneHealthyById exists (reuse filtration map when available, otherwise build)
+      if (zoneHealthyById.size === 0) {
+        const zonesForChem: { id: string; basinId: string; x: number; y: number; w: number; h: number }[] =
+          hasBaffles && derivedZones ? derivedZones as any : bs.map(b => ({ id: (b as any).id, basinId: (b as any).id, x: (b as any).x, y: (b as any).y, w: (b as any).w, h: (b as any).h }));
+        for (const z of zonesForChem) {
+          if (!zoneHealthyById.has(z.id)) {
+            const healthy = eq.some(e => e.typeId === 'submersible_mixer' && poweredMixerIds.has(e.id) && mixerInZone(e, z as any));
+            zoneHealthyById.set(z.id, healthy);
+          }
+        }
+        // Cache helper for tile → zone
+        const zonesForChemList = (hasBaffles && derivedZones ? derivedZones as any : bs.map(b => ({ id: (b as any).id, basinId: (b as any).id, x: (b as any).x, y: (b as any).y, w: (b as any).w, h: (b as any).h }))) as any[];
+        const zoneIdForChemTile = (tx: number, ty: number): string | null => {
+          for (const z of zonesForChemList) if (tx >= z.x && tx < z.x + z.w && ty >= z.y && ty < z.y + z.h) return z.id;
+          return null;
+        };
+        for (const e of eq) {
+          if (e.typeId === 'chemical_dosing_pump' && poweredSetChem.has(e.id)) {
+            const zid = zoneIdForChemTile(e.x, e.y);
+            const healthy = zid ? (zoneHealthyById.get(zid) ?? false) : false;
+            if (healthy) activeDosingPumps++;
+          }
+        }
+      } else {
+        // filtration path already populated zoneHealthyById — reuse
+        const zonesForChemList2: any[] = hasBaffles && derivedZones ? derivedZones as any : bs.map(b => ({ id: (b as any).id, basinId: (b as any).id, x: (b as any).x, y: (b as any).y, w: (b as any).w, h: (b as any).h }));
+        const zoneIdForChemTile2 = (tx: number, ty: number): string | null => {
+          for (const z of zonesForChemList2) if (tx >= z.x && tx < z.x + z.w && ty >= z.y && ty < z.y + z.h) return z.id;
+          return null;
+        };
+        for (const e of eq) {
+          if (e.typeId === 'chemical_dosing_pump' && poweredSetChem.has(e.id)) {
+            const zid = zoneIdForChemTile2(e.x, e.y);
+            const healthy = zid ? (zoneHealthyById.get(zid) ?? false) : false;
+            if (healthy) activeDosingPumps++;
+          }
+        }
+      }
+      if (bs.length > 0) {
+        let chemMul = 1;
+        for (let i = 0; i < activeDosingPumps; i++) chemMul *= 0.78;
+        for (let i = 0; i < poweredStorageTanks; i++) chemMul *= 0.92;
+        tpMul = Math.max(0.35, chemMul);
+      }
+    } else if (bs.length > 0 && poweredStorageTanks > 0) {
+      // Storage alone (no pump) still gives a modest global polish when basins exist
+      let chemMul = 1;
+      for (let i = 0; i < poweredStorageTanks; i++) chemMul *= 0.92;
+      tpMul = Math.max(0.35, chemMul);
+    }
+  } else {
+    totalChemicalUnits = 0;
+    totalStorageTanks = 0;
+    totalDosingPumps = 0;
+  }
+
   // ── Apply septic penalty (zone-aware when baffles exist) ─────────────────
   const septicForPenalty = hasBaffles ? septicZones : septicBasins;
   if (septicForPenalty > 0) {
@@ -372,6 +458,12 @@ export function evaluateConstructionEffects(
   if (liveMembranes > 0) parts.push(`${liveMembranes} membrane${liveMembranes>1?'s':''} filtering`);
   else if (poweredMembranes > 0 && degradedMembranes > 0) parts.push(`${degradedMembranes} membrane${degradedMembranes>1?'s':''} fouled`);
   if (activeCarriers > 0) parts.push(`${activeCarriers} carrier${activeCarriers>1?'s':''} active${aeratedCarriers>0?` (${aeratedCarriers} aerated)`:''}`);
+  if (activeDosingPumps > 0 || poweredStorageTanks > 0) {
+    const chemDetail = activeDosingPumps > 0
+      ? `${activeDosingPumps} dosing active${poweredStorageTanks>0?` + ${poweredStorageTanks} tank${poweredStorageTanks>1?'s':''}`:''}`
+      : `${poweredStorageTanks} tank${poweredStorageTanks>1?'s':''} live`;
+    parts.push(chemDetail);
+  }
   if (extraPowerKw > 0) parts.push(`${extraPowerKw} kW live`);
   if (parts.length === 0) parts.push('no construction effect');
   const summary = parts.join(' · ');
@@ -395,10 +487,18 @@ export function evaluateConstructionEffects(
     totalCarriers,
     activeCarriers,
     aeratedCarriers,
+    totalChemicalUnits,
+    poweredChemicalUnits,
+    totalStorageTanks,
+    poweredStorageTanks,
+    totalDosingPumps,
+    poweredDosingPumps,
+    activeDosingPumps,
     bodMultiplier: bodMul,
     tnMultiplier: tnMul,
     tssMultiplier: tssMul,
     codMultiplier: codMul,
+    tpMultiplier: tpMul,
     doBoostMgL: doBoost,
     summary,
   };
@@ -465,4 +565,51 @@ export function filtrationLiveSets(
   // ce is evaluated above for counts; sets are derived independently but consistently
   void ce;
   return { liveMembraneIds, degradedMembraneIds, activeCarrierIds, aeratedCarrierIds };
+}
+
+/**
+ * Per-equipment chemical live sets for 3D tinting.
+ * Returns which storage tanks are powered and which dosing pumps are actively injecting (powered + healthy zone).
+ * Pure, headless-testable.
+ */
+export function chemicalLiveSets(
+  basins: CustomBasin[],
+  equipment: ProcessEquipmentItem[],
+  utilityConnections: Pick<UtilityConnection, 'type' | 'ax' | 'ay' | 'bx' | 'by'>[],
+  baffles: BaffleWall[] = [],
+): { poweredStorageIds: Set<string>; activeDosingIds: Set<string>; poweredDosingIds: Set<string> } {
+  const bs = basins ?? [];
+  const eq = equipment ?? [];
+  const uc = utilityConnections ?? [];
+  const bfs = baffles ?? [];
+  const hasBaffles = bfs.length > 0 && bs.length > 0;
+  const poweredSet = poweredEquipmentIds(eq as any, uc as any);
+  const poweredMixerIds = mixerActiveIds(eq as any, uc as any);
+  let derivedZones: any[] | null = null;
+  if (hasBaffles) derivedZones = allZones(bs as unknown as CustomBasin[], bfs) as any;
+  const zonesForChem: any[] = hasBaffles && derivedZones ? derivedZones : bs.map(b => ({ id: (b as any).id, x: (b as any).x, y: (b as any).y, w: (b as any).w, h: (b as any).h }));
+  const zoneHealthyById = new Map<string, boolean>();
+  for (const z of zonesForChem) {
+    const healthy = eq.some(e => e.typeId === 'submersible_mixer' && poweredMixerIds.has(e.id) && e.x >= z.x && e.x < z.x + z.w && e.y >= z.y && e.y < z.y + z.h);
+    zoneHealthyById.set(z.id, healthy);
+  }
+  const zoneIdForTile = (tx: number, ty: number): string | null => {
+    for (const z of zonesForChem) if (tx >= z.x && tx < z.x + z.w && ty >= z.y && ty < z.y + z.h) return z.id;
+    return null;
+  };
+  const poweredStorageIds = new Set<string>();
+  const activeDosingIds = new Set<string>();
+  const poweredDosingIds = new Set<string>();
+  for (const e of eq) {
+    if (e.typeId === 'chemical_storage_tank' && poweredSet.has(e.id)) poweredStorageIds.add(e.id);
+    else if (e.typeId === 'chemical_dosing_pump') {
+      if (poweredSet.has(e.id)) {
+        poweredDosingIds.add(e.id);
+        const zid = zoneIdForTile(e.x, e.y);
+        const healthy = zid ? (zoneHealthyById.get(zid) ?? false) : false;
+        if (healthy) activeDosingIds.add(e.id);
+      }
+    }
+  }
+  return { poweredStorageIds, activeDosingIds, poweredDosingIds };
 }

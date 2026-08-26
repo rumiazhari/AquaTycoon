@@ -3378,6 +3378,220 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
   }
 }
 
+// ═════════════════════════════════════════════════════════════
+// CONSTRUCTION-BUILDER Phase 7 slice 3: chemical dosing kit (storage + dosing pump)
+// ═════════════════════════════════════════════════════════════
+{
+  const mkBasinC = (x=5,y=5,w=8,h=6,id='bC1') => ({ x, y, w, h, depthM:4, id, createdAtDay:0 } as any);
+  const mkStorage = (id:string,x:number,y:number) => ({ id, typeId:'chemical_storage_tank', x, y, createdAtDay:0 } as any);
+  const mkDosing = (id:string,x:number,y:number) => ({ id, typeId:'chemical_dosing_pump', x, y, createdAtDay:0 } as any);
+  const mkMixerC = (id:string,x:number,y:number) => ({ id, typeId:'submersible_mixer', x, y, createdAtDay:0 } as any);
+  const mkPumpC = (x=22,y=5) => ({ id:'puC', typeId:'process_pump', x, y, createdAtDay:0 } as any);
+  const cableC = (ax:number,ay:number,bx:number,by:number) => ({ id:'c_'+ax+'_'+ay+'_'+bx+'_'+by, type:'power_cable', ax, ay, bx, by, createdAtDay:0 } as any);
+  const withBasinC = () => {
+    let s:any = GameManager.createInitialState(0, true);
+    const r = GameManager.placeCustomBasin(s, { x:5, y:5, w:8, h:6 });
+    if (!r.success) throw new Error('withBasinC failed: '+r.reason);
+    return r.newState;
+  };
+  const hasC = (badges:any[], id:string) => badges.some((b:any)=>b.id===id);
+
+  // CH01: chemical_storage_tank mounts on open ground, inside basin rejected
+  {
+    const s = withBasinC();
+    const rGround = GameManager.placeProcessEquipment(s, 'chemical_storage_tank', 22, 5);
+    const rInBasin = GameManager.placeProcessEquipment(s, 'chemical_storage_tank', 6, 6);
+    assert(rGround.success, 'CH01. storage_tank mounts on open ground');
+    assert(!rInBasin.success && /dry/i.test(rInBasin.reason??''), 'CH01b. storage_tank inside basin rejected: '+(rInBasin.reason??''));
+  }
+  // CH02: chemical_dosing_pump mounts inside a basin
+  {
+    const s = withBasinC();
+    const rIn = GameManager.placeProcessEquipment(s, 'chemical_dosing_pump', 6, 6);
+    const rOut = GameManager.placeProcessEquipment(s, 'chemical_dosing_pump', 0, 0);
+    assert(rIn.success, 'CH02. dosing_pump mounts inside a basin');
+    assert(!rOut.success && /basin/i.test(rOut.reason??''), 'CH02b. dosing_pump outside basin rejected: '+(rOut.reason??''));
+  }
+  // CH03: tile exclusivity
+  {
+    const s = withBasinC();
+    const r1 = GameManager.placeProcessEquipment(s, 'chemical_dosing_pump', 6, 6);
+    const r2 = GameManager.placeProcessEquipment(r1.newState, 'chemical_storage_tank', 6, 6);
+    // storage is ground but tile 6,6 is in basin so second fails due to mounting not exclusivity; test exclusivity with same mounting
+    const r3 = GameManager.placeProcessEquipment(r1.newState, 'chemical_dosing_pump', 6, 6);
+    assert(r1.success && !r3.success && /already holds/i.test(r3.reason??''), 'CH03. tile exclusivity blocks second dosing pump on same tile');
+  }
+  // CH04: exact campaign CAPEX
+  {
+    let s:any = withBasinC();
+    s.gameMode='campaign'; s.tutorialActive=false; s.financials.cash=10_000_000;
+    const cash0 = s.financials.cash;
+    let r = GameManager.placeProcessEquipment(s, 'chemical_storage_tank', 22, 5); s=r.newState;
+    assert(cash0 - s.financials.cash === 11500, 'CH04. storage_tank CAPEX $11500 (got '+(cash0 - s.financials.cash)+')');
+    const cash1 = s.financials.cash;
+    r = GameManager.placeProcessEquipment(s, 'chemical_dosing_pump', 6, 6); s=r.newState;
+    assert(cash1 - s.financials.cash === 6800, 'CH04b. dosing_pump CAPEX $6800 (got '+(cash1 - s.financials.cash)+')');
+  }
+  // CH05: unaffordable rejected
+  {
+    let s:any = withBasinC();
+    s.gameMode='campaign'; s.tutorialActive=false; s.financials.cash=100;
+    const r = GameManager.placeProcessEquipment(s, 'chemical_dosing_pump', 6, 6);
+    assert(!r.success, 'CH05. unaffordable dosing pump rejected');
+  }
+  // CH06: powered model — storage and dosing need power cable on their exact tile
+  {
+    const basin = mkBasinC();
+    const storage = mkStorage('st1', 22,5);
+    const dosing = mkDosing('dp1',6,6);
+    const mixer = mkMixerC('mx1',7,6);
+    const eq = [storage, dosing, mixer, mkPumpC()] as any;
+    const stNone = constructionStats([basin] as any, eq, [] as any);
+    assert(stNone.totalChemicalUnits===2 && stNone.poweredChemicalUnits===0, 'CH06. 0/2 chemical powered with no cables (got '+stNone.poweredChemicalUnits+'/'+stNone.totalChemicalUnits+')');
+    const stStorageOnly = constructionStats([basin] as any, eq, [cableC(22,5,22,5)] as any);
+    assert(stStorageOnly.poweredChemicalUnits===1 && stStorageOnly.poweredStorageTanks===1, 'CH06b. storage powered alone (got '+stStorageOnly.poweredStorageTanks+'/'+stStorageOnly.totalStorageTanks+')');
+    const stBoth = constructionStats([basin] as any, eq, [cableC(22,5,22,5), cableC(6,6,22,5), cableC(7,6,22,5)] as any);
+    assert(stBoth.poweredChemicalUnits===2 && stBoth.poweredDosingPumps===1, 'CH06c. both chemical powered (got '+stBoth.poweredChemicalUnits+'/'+stBoth.totalChemicalUnits+')');
+  }
+  // CH07: livePower includes powered chemical
+  {
+    const basin = mkBasinC();
+    const eq = [mkStorage('st1',22,5), mkDosing('dp1',6,6), mkMixerC('mx1',7,6)] as any;
+    const stNone = constructionStats([basin] as any, eq, [] as any);
+    const stAll = constructionStats([basin] as any, eq, [cableC(22,5,22,5), cableC(6,6,22,5), cableC(7,6,22,5)] as any);
+    assert(stAll.livePowerKw > stNone.livePowerKw, 'CH07. powered chemical increases livePower '+stNone.livePowerKw+' → '+stAll.livePowerKw);
+    assert(Math.abs(stAll.livePowerKw - (4 + 0.6 + 0.9)) < 0.01, 'CH07b. livePower includes storage 0.6 + dosing 0.9 + mixer 4 = '+stAll.livePowerKw);
+  }
+  // CH08: basin demolition blocked while dosing pump remains inside
+  {
+    let s2:any = withBasinC();
+    const rD = GameManager.placeProcessEquipment(s2, 'chemical_dosing_pump', 6, 6);
+    const basinId = rD.newState.customBasins[0].id;
+    const demo = GameManager.demolishCustomBasin(rD.newState, basinId);
+    assert(!demo.success && /equipment/i.test(demo.reason??''), 'CH08. basin demolition refused while dosing pump remains mounted');
+    const cleared = GameManager.demolishProcessEquipment(rD.newState, rD.newState.processEquipment.find((e:any)=>e.typeId==='chemical_dosing_pump')!.id);
+    const demo2 = GameManager.demolishCustomBasin(cleared.newState, basinId);
+    assert(demo2.success, 'CH08b. basin demolishes once dosing pump removed');
+  }
+  // CH09: Chemical badge thresholds
+  {
+    const basin = mkBasinC();
+    const badgesNone = recognizeProcess([basin] as any, [], [mkDosing('dp1',6,6)] as any, [] as any);
+    assert(hasC(badgesNone,'chemical-dormant'), 'CH09. unpowered dosing → chemical-dormant badge');
+    const badgesStorage = recognizeProcess([basin] as any, [], [mkStorage('st1',22,5), mkPumpC()] as any, [cableC(22,5,22,5)] as any);
+    assert(hasC(badgesStorage,'chemical'), 'CH09b. 1 powered storage → Chemical ready badge');
+    const mixer = mkMixerC('mx1',7,6);
+    const badgesActive = recognizeProcess([basin] as any, [], [mixer, mkDosing('dp1',6,6), mkPumpC()] as any, [cableC(7,6,22,5), cableC(6,6,22,5)] as any);
+    assert(hasC(badgesActive,'chemical') && badgesActive.find((b:any)=>b.id==='chemical')!.label==='Chemically dosed', 'CH09c. powered dosing in mixed zone → Chemically dosed badge');
+  }
+  // CH10: TP polish — powered dosing in healthy zone reduces TP, unpowered identity
+  {
+    const basin = mkBasinC();
+    const mixer = mkMixerC('mx1',7,6);
+    const dosing = mkDosing('dp1',6,6);
+    const ceNone = evaluateConstructionEffects([basin] as any, [dosing] as any, [] as any, [] as any);
+    assert(Math.abs(ceNone.tpMultiplier - 1) < 0.001, 'CH10. unpowered dosing → tpMultiplier 1 (got '+ceNone.tpMultiplier.toFixed(3)+')');
+    const ceUnhealthy = evaluateConstructionEffects([basin] as any, [dosing, mixer] as any, [cableC(6,6,22,5)] as any, [] as any);
+    // mixer not powered (no cable on 7,6) → zone unhealthy → dosing dormant → tp still 1
+    assert(Math.abs(ceUnhealthy.tpMultiplier - 1) < 0.001, 'CH10b. dosing in septic zone → dormant tp 1 (got '+ceUnhealthy.tpMultiplier.toFixed(3)+')');
+    const ceActive = evaluateConstructionEffects([basin] as any, [dosing, mixer] as any, [cableC(6,6,22,5), cableC(7,6,22,5)] as any, [] as any);
+    assert(ceActive.tpMultiplier < 0.99 && ceActive.tpMultiplier > 0.3, 'CH10c. active dosing → tpMultiplier <1 (got '+ceActive.tpMultiplier.toFixed(3)+')');
+    assert(Math.abs(ceActive.tpMultiplier - 0.78) < 0.01, 'CH10d. one active dosing pump → tp 0.78 (got '+ceActive.tpMultiplier.toFixed(3)+')');
+  }
+  // CH11: storage TP polish and stacking cap
+  {
+    const basin = mkBasinC();
+    const mixer = mkMixerC('mx1',7,6);
+    const st1 = mkStorage('st1',22,5);
+    const st2 = mkStorage('st2',23,5);
+    const dp1 = mkDosing('dp1',6,6);
+    const ceStorageOnly = evaluateConstructionEffects([basin] as any, [st1] as any, [cableC(22,5,22,5)] as any, [] as any);
+    assert(Math.abs(ceStorageOnly.tpMultiplier - 0.92) < 0.01, 'CH11. one powered storage → tp 0.92 (got '+ceStorageOnly.tpMultiplier.toFixed(3)+')');
+    const ceStack = evaluateConstructionEffects([basin] as any, [st1, st2, dp1, mixer] as any, [cableC(22,5,22,5), cableC(23,5,22,5), cableC(6,6,22,5), cableC(7,6,22,5)] as any, [] as any);
+    const expected = 0.78 * 0.92 * 0.92;
+    assert(Math.abs(ceStack.tpMultiplier - expected) < 0.02, 'CH11b. stacking 1 dosing +2 storage → tp '+ceStack.tpMultiplier.toFixed(3)+' ≈ '+expected.toFixed(3));
+    // Cap at 0.35 with many units
+    const many:any[] = [];
+    for(let i=0;i<6;i++) many.push(mkStorage('st'+i,22+i,5));
+    for(let i=0;i<4;i++) many.push(mkDosing('dp'+i,6+i,6));
+    many.push(mixer);
+    const cables:any[] = [...many.filter(e=>e.typeId==='chemical_storage_tank').map(e=>cableC(e.x,e.y,22,5)), ...many.filter(e=>e.typeId==='chemical_dosing_pump').map(e=>cableC(e.x,e.y,22,5)), cableC(7,6,22,5)];
+    const ceCap = evaluateConstructionEffects([basin] as any, many as any, cables as any, [] as any);
+    assert(ceCap.tpMultiplier >= 0.35 && ceCap.tpMultiplier <= 0.36, 'CH11c. cap at 0.35 with many dosing (got '+ceCap.tpMultiplier.toFixed(3)+')');
+  }
+  // CH12: TP polish lifecycle via tick
+  {
+    let gs:any = GameManager.createInitialState(0, true);
+    let r = GameManager.placeCustomBasin(gs, { x:5,y:5,w:8,h:6 }); gs=r.newState;
+    r = GameManager.placeProcessEquipment(gs, 'submersible_mixer', 7,6); gs=r.newState;
+    r = GameManager.placeProcessEquipment(gs, 'chemical_dosing_pump', 6,6); gs=r.newState;
+    r = GameManager.placeProcessEquipment(gs, 'chemical_storage_tank', 22,5); gs=r.newState;
+    // Power all
+    r = GameManager.placeUtilityConnection(gs, 'power_cable', 7,6,22,5); gs=r.newState;
+    r = GameManager.placeUtilityConnection(gs, 'power_cable', 6,6,22,5); gs=r.newState;
+    r = GameManager.placeUtilityConnection(gs, 'power_cable', 22,5,22,6); gs=r.newState;
+    // Create a simple train to get flow: influent → outfall directly still yields flow via tick? Use dummy pipe train
+    gs.units.push({ instanceId:'scr', typeId:'bar_screen', gridX:10, gridY:10, rotation:0, volume:100, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:0, lastOpexActual:0 } as any);
+    const tpBefore = gs.finalEffluent.tp;
+    // Tick will have no flow initially (no pipes), so TP not relevant. We test via evaluateConstructionEffects directly and GameManager.tick with a built train.
+    // Instead, directly assert evaluateConstructionEffects tp is applied when hasFlow true in tick: create a proper train with pipes
+    let gs2:any = GameManager.createInitialState(0, true);
+    let rr = GameManager.placeCustomBasin(gs2, { x:5,y:5,w:4,h:4 }); gs2=rr.newState;
+    rr = GameManager.placeProcessEquipment(gs2, 'submersible_mixer', 6,6); gs2=rr.newState;
+    rr = GameManager.placeProcessEquipment(gs2, 'chemical_dosing_pump', 5,5); gs2=rr.newState;
+    rr = GameManager.placeUtilityConnection(gs2, 'power_cable', 6,6,5,5); gs2=rr.newState;
+    // Build minimal legacy train for flow: inlet → bar_screen → outfall
+    const scr = { instanceId:'scr2', typeId:'bar_screen', gridX:10, gridY:10, rotation:0, volume:200, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:0, lastOpexActual:0 } as any;
+    gs2.units.push(scr);
+    gs2.pipes.push({ id:'p1', fromUnitId:'inlet_0', fromPortId:'outlet', toUnitId:'scr2', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'} as any,
+                   { id:'p2', fromUnitId:'scr2', fromPortId:'outlet', toUnitId:'outfall_0', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'} as any);
+    let ticked = gs2;
+    for(let i=0;i<5;i++) ticked = GameManager.tick(ticked, 0.5);
+    const tpAfter = ticked.finalEffluent.tp;
+    const tpNoChem = (()=>{ let g:any=GameManager.createInitialState(0,false); g.units.push(scr); g.pipes.push({id:'p1', fromUnitId:'inlet_0', fromPortId:'outlet', toUnitId:'scr2', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'} as any, {id:'p2', fromUnitId:'scr2', fromPortId:'outlet', toUnitId:'outfall_0', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'} as any); for(let i=0;i<5;i++) g=GameManager.tick(g,0.5); return g.finalEffluent.tp; })();
+    assert(tpAfter < tpNoChem, 'CH12. tick TP with dosing ('+tpAfter.toFixed(2)+') < without dosing ('+tpNoChem.toFixed(2)+')');
+  }
+  // CH13: demolish dosing refunds 70%
+  {
+    let s:any = withBasinC();
+    s.gameMode='campaign'; s.tutorialActive=false; s.financials.cash=10_000_000;
+    const builtD = GameManager.placeProcessEquipment(s, 'chemical_dosing_pump', 6, 6);
+    const id = builtD.newState.processEquipment.find((e:any)=>e.typeId==='chemical_dosing_pump')!.id;
+    const demo = GameManager.demolishProcessEquipment(builtD.newState, id);
+    const salvage = Math.round(6800*0.7);
+    assert(demo.success && demo.refunded===salvage, 'CH13. demolish dosing pump refunds 70% ($'+salvage+')');
+  }
+  // CH14: summary line includes dosing live
+  {
+    const basin = mkBasinC();
+    const st = constructionStats([basin] as any, [mkDosing('dp1',6,6), mkStorage('st1',22,5), mkPumpC()] as any, [cableC(6,6,22,5), cableC(22,5,22,5)] as any);
+    const line = constructionSummaryLine(st);
+    assert(line.includes('dosing live'), 'CH14. summary line includes dosing live: '+line);
+  }
+  // CH15: baffled dosing — per-zone health
+  {
+    const basin = { x:5,y:5,w:8,h:6, depthM:4, id:'bChem15', createdAtDay:0 } as any;
+    const baffles:any[] = [{ id:'bf1', basinId:'bChem15', orientation:'vertical', offsetTiles:4, createdAtDay:0 }];
+    const eq = [mkMixerC('mx1',6,6), mkDosing('dp1',6,6), mkDosing('dp2',10,6), mkPumpC()] as any;
+    const ce = evaluateConstructionEffects([basin] as any, eq, [cableC(6,6,22,5), cableC(7,6,22,5), cableC(10,6,22,5)] as any, baffles as any);
+    // Only dp1 in healthy left zone should be active, dp2 in septic right zone dormant
+    assert(ce.activeDosingPumps===1, 'CH15. baffled dosing: only 1 active pump (healthy zone) (got '+ce.activeDosingPumps+')');
+    assert(Math.abs(ce.tpMultiplier - 0.78) < 0.01, 'CH15b. baffled tp 0.78 for single active (got '+ce.tpMultiplier.toFixed(3)+')');
+  }
+  // CH16: badge baffled remains active
+  {
+    const basin = { x:5,y:5,w:8,h:6, depthM:4, id:'bChem16', createdAtDay:0 } as any;
+    const baffles:any[] = [{ id:'bf1', basinId:'bChem16', orientation:'vertical', offsetTiles:4, createdAtDay:0 }];
+    const eq = [mkMixerC('mx1',6,6), mkDosing('dp1',6,6), mkPumpC()] as any;
+    const badges = recognizeProcess([basin] as any, baffles as any, eq, [cableC(6,6,22,5), cableC(7,6,22,5)] as any);
+    assert(hasC(badges,'chemical'), 'CH16. baffled active dosing still yields Chemically dosed badge');
+    assert(badges.find((b:any)=>b.id==='chemical')!.detail.includes('1 dosing'), 'CH16b. detail mentions 1 dosing active');
+  }
+}
+
+
+
+
 
 
 console.log(failures === 0 ? "\nALL TESTS PASSED" : `\n${failures} TEST(S) FAILED`);
