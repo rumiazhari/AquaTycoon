@@ -771,7 +771,8 @@ export class SceneManager {
     basins: { x: number; y: number; w: number; h: number; depthM: number }[],
     selectedId?: string | null,
     poweredIds?: Set<string> | null,
-    aeratedIds?: Set<string> | null
+    aeratedIds?: Set<string> | null,
+    filtration?: { liveMembraneIds?: Set<string>; degradedMembraneIds?: Set<string>; activeCarrierIds?: Set<string>; aeratedCarrierIds?: Set<string> } | null
   ) {
     if (!this.equipGroup.parent) this.scene.add(this.equipGroup);
     const activeIds = new Set(items.map(i => i.id));
@@ -805,8 +806,15 @@ export class SceneManager {
       // dim red and aerated diffusers get a cool blue shimmer so the player
       // can see at a glance what is actually live without opening a panel.
       const isDiffuser = it.typeId === 'fine_bubble_diffuser';
+      const isMembrane = it.typeId === 'membrane_cassette';
+      const isCarrier = it.typeId === 'mbbr_carrier';
       const isPowered = !poweredIds || poweredIds.has(it.id);
       const isAerated = !aeratedIds || !isDiffuser || aeratedIds.has(it.id);
+      // Phase 6 slice 2 filtration status for tinting
+      const filtLive = filtration?.liveMembraneIds?.has(it.id) ?? false;
+      const filtDegraded = filtration?.degradedMembraneIds?.has(it.id) ?? false;
+      const carrierActive = filtration?.activeCarrierIds?.has(it.id) ?? false;
+      const carrierAerated = filtration?.aeratedCarrierIds?.has(it.id) ?? false;
       mesh.traverse(o => {
         const mm = o as THREE.Mesh;
         if (mm.isMesh && mm.material) {
@@ -816,6 +824,32 @@ export class SceneManager {
             if (selected) {
               m.emissive.setHex(0x8a5200);
               m.emissiveIntensity = 0.65;
+            } else if (isMembrane) {
+              if (!isPowered) {
+                m.emissive.setHex(0x5a1a1a);
+                m.emissiveIntensity = 0.52;
+              } else if (filtLive) {
+                m.emissive.setHex(0x0ea5e9);
+                m.emissiveIntensity = 0.52;
+              } else if (filtDegraded) {
+                m.emissive.setHex(0x92400e);
+                m.emissiveIntensity = 0.38;
+              } else {
+                // Powered but no zone health info (should not happen) — amber hint
+                m.emissive.setHex(0x6b4c1a);
+                m.emissiveIntensity = 0.30;
+              }
+            } else if (isCarrier) {
+              if (carrierAerated) {
+                m.emissive.setHex(0x06b6d4);
+                m.emissiveIntensity = 0.52;
+              } else if (carrierActive) {
+                m.emissive.setHex(0x38bdf8);
+                m.emissiveIntensity = 0.34;
+              } else {
+                m.emissive.setHex(0x57534e);
+                m.emissiveIntensity = 0.14;
+              }
             } else if (isDiffuser) {
               // Diffusers: aerated = blue shimmer, idle = no glow
               if (isAerated) {

@@ -48,7 +48,7 @@ import {
   isEquipmentPowered,
   constructionStats,
 } from '../src/design/ConstructionNetwork';
-import { evaluateConstructionEffects } from '../src/design/ConstructionAdapter';
+import { evaluateConstructionEffects, filtrationLiveSets } from '../src/design/ConstructionAdapter';
 import {
   estimateBaffleCAPEX,
   validateBafflePlacement,
@@ -2822,6 +2822,252 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
     assert(!GameManager.placeProcessEquipment(s, 'flux_capacitor', 6, 6).success, 'FM15. unknown type still rejected after catalog expansion');
   }
 }
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// CONSTRUCTION-BUILDER Phase 6 slice 2: filtration physics (per-zone membrane & carrier)
+// ═════════════════════════════════════════════════════════════════════════════
+{
+  const mkBasin = (x=5,y=5,w=8,h=6) => ({ x, y, w, h, depthM:4, id:'bF1', createdAtDay:0 } as any);
+  const mkPump = (x=20,y=5) => ({ id:'pu1', typeId:'process_pump', x, y, createdAtDay:0 } as any);
+  const mkMixer = (id:string,x:number,y:number) => ({ id, typeId:'submersible_mixer', x, y, createdAtDay:0 } as any);
+  const mkMem = (id:string,x:number,y:number) => ({ id, typeId:'membrane_cassette', x, y, createdAtDay:0 } as any);
+  const mkCar = (id:string,x:number,y:number) => ({ id, typeId:'mbbr_carrier', x, y, createdAtDay:0 } as any);
+  const mkDiff = (id:string,x:number,y:number) => ({ id, typeId:'fine_bubble_diffuser', x, y, createdAtDay:0 } as any);
+  const mkBlow = (id:string,x:number,y:number) => ({ id, typeId:'rotary_blower', x, y, createdAtDay:0 } as any);
+  const cable = (ax:number,ay:number,bx:number,by:number) => ({ id:'c_'+ax+'_'+ay, type:'power_cable', ax, ay, bx, by, createdAtDay:0 } as any);
+  const air = (ax:number,ay:number,bx:number,by:number) => ({ id:'a_'+ax+'_'+ay, type:'air_pipe', ax, ay, bx, by, createdAtDay:0 } as any);
+
+  // FM16: no filtration kit → TSS/BOD identity (no membrane/carrier effect)
+  {
+    const basin = mkBasin();
+    const ce = evaluateConstructionEffects([basin], [mkMixer('mx1',6,6), mkPump()], [cable(6,6,20,5)]);
+    assert(ce.totalMembranes===0 && ce.totalCarriers===0, 'FM16. no filtration kit → 0 membranes/carriers');
+    assert(ce.liveMembranes===0 && ce.activeCarriers===0, 'FM16b. no filtration live counts 0');
+    // TSS/BOD should be volume-only (0.97...) not filtered
+    assert(ce.tssMultiplier > 0.95 && ce.tssMultiplier <= 1.0, 'FM16c. TSS identity without membranes (×'+ce.tssMultiplier.toFixed(3)+')');
+  }
+  // FM17: powered membrane in HEALTHY zone → strong TSS polishing (0.20×)
+  {
+    const basin = mkBasin();
+    const ce = evaluateConstructionEffects(
+      [basin],
+      [mkMixer('mx1',6,6), mkMem('mem1',7,6), mkPump()],
+      [cable(6,6,20,5), cable(7,6,20,5)]
+    );
+    assert(ce.poweredMembranes===1 && ce.liveMembranes===1 && ce.degradedMembranes===0, 'FM17. powered membrane in healthy zone → 1 live (got '+ce.liveMembranes+'/'+ce.poweredMembranes+')');
+    // TSS should be ~0.20 (membrane) × ~0.97 (volume) ≈0.194, but at least <0.30 and <<1
+    assert(ce.tssMultiplier < 0.30 && ce.tssMultiplier > 0.10, 'FM17b. healthy membrane TSS× '+ce.tssMultiplier.toFixed(3)+' strong (<0.30)');
+    const filt = filtrationLiveSets([basin], [mkMixer('mx1',6,6), mkMem('mem1',7,6), mkPump()], [cable(6,6,20,5), cable(7,6,20,5)]);
+    assert(filt.liveMembraneIds.has('mem1') && !filt.degradedMembraneIds.has('mem1'), 'FM17c. filtrationLiveSets marks mem1 as live');
+  }
+  // FM18: powered membrane in SEPTIC zone (no mixer) → degraded TSS (0.55×, weaker)
+  {
+    const basin = mkBasin();
+    const ce = evaluateConstructionEffects(
+      [basin],
+      [mkMem('mem1',7,6), mkPump()],
+      [cable(7,6,20,5)] // mixer absent → zone septic
+    );
+    assert(ce.poweredMembranes===1 && ce.liveMembranes===0 && ce.degradedMembranes===1, 'FM18. membrane in septic zone → 1 degraded (got live '+ce.liveMembranes+' degraded '+ce.degradedMembranes+')');
+    assert(ce.tssMultiplier > 0.45 && ce.tssMultiplier < 0.70, 'FM18b. septic membrane TSS× '+ce.tssMultiplier.toFixed(3)+' weaker (0.45–0.70)');
+    // Healthy membrane should beat septic
+    const ceHealthy = evaluateConstructionEffects([basin], [mkMixer('mx1',6,6), mkMem('mem1',7,6), mkPump()], [cable(6,6,20,5), cable(7,6,20,5)]);
+    assert(ce.tssMultiplier > ceHealthy.tssMultiplier, 'FM18c. septic TSS× '+ce.tssMultiplier.toFixed(3)+' > healthy '+ceHealthy.tssMultiplier.toFixed(3));
+    const filt = filtrationLiveSets([basin], [mkMem('mem1',7,6), mkPump()], [cable(7,6,20,5)]);
+    assert(filt.degradedMembraneIds.has('mem1'), 'FM18d. degraded set contains mem1');
+  }
+  // FM19: unpowered membrane → no filtration effect
+  {
+    const basin = mkBasin();
+    const ceNoPow = evaluateConstructionEffects([basin], [mkMixer('mx1',6,6), mkMem('mem1',7,6), mkPump()], [cable(6,6,20,5)]); // membrane not cabled
+    const ceNone = evaluateConstructionEffects([basin], [mkMixer('mx1',6,6), mkPump()], [cable(6,6,20,5)]);
+    assert(ceNoPow.poweredMembranes===0 && ceNoPow.liveMembranes===0, 'FM19. unpowered membrane → 0 powered/live');
+    assert(Math.abs(ceNoPow.tssMultiplier - ceNone.tssMultiplier) < 0.001, 'FM19b. unpowered membrane TSS× '+ceNoPow.tssMultiplier.toFixed(3)+' ≈ no-membrane '+ceNone.tssMultiplier.toFixed(3));
+  }
+  // FM20: carrier in HEALTHY zone → BOD active
+  {
+    const basin = mkBasin();
+    const ce = evaluateConstructionEffects([basin], [mkMixer('mx1',6,6), mkCar('car1',7,6), mkPump()], [cable(6,6,20,5)]);
+    assert(ce.totalCarriers===1 && ce.activeCarriers===1 && ce.aeratedCarriers===0, 'FM20. carrier healthy zone → 1 active (got '+ce.activeCarriers+')');
+    assert(ce.bodMultiplier < 0.98, 'FM20b. carrier BOD× '+ce.bodMultiplier.toFixed(3)+' <1 (active biofilm)');
+    const filt = filtrationLiveSets([basin], [mkMixer('mx1',6,6), mkCar('car1',7,6), mkPump()], [cable(6,6,20,5)]);
+    assert(filt.activeCarrierIds.has('car1') && !filt.aeratedCarrierIds.has('car1'), 'FM20c. carrier active but not aerated');
+  }
+  // FM21: carrier in SEPTIC zone → dormant (no BOD benefit)
+  {
+    const basin = mkBasin();
+    const ceActive = evaluateConstructionEffects([basin], [mkMixer('mx1',6,6), mkCar('car1',7,6), mkPump()], [cable(6,6,20,5)]);
+    const ceDormant = evaluateConstructionEffects([basin], [mkCar('car1',7,6)], []);
+    assert(ceDormant.activeCarriers===0, 'FM21. carrier septic → 0 active (got '+ceDormant.activeCarriers+')');
+    assert(ceDormant.bodMultiplier > ceActive.bodMultiplier, 'FM21b. septic carrier BOD× '+ceDormant.bodMultiplier.toFixed(3)+' > active '+ceActive.bodMultiplier.toFixed(3));
+  }
+  // FM22: carrier in AERATED healthy zone → extra BOD/TN vs non-aerated
+  {
+    const basin = mkBasin();
+    // Healthy non-aerated
+    const ceNonAer = evaluateConstructionEffects([basin], [mkMixer('mx1',6,6), mkCar('car1',7,6), mkPump()], [cable(6,6,20,5)]);
+    // Healthy aerated: add diffuser+blower+air pipe+power
+    const ceAer = evaluateConstructionEffects(
+      [basin],
+      [mkMixer('mx1',6,6), mkCar('car1',7,6), mkDiff('d1',7,7), mkBlow('bl1',22,5), mkPump()],
+      [cable(6,6,20,5), cable(22,5,20,5), air(22,5,7,7)]
+    );
+    assert(ceAer.aeratedCarriers===1, 'FM22. aerated carrier → 1 aerated (got '+ceAer.aeratedCarriers+')');
+    assert(ceAer.bodMultiplier < ceNonAer.bodMultiplier, 'FM22b. aerated BOD× '+ceAer.bodMultiplier.toFixed(4)+' < non-aerated '+ceNonAer.bodMultiplier.toFixed(4));
+    assert(ceAer.tnMultiplier < ceNonAer.tnMultiplier, 'FM22c. aerated TN× '+ceAer.tnMultiplier.toFixed(4)+' < non-aerated '+ceNonAer.tnMultiplier.toFixed(4));
+    const filt = filtrationLiveSets([basin], [mkMixer('mx1',6,6), mkCar('car1',7,6), mkDiff('d1',7,7), mkBlow('bl1',22,5), mkPump()], [cable(6,6,20,5), cable(22,5,20,5), air(22,5,7,7)]);
+    assert(filt.aeratedCarrierIds.has('car1'), 'FM22d. aeratedCarrierIds contains car1');
+  }
+  // FM23: multiple membranes stack with floor 0.02
+  {
+    const basin = mkBasin(5,5,10,10);
+    let equip:any[] = [mkMixer('mx1',6,6), mkPump()];
+    let conns:any[] = [cable(6,6,20,5)];
+    for (let i=0;i<3;i++) { equip.push(mkMem('mem'+i,6+i,7)); conns.push(cable(6+i,7,20,5)); }
+    const ce3 = evaluateConstructionEffects([basin], equip, conns);
+    assert(ce3.liveMembranes===3, 'FM23. 3 live membranes (got '+ce3.liveMembranes+')');
+    assert(ce3.tssMultiplier >= 0.015 && ce3.tssMultiplier < 0.05, 'FM23b. 3 membranes TSS× '+ce3.tssMultiplier.toFixed(4)+' inside floor range (0.015–0.05)');
+    // 6 membranes should still be >=0.02
+    for (let i=3;i<6;i++) { equip.push(mkMem('mem'+i,6+i,8)); conns.push(cable(6+i,8,20,5)); }
+    const ce6 = evaluateConstructionEffects([basin], equip, conns);
+    assert(ce6.tssMultiplier >= 0.015 && ce6.tssMultiplier <= ce3.tssMultiplier, 'FM23c. 6 membranes TSS× '+ce6.tssMultiplier.toFixed(4)+' ≥ floor and ≤ 3-mem');
+  }
+  // FM24: multiple carriers stack with BOD floor
+  {
+    const basin = mkBasin();
+    let equip:any[] = [mkMixer('mx1',6,6), mkPump(), cable(6,6,20,5) as any]; // wrong: cable is utility, not equip
+    equip = [mkMixer('mx1',6,6), mkPump()];
+    let conns:any[] = [cable(6,6,20,5)];
+    for (let i=0;i<5;i++) equip.push(mkCar('car'+i,6+i,6));
+    const ce5 = evaluateConstructionEffects([basin], equip, conns);
+    assert(ce5.activeCarriers===5, 'FM24. 5 active carriers (got '+ce5.activeCarriers+')');
+    assert(ce5.bodMultiplier < 0.90 && ce5.bodMultiplier >= 0.70, 'FM24b. 5 carriers BOD× '+ce5.bodMultiplier.toFixed(3)+' in range');
+    for (let i=5;i<12;i++) equip.push(mkCar('car'+i,6+(i%8),7));
+    const ce12 = evaluateConstructionEffects([basin], equip, conns);
+    assert(ce12.bodMultiplier >= 0.65, 'FM24c. 12 carriers BOD× '+ce12.bodMultiplier.toFixed(3)+' ≥ 0.65 (component floor 0.70 + volume)');
+    assert(ce12.bodMultiplier < ce5.bodMultiplier, 'FM24d. more carriers → lower BOD×');
+  }
+  // FM25: baffled basin per-zone — membrane in healthy zone vs carrier in septic zone
+  {
+    const basin = { x:5,y:5,w:8,h:6, depthM:4, id:'bfilt25', createdAtDay:0 } as any;
+    const baffles:any[] = [{ id:'bf1', basinId:'bfilt25', orientation:'vertical', offsetTiles:4, createdAtDay:0 }];
+    // Left zone (5-8) has mixer, right zone (9-12) has none
+    const ce = evaluateConstructionEffects(
+      [basin],
+      [mkMixer('mx1',6,6), mkMem('memL',6,7), mkCar('carR',10,6), mkPump()],
+      [cable(6,6,20,5), cable(6,7,20,5)],
+      baffles
+    );
+    assert(ce.liveMembranes===1 && ce.degradedMembranes===0, 'FM25. membrane left healthy → 1 live (got '+ce.liveMembranes+')');
+    assert(ce.activeCarriers===0, 'FM25b. carrier right septic → 0 active (got '+ce.activeCarriers+')');
+    const filt = filtrationLiveSets([basin], [mkMixer('mx1',6,6), mkMem('memL',6,7), mkCar('carR',10,6), mkPump()], [cable(6,6,20,5), cable(6,7,20,5)], baffles);
+    assert(filt.liveMembraneIds.has('memL'), 'FM25c. live memL');
+    assert(!filt.activeCarrierIds.has('carR'), 'FM25d. carR dormant');
+    // Now add mixer to right zone → both active
+    const ce2 = evaluateConstructionEffects(
+      [basin],
+      [mkMixer('mx1',6,6), mkMixer('mx2',10,6), mkMem('memL',6,7), mkCar('carR',10,6), mkPump(), { id:'pu2', typeId:'process_pump', x:21, y:5, createdAtDay:0 } as any],
+      [cable(6,6,20,5), cable(10,6,21,5), cable(6,7,20,5)],
+      baffles
+    );
+    assert(ce2.liveMembranes===1 && ce2.activeCarriers===1, 'FM25e. both zones mixed → live 1 & active 1 (got '+ce2.liveMembranes+'/'+ce2.activeCarriers+')');
+  }
+  // FM26: filtrationLiveSets membrane degraded case via baffles
+  {
+    const basin = { x:5,y:5,w:8,h:6, depthM:4, id:'bfilt26', createdAtDay:0 } as any;
+    const baffles:any[] = [{ id:'bf1', basinId:'bfilt26', orientation:'vertical', offsetTiles:4, createdAtDay:0 }];
+    // Membrane right zone, mixer left zone → degraded
+    const filt = filtrationLiveSets(
+      [basin],
+      [mkMixer('mx1',6,6), mkMem('memR',10,6), mkPump()],
+      [cable(6,6,20,5), cable(10,6,20,5)],
+      baffles
+    );
+    assert(filt.degradedMembraneIds.has('memR') && !filt.liveMembraneIds.has('memR'), 'FM26. membrane right septic → degraded (not live)');
+  }
+  // FM27: tick integration — powered membrane actually improves TSS in live sim
+  {
+    let st:any = GameManager.createInitialState(0, true);
+    // Minimal train so tick has flow: inlet→bar_screen→clarifier→outfall
+    const inletId = st.units.find((u:any)=>u.typeId==='influent_inlet').instanceId;
+    const outId = st.units.find((u:any)=>u.typeId==='effluent_outfall').instanceId;
+    const baseUnits = [
+      st.units.find((u:any)=>u.typeId==='influent_inlet'),
+      st.units.find((u:any)=>u.typeId==='effluent_outfall'),
+      { instanceId:'scr', typeId:'bar_screen', gridX:5, gridY:10, rotation:0, volume:100, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:emptyW(), lastOutletQuality:emptyW(), lastPowerKwActual:0, lastOpexActual:0 },
+      { instanceId:'clr2', typeId:'secondary_clarifier', gridX:17, gridY:13, rotation:0, volume:100, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:emptyW(), lastOutletQuality:emptyW(), lastPowerKwActual:0, lastOpexActual:0 },
+    ];
+    const basePipes:any[] = [
+      { id:'tp1', fromUnitId:inletId, fromPortId:'outlet', toUnitId:'scr', toPortId:'inlet', pathPoints:[], flowRate:0, quality:emptyW(), pipeType:'liquid' },
+      { id:'tp2', fromUnitId:'scr', fromPortId:'outlet', toUnitId:'clr2', toPortId:'inlet', pathPoints:[], flowRate:0, quality:emptyW(), pipeType:'liquid' },
+      { id:'tp3', fromUnitId:'clr2', fromPortId:'outlet', toUnitId:outId, toPortId:'inlet', pathPoints:[], flowRate:0, quality:emptyW(), pipeType:'liquid' },
+    ];
+    let base:any = { ...st, units: baseUnits, pipes: basePipes };
+    for (let i=0;i<20;i++) base = GameManager.tick(base, 0.5);
+    const tssBase = base.finalEffluent.tss;
+    // Add basin + healthy powered membrane
+    let withMem:any = { ...base };
+    let rB = GameManager.placeCustomBasin(base, { x:24, y:18, w:6, h:6 });
+    assert(rB.success, 'FM27-pre. basin for tick membrane');
+    withMem = rB.newState;
+    let rMx = GameManager.placeProcessEquipment(withMem, 'submersible_mixer', 25, 19);
+    withMem = rMx.newState;
+    let rMem = GameManager.placeProcessEquipment(withMem, 'membrane_cassette', 25, 20);
+    withMem = rMem.newState;
+    let rPu = GameManager.placeProcessEquipment(withMem, 'process_pump', 30, 2);
+    withMem = rPu.newState;
+    let rC1 = GameManager.placeUtilityConnection(withMem, 'power_cable', 25, 19, 30, 2);
+    withMem = rC1.newState;
+    let rC2 = GameManager.placeUtilityConnection(withMem, 'power_cable', 25, 20, 30, 2);
+    assert(rC2.success, 'FM27-pre. power membrane');
+    withMem = rC2.newState;
+    for (let i=0;i<20;i++) withMem = GameManager.tick(withMem, 0.5);
+    assert(withMem.finalEffluent.tss < tssBase * 0.50, 'FM27. membrane tick TSS '+tssBase.toFixed(1)+' → '+withMem.finalEffluent.tss.toFixed(1)+' (<50% base)');
+  }
+  // FM28: tick integration — aerated carrier improves BOD
+  {
+    let st:any = GameManager.createInitialState(0, true);
+    const inletId = st.units.find((u:any)=>u.typeId==='influent_inlet').instanceId;
+    const outId = st.units.find((u:any)=>u.typeId==='effluent_outfall').instanceId;
+    const baseUnits = [
+      st.units.find((u:any)=>u.typeId==='influent_inlet'),
+      st.units.find((u:any)=>u.typeId==='effluent_outfall'),
+      { instanceId:'scr', typeId:'bar_screen', gridX:5, gridY:10, rotation:0, volume:100, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:emptyW(), lastOutletQuality:emptyW(), lastPowerKwActual:0, lastOpexActual:0 },
+      { instanceId:'clr2', typeId:'secondary_clarifier', gridX:17, gridY:13, rotation:0, volume:100, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:emptyW(), lastOutletQuality:emptyW(), lastPowerKwActual:0, lastOpexActual:0 },
+    ];
+    const basePipes:any[] = [
+      { id:'tp1', fromUnitId:inletId, fromPortId:'outlet', toUnitId:'scr', toPortId:'inlet', pathPoints:[], flowRate:0, quality:emptyW(), pipeType:'liquid' },
+      { id:'tp2', fromUnitId:'scr', fromPortId:'outlet', toUnitId:'clr2', toPortId:'inlet', pathPoints:[], flowRate:0, quality:emptyW(), pipeType:'liquid' },
+      { id:'tp3', fromUnitId:'clr2', fromPortId:'outlet', toUnitId:outId, toPortId:'inlet', pathPoints:[], flowRate:0, quality:emptyW(), pipeType:'liquid' },
+    ];
+    let base:any = { ...st, units: baseUnits, pipes: basePipes };
+    let rB = GameManager.placeCustomBasin(base, { x:24, y:18, w:6, h:6 });
+    base = rB.newState;
+    let rMx = GameManager.placeProcessEquipment(base, 'submersible_mixer', 25, 19);
+    base = rMx.newState;
+    let rPu = GameManager.placeProcessEquipment(base, 'process_pump', 30, 2);
+    base = rPu.newState;
+    let rC = GameManager.placeUtilityConnection(base, 'power_cable', 25, 19, 30, 2);
+    base = rC.newState;
+    let rCar = GameManager.placeProcessEquipment(base, 'mbbr_carrier', 25, 20);
+    base = rCar.newState;
+    for (let i=0;i<20;i++) base = GameManager.tick(base, 0.5);
+    const bodCarOnly = base.finalEffluent.bod;
+    // Now add aeration to same zone
+    let rBl = GameManager.placeProcessEquipment(base, 'rotary_blower', 31, 2);
+    base = rBl.newState;
+    let rDiff = GameManager.placeProcessEquipment(base, 'fine_bubble_diffuser', 26, 19);
+    base = rDiff.newState;
+    let rAir = GameManager.placeUtilityConnection(base, 'air_pipe', 31, 2, 26, 19);
+    base = rAir.newState;
+    let rPowBl = GameManager.placeUtilityConnection(base, 'power_cable', 31, 2, 30, 2);
+    base = rPowBl.newState;
+    for (let i=0;i<20;i++) base = GameManager.tick(base, 0.5);
+    assert(base.finalEffluent.bod < bodCarOnly, 'FM28. aerated carrier BOD '+bodCarOnly.toFixed(1)+' → '+base.finalEffluent.bod.toFixed(1)+' improved with aeration');
+  }
+}
+
 
 console.log(failures === 0 ? "\nALL TESTS PASSED" : `\n${failures} TEST(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);

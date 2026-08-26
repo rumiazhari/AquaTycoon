@@ -44,6 +44,7 @@ import {
   aeratedDiffuserIds,
   constructionStats,
   mixerActiveIds,
+  poweredEquipmentIds,
 } from './ConstructionNetwork';
 
 export interface ConstructionTickEffect {
@@ -67,6 +68,14 @@ export interface ConstructionTickEffect {
   extraPowerKw: number;
   /** Live daily OPEX of powered machines (USD/day). */
   extraOpexPerDay: number;
+  /** Filtration stage — Phase 6 slice 2: per-zone membrane & carrier counts. */
+  totalMembranes: number;
+  poweredMembranes: number;
+  liveMembranes: number;
+  degradedMembranes: number;
+  totalCarriers: number;
+  activeCarriers: number;
+  aeratedCarriers: number;
   /** Effluent multipliers (<1 = improvement, >1 = penalty). */
   bodMultiplier: number;
   tnMultiplier: number;
@@ -183,8 +192,11 @@ export function evaluateConstructionEffects(
   let totalZones: number;
   let healthyZones: number;
   let septicZones: number;
+  // Cache zones for filtration (Phase 6 slice 2) — reuse for septic counting
+  let derivedZones: any[] | null = null;
   if (hasBaffles) {
-    const zones = allZones(bs as unknown as CustomBasin[], bfs);
+    derivedZones = allZones(bs as unknown as CustomBasin[], bfs) as any;
+    const zones: any[] = derivedZones!;
     totalZones = zones.length;
     healthyZones = 0;
     septicZones = 0;
@@ -201,6 +213,103 @@ export function evaluateConstructionEffects(
     totalZones = bs.length;
     healthyZones = healthyBasins;
     septicZones = septicBasins;
+  }
+
+  // ── Phase 6 slice 2: per-zone filtration (membrane TSS + carrier BOD) ──────
+  // Membranes are absolute-barrier filtration; carriers are biofilm that needs
+  // mixing + aeration to stay fluidised. Both are zone-scoped when baffles exist.
+  let totalMembranes = 0;
+  let poweredMembranes = 0;
+  let liveMembranes = 0;
+  let degradedMembranes = 0;
+  let totalCarriers = 0;
+  let activeCarriers = 0;
+  let aeratedCarriers = 0;
+  // Build per-zone health/aeration maps for filtration lookup
+  const zoneHealthyById = new Map<string, boolean>();
+  const zoneAeratedById = new Map<string, boolean>();
+  if (eq.some(e => e.typeId === 'membrane_cassette' || e.typeId === 'mbbr_carrier')) {
+    // Populate zone maps (works for both baffled and un-baffled worlds)
+    const zonesForFilt: { id: string; basinId: string; x: number; y: number; w: number; h: number }[] =
+      hasBaffles && derivedZones
+        ? derivedZones
+        : bs.map(b => ({ id: b.id, basinId: b.id, x: b.x, y: b.y, w: b.w, h: b.h }));
+    for (const z of zonesForFilt) {
+      const healthy = eq.some(e =>
+        e.typeId === 'submersible_mixer' && poweredMixerIds.has(e.id) && mixerInZone(e, z as any)
+      );
+      zoneHealthyById.set(z.id, healthy);
+      const aerated = eq.some(e =>
+        e.typeId === 'fine_bubble_diffuser' && aeratedSet.has(e.id) && mixerInZone(e as any, z as any)
+      );
+      zoneAeratedById.set(z.id, aerated);
+    }
+    const poweredSetForMem = poweredEquipmentIds(eq as any, uc as any);
+    // Helper: find zone id for a tile
+    const zoneIdForTile = (tx: number, ty: number): string | null => {
+      for (const z of zonesForFilt) {
+        if (tx >= z.x && tx < z.x + z.w && ty >= z.y && ty < z.y + z.h) return z.id;
+      }
+      return null;
+    };
+    for (const e of eq) {
+      if (e.typeId === 'membrane_cassette') {
+        totalMembranes++;
+        const powered = poweredSetForMem.has(e.id);
+        if (powered) {
+          poweredMembranes++;
+          const zid = zoneIdForTile(e.x, e.y);
+          const healthy = zid ? (zoneHealthyById.get(zid) ?? false) : false;
+          if (healthy) liveMembranes++;
+          else degradedMembranes++;
+        }
+      } else if (e.typeId === 'mbbr_carrier') {
+        totalCarriers++;
+        const zid = zoneIdForTile(e.x, e.y);
+        const healthy = zid ? (zoneHealthyById.get(zid) ?? false) : false;
+        if (healthy) {
+          activeCarriers++;
+          const aerated = zid ? (zoneAeratedById.get(zid) ?? false) : false;
+          if (aerated) aeratedCarriers++;
+        }
+      }
+    }
+    // Apply filtration multipliers (only when basins exist — no basin = no custom treatment)
+    if (bs.length > 0) {
+      // Membrane TSS polishing: live = 0.20× per membrane (80% removal), degraded = 0.55× (45% removal), floor 0.02
+      if (poweredMembranes > 0) {
+        let tssFilt = 1;
+        for (let i = 0; i < liveMembranes; i++) tssFilt *= 0.20;
+        for (let i = 0; i < degradedMembranes; i++) tssFilt *= 0.55;
+        // Small BOD/COD polish from membrane barrier too (5% per live, 2% per degraded)
+        let bodFiltMem = 1;
+        let codFiltMem = 1;
+        for (let i = 0; i < liveMembranes; i++) { bodFiltMem *= 0.95; codFiltMem *= 0.96; }
+        for (let i = 0; i < degradedMembranes; i++) { bodFiltMem *= 0.98; codFiltMem *= 0.985; }
+        tssMul *= Math.max(0.02, tssFilt);
+        bodMul *= Math.max(0.75, bodFiltMem);
+        codMul *= Math.max(0.78, codFiltMem);
+        // Turbidity & TP follow TSS (handled in GameManager.tick via tssMultiplier), no extra work
+      }
+      // Carrier BOD/TN biofilm: each active carrier 0.965× BOD, aerated carriers extra 0.97× BOD + 0.985× TN
+      if (activeCarriers > 0) {
+        let bodFiltCar = 1;
+        let tnFiltCar = 1;
+        for (let i = 0; i < activeCarriers; i++) bodFiltCar *= 0.965;
+        for (let i = 0; i < aeratedCarriers; i++) { bodFiltCar *= 0.97; tnFiltCar *= 0.985; }
+        bodMul *= Math.max(0.70, bodFiltCar);
+        tnMul  *= Math.max(0.88, tnFiltCar);
+        // COD tracks BOD partially (biofilm removes organics)
+        let codFiltCar = 1;
+        for (let i = 0; i < activeCarriers; i++) codFiltCar *= 0.97;
+        for (let i = 0; i < aeratedCarriers; i++) codFiltCar *= 0.985;
+        codMul *= Math.max(0.74, codFiltCar);
+      }
+    }
+  } else {
+    totalMembranes = eq.filter(e => e.typeId === 'membrane_cassette').length;
+    poweredMembranes = 0;
+    totalCarriers = eq.filter(e => e.typeId === 'mbbr_carrier').length;
   }
 
   // ── Apply septic penalty (zone-aware when baffles exist) ─────────────────
@@ -260,6 +369,9 @@ export function evaluateConstructionEffects(
     }
   }
   if (aerated > 0) parts.push(`${aerated} diffuser${aerated>1?'s':''} aerated`);
+  if (liveMembranes > 0) parts.push(`${liveMembranes} membrane${liveMembranes>1?'s':''} filtering`);
+  else if (poweredMembranes > 0 && degradedMembranes > 0) parts.push(`${degradedMembranes} membrane${degradedMembranes>1?'s':''} fouled`);
+  if (activeCarriers > 0) parts.push(`${activeCarriers} carrier${activeCarriers>1?'s':''} active${aeratedCarriers>0?` (${aeratedCarriers} aerated)`:''}`);
   if (extraPowerKw > 0) parts.push(`${extraPowerKw} kW live`);
   if (parts.length === 0) parts.push('no construction effect');
   const summary = parts.join(' · ');
@@ -276,6 +388,13 @@ export function evaluateConstructionEffects(
     totalBasinVolumeM3,
     extraPowerKw,
     extraOpexPerDay,
+    totalMembranes,
+    poweredMembranes,
+    liveMembranes,
+    degradedMembranes,
+    totalCarriers,
+    activeCarriers,
+    aeratedCarriers,
     bodMultiplier: bodMul,
     tnMultiplier: tnMul,
     tssMultiplier: tssMul,
@@ -283,4 +402,67 @@ export function evaluateConstructionEffects(
     doBoostMgL: doBoost,
     summary,
   };
+}
+
+/**
+ * Per-equipment filtration live sets for 3D tinting.
+ * Returns which membranes are actively filtering (powered + healthy zone)
+ * and which carriers are fluidised (+ aerated). Pure, headless-testable.
+ */
+export function filtrationLiveSets(
+  basins: CustomBasin[],
+  equipment: ProcessEquipmentItem[],
+  utilityConnections: Pick<UtilityConnection, 'type' | 'ax' | 'ay' | 'bx' | 'by'>[],
+  baffles: BaffleWall[] = [],
+): { liveMembraneIds: Set<string>; degradedMembraneIds: Set<string>; activeCarrierIds: Set<string>; aeratedCarrierIds: Set<string> } {
+  const ce = evaluateConstructionEffects(basins, equipment, utilityConnections, baffles);
+  // Re-derive the same zone maps to build the per-id sets (reuse logic from evaluateConstructionEffects)
+  const bs = basins ?? [];
+  const eq = equipment ?? [];
+  const uc = utilityConnections ?? [];
+  const bfs = baffles ?? [];
+  const hasBaffles = bfs.length > 0 && bs.length > 0;
+  const aeratedSet = aeratedDiffuserIds(eq, uc);
+  const poweredMixerIds = mixerActiveIds(eq, uc);
+  const poweredSet = poweredEquipmentIds(eq as any, uc as any);
+  let derivedZones: any[] | null = null;
+  if (hasBaffles) {
+    derivedZones = allZones(bs as unknown as CustomBasin[], bfs) as any;
+  }
+  const zonesForFilt: { id: string; x: number; y: number; w: number; h: number }[] =
+    hasBaffles && derivedZones ? derivedZones : bs.map(b => ({ id: (b as any).id, x: (b as any).x, y: (b as any).y, w: (b as any).w, h: (b as any).h }));
+  const zoneHealthyById = new Map<string, boolean>();
+  const zoneAeratedById = new Map<string, boolean>();
+  for (const z of zonesForFilt) {
+    const healthy = eq.some(e => e.typeId === 'submersible_mixer' && poweredMixerIds.has(e.id) && e.x >= z.x && e.x < z.x + z.w && e.y >= z.y && e.y < z.y + z.h);
+    zoneHealthyById.set(z.id, healthy);
+    const aerated = eq.some(e => e.typeId === 'fine_bubble_diffuser' && aeratedSet.has(e.id) && e.x >= z.x && e.x < z.x + z.w && e.y >= z.y && e.y < z.y + z.h);
+    zoneAeratedById.set(z.id, aerated);
+  }
+  const zoneIdForTile = (tx: number, ty: number): string | null => {
+    for (const z of zonesForFilt) if (tx >= z.x && tx < z.x + z.w && ty >= z.y && ty < z.y + z.h) return z.id;
+    return null;
+  };
+  const liveMembraneIds = new Set<string>();
+  const degradedMembraneIds = new Set<string>();
+  const activeCarrierIds = new Set<string>();
+  const aeratedCarrierIds = new Set<string>();
+  for (const e of eq) {
+    if (e.typeId === 'membrane_cassette' && poweredSet.has(e.id)) {
+      const zid = zoneIdForTile(e.x, e.y);
+      const healthy = zid ? (zoneHealthyById.get(zid) ?? false) : false;
+      if (healthy) liveMembraneIds.add(e.id); else degradedMembraneIds.add(e.id);
+    } else if (e.typeId === 'mbbr_carrier') {
+      const zid = zoneIdForTile(e.x, e.y);
+      const healthy = zid ? (zoneHealthyById.get(zid) ?? false) : false;
+      if (healthy) {
+        activeCarrierIds.add(e.id);
+        if (zid && (zoneAeratedById.get(zid) ?? false)) aeratedCarrierIds.add(e.id);
+      }
+    }
+  }
+  // Early return with empty sets when no filtration equipment — keeps evaluateConstructionEffects counts in sync is fine
+  // ce is evaluated above for counts; sets are derived independently but consistently
+  void ce;
+  return { liveMembraneIds, degradedMembraneIds, activeCarrierIds, aeratedCarrierIds };
 }

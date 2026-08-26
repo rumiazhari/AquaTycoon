@@ -19,6 +19,10 @@ interface EquipmentInspectorProps {
   powered: boolean;
   aerated?: boolean | null;
   zone?: BasinZone | null;
+  filtrationLive?: boolean | null;
+  filtrationDegraded?: boolean | null;
+  carrierActive?: boolean | null;
+  carrierAerated?: boolean | null;
   onClose: () => void;
   onDemolish: (id: string) => void;
 }
@@ -30,7 +34,7 @@ const ROLE_TONE: Record<string, string> = {
   buffer: 'bg-slate-800 border-slate-600 text-slate-300',
 };
 
-export const EquipmentInspector: React.FC<EquipmentInspectorProps> = ({ item, powered, aerated, zone, onClose, onDemolish }) => {
+export const EquipmentInspector: React.FC<EquipmentInspectorProps> = ({ item, powered, aerated, zone, filtrationLive, filtrationDegraded, carrierActive, carrierAerated, onClose, onDemolish }) => {
   const def = EQUIPMENT_TYPES[item.typeId];
   if (!def) return null;
   const Icon = ICONS[item.typeId] ?? Cog;
@@ -93,22 +97,44 @@ export const EquipmentInspector: React.FC<EquipmentInspectorProps> = ({ item, po
                 </>
               )
             ) : item.typeId === 'membrane_cassette' ? (
-              powered ? (
-                <>
-                  <span className="text-xs font-bold text-emerald-300">Powered — filtration live</span>
-                  <span className="text-[11px] text-slate-400">Membrane is filtering. Keep its zone mixed & aerated to prevent fouling.</span>
-                </>
-              ) : (
+              !powered ? (
                 <>
                   <span className="text-xs font-bold text-amber-300">Unpowered — needs a Power cable on this tile</span>
                   <span className="text-[11px] text-slate-400">Run a Power cable here to energize the permeate pump.</span>
                 </>
+              ) : filtrationLive ? (
+                <>
+                  <span className="text-xs font-bold text-cyan-300">Filtering — membrane live (cyan shimmer)</span>
+                  <span className="text-[11px] text-slate-400">Absolute barrier: TSS → near-zero in this zone. Keep the zone mixed to prevent fouling.</span>
+                </>
+              ) : filtrationDegraded ? (
+                <>
+                  <span className="text-xs font-bold text-amber-300">Fouled — zone needs a powered mixer</span>
+                  <span className="text-[11px] text-slate-400">Membrane is powered but this zone is septic — add a mixer + power cable here to restore full filtration (amber → cyan).</span>
+                </>
+              ) : (
+                <>
+                  <span className="text-xs font-bold text-emerald-300">Powered — filtration live</span>
+                  <span className="text-[11px] text-slate-400">Membrane is filtering. Keep its zone mixed & aerated to prevent fouling.</span>
+                </>
               )
             ) : item.typeId === 'mbbr_carrier' ? (
-              <>
-                <span className="text-xs font-bold text-sky-300">Passive media — fluidized by mixing</span>
-                <span className="text-[11px] text-slate-400">Carriers carry biofilm while suspended. Place a powered mixer in this zone to keep them circulating.</span>
-              </>
+              carrierAerated ? (
+                <>
+                  <span className="text-xs font-bold text-cyan-300">Biofilm active — aerated zone (cyan shimmer)</span>
+                  <span className="text-[11px] text-slate-400">Carriers are fluidised and aerated — BOD & TN removal boosted in this zone.</span>
+                </>
+              ) : carrierActive ? (
+                <>
+                  <span className="text-xs font-bold text-sky-300">Biofilm active — mixed zone (sky shimmer)</span>
+                  <span className="text-[11px] text-slate-400">Carriers fluidised. Add an aerated diffuser in this zone for extra BOD/TN polish.</span>
+                </>
+              ) : (
+                <>
+                  <span className="text-xs font-bold text-amber-300">Dormant — zone needs a powered mixer</span>
+                  <span className="text-[11px] text-slate-400">Carriers settled on the floor — not fluidised. Place a powered mixer in this zone to activate biofilm.</span>
+                </>
+              )
             ) : needsPower ? (
               powered ? (
                 <>

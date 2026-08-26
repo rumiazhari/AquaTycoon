@@ -25,6 +25,7 @@ import { BASIN_DEFAULT_DEPTH_M, validateBasinPlacement } from './design/CustomBa
 import { EQUIPMENT_TYPES, validateEquipmentPlacement } from './design/ProcessEquipment';
 import { UTILITY_TYPES, UtilityConnectionType, validateUtilityConnection } from './design/UtilityConnection';
 import { poweredEquipmentIds, aeratedDiffuserIds } from './design/ConstructionNetwork';
+import { filtrationLiveSets } from './design/ConstructionAdapter';
 import { validateBafflePlacement } from './design/BasinZone';
 
 // UI Components
@@ -258,7 +259,8 @@ export const App: React.FC = () => {
       sm.syncEquipment(
         state.processEquipment ?? [], state.customBasins ?? [], null,
         poweredEquipmentIds(state.processEquipment ?? [], state.utilityConnections ?? []),
-        aeratedDiffuserIds(state.processEquipment ?? [], state.utilityConnections ?? [])
+        aeratedDiffuserIds(state.processEquipment ?? [], state.utilityConnections ?? []),
+        filtrationLiveSets(state.customBasins ?? [], state.processEquipment ?? [], state.utilityConnections ?? [], state.customBaffles ?? [])
       );
       sm.syncUtilityConnections(state.utilityConnections ?? [], null);
       sm.syncBaffles(state.customBaffles ?? [], state.customBasins ?? [], null);
@@ -336,7 +338,8 @@ export const App: React.FC = () => {
     sm.syncEquipment(
       initState.processEquipment ?? [], initState.customBasins ?? [], null,
       poweredEquipmentIds(initState.processEquipment ?? [], initState.utilityConnections ?? []),
-      aeratedDiffuserIds(initState.processEquipment ?? [], initState.utilityConnections ?? [])
+      aeratedDiffuserIds(initState.processEquipment ?? [], initState.utilityConnections ?? []),
+      filtrationLiveSets(initState.customBasins ?? [], initState.processEquipment ?? [], initState.utilityConnections ?? [], initState.customBaffles ?? [])
     );
     sm.syncUtilityConnections(initState.utilityConnections ?? [], null);
     sm.syncBaffles(initState.customBaffles ?? [], initState.customBasins ?? [], null);
@@ -773,7 +776,8 @@ export const App: React.FC = () => {
         sm.syncEquipment(
           gs.processEquipment ?? [], gs.customBasins ?? [], null,
           poweredEquipmentIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
-          aeratedDiffuserIds(gs.processEquipment ?? [], gs.utilityConnections ?? [])
+          aeratedDiffuserIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
+          filtrationLiveSets(gs.customBasins ?? [], gs.processEquipment ?? [], gs.utilityConnections ?? [], gs.customBaffles ?? [])
         );
         sm.syncUtilityConnections(gs.utilityConnections ?? [], null);
         const basinOf = gs.customBasins?.find(b => b.id === clickedBaffle.basinId);
@@ -788,7 +792,8 @@ export const App: React.FC = () => {
         sm.syncEquipment(
           gs.processEquipment ?? [], gs.customBasins ?? [], clickedEquipment.id,
           poweredEquipmentIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
-          aeratedDiffuserIds(gs.processEquipment ?? [], gs.utilityConnections ?? [])
+          aeratedDiffuserIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
+          filtrationLiveSets(gs.customBasins ?? [], gs.processEquipment ?? [], gs.utilityConnections ?? [], gs.customBaffles ?? [])
         );
         sm.syncUtilityConnections(gs.utilityConnections ?? [], null);
         const eq = EQUIPMENT_TYPES[clickedEquipment.typeId];
@@ -814,7 +819,8 @@ export const App: React.FC = () => {
         sm.syncEquipment(
           gs.processEquipment ?? [], gs.customBasins ?? [], null,
           poweredEquipmentIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
-          aeratedDiffuserIds(gs.processEquipment ?? [], gs.utilityConnections ?? [])
+          aeratedDiffuserIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
+          filtrationLiveSets(gs.customBasins ?? [], gs.processEquipment ?? [], gs.utilityConnections ?? [], gs.customBaffles ?? [])
         );
         sm.syncUtilityConnections(gs.utilityConnections ?? [], null);
         const area = clickedBasin.w * clickedBasin.h;
@@ -840,7 +846,8 @@ export const App: React.FC = () => {
         sm.syncEquipment(
           gs.processEquipment ?? [], gs.customBasins ?? [], null,
           poweredEquipmentIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
-          aeratedDiffuserIds(gs.processEquipment ?? [], gs.utilityConnections ?? [])
+          aeratedDiffuserIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
+          filtrationLiveSets(gs.customBasins ?? [], gs.processEquipment ?? [], gs.utilityConnections ?? [], gs.customBaffles ?? [])
         );
         sm.syncUtilityConnections(gs.utilityConnections ?? [], clickedUtility.id);
         const util = UTILITY_TYPES[clickedUtility.type];
@@ -855,7 +862,8 @@ export const App: React.FC = () => {
         sm.syncEquipment(
           gs.processEquipment ?? [], gs.customBasins ?? [], null,
           poweredEquipmentIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
-          aeratedDiffuserIds(gs.processEquipment ?? [], gs.utilityConnections ?? [])
+          aeratedDiffuserIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
+          filtrationLiveSets(gs.customBasins ?? [], gs.processEquipment ?? [], gs.utilityConnections ?? [], gs.customBaffles ?? [])
         );
         sm.syncUtilityConnections(gs.utilityConnections ?? [], null);
         setGameState(prev => ({ ...prev, selectedUnitId: null }));
@@ -1116,7 +1124,8 @@ export const App: React.FC = () => {
         sm.syncEquipment(
           result.newState.processEquipment ?? [], result.newState.customBasins ?? [], selectedEquipmentIdRef.current,
           poweredEquipmentIds(result.newState.processEquipment ?? [], result.newState.utilityConnections ?? []),
-          aeratedDiffuserIds(result.newState.processEquipment ?? [], result.newState.utilityConnections ?? [])
+          aeratedDiffuserIds(result.newState.processEquipment ?? [], result.newState.utilityConnections ?? []),
+          filtrationLiveSets(result.newState.customBasins ?? [], result.newState.processEquipment ?? [], result.newState.utilityConnections ?? [], result.newState.customBaffles ?? [])
         );
         const eq = EQUIPMENT_TYPES[selEquipTypeRef.current];
         const cost = result.charged ?? 0;
@@ -1170,7 +1179,8 @@ export const App: React.FC = () => {
         sm.syncEquipment(
           result.newState.processEquipment ?? [], result.newState.customBasins ?? [], selectedEquipmentIdRef.current,
           poweredEquipmentIds(result.newState.processEquipment ?? [], result.newState.utilityConnections ?? []),
-          aeratedDiffuserIds(result.newState.processEquipment ?? [], result.newState.utilityConnections ?? [])
+          aeratedDiffuserIds(result.newState.processEquipment ?? [], result.newState.utilityConnections ?? []),
+          filtrationLiveSets(result.newState.customBasins ?? [], result.newState.processEquipment ?? [], result.newState.utilityConnections ?? [], result.newState.customBaffles ?? [])
         );
         const util = UTILITY_TYPES[utype];
         const cost = result.charged ?? 0;
@@ -1252,7 +1262,8 @@ export const App: React.FC = () => {
           sm.syncEquipment(
             res.newState.processEquipment ?? [], res.newState.customBasins ?? [], null,
             poweredEquipmentIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
-            aeratedDiffuserIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? [])
+            aeratedDiffuserIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
+            filtrationLiveSets(res.newState.customBasins ?? [], res.newState.processEquipment ?? [], res.newState.utilityConnections ?? [], res.newState.customBaffles ?? [])
           );
           setToast(res.refunded && res.refunded > 0
             ? `${UTILITY_TYPES[clickedUtility.type]?.name ?? 'Utility'} removed — salvage refund $${res.refunded.toLocaleString()}.`
@@ -1275,7 +1286,8 @@ export const App: React.FC = () => {
           sm.syncEquipment(
             res.newState.processEquipment ?? [], res.newState.customBasins ?? [], null,
             poweredEquipmentIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
-            aeratedDiffuserIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? [])
+            aeratedDiffuserIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
+            filtrationLiveSets(res.newState.customBasins ?? [], res.newState.processEquipment ?? [], res.newState.utilityConnections ?? [], res.newState.customBaffles ?? [])
           );
           setToast(res.refunded && res.refunded > 0
             ? `Basin demolished — salvage refund $${res.refunded.toLocaleString()}.`
@@ -1295,7 +1307,8 @@ export const App: React.FC = () => {
           sm.syncEquipment(
             res.newState.processEquipment ?? [], res.newState.customBasins ?? [], null,
             poweredEquipmentIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
-            aeratedDiffuserIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? [])
+            aeratedDiffuserIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
+            filtrationLiveSets(res.newState.customBasins ?? [], res.newState.processEquipment ?? [], res.newState.utilityConnections ?? [], res.newState.customBaffles ?? [])
           );
           sm.syncUtilityConnections(res.newState.utilityConnections ?? [], null);
           setToast(res.refunded && res.refunded > 0
@@ -1479,7 +1492,8 @@ export const App: React.FC = () => {
             sceneRef.current?.syncEquipment(
               gsRef.current.processEquipment ?? [], gsRef.current.customBasins ?? [], null,
               poweredEquipmentIds(gsRef.current.processEquipment ?? [], gsRef.current.utilityConnections ?? []),
-              aeratedDiffuserIds(gsRef.current.processEquipment ?? [], gsRef.current.utilityConnections ?? [])
+              aeratedDiffuserIds(gsRef.current.processEquipment ?? [], gsRef.current.utilityConnections ?? []),
+              filtrationLiveSets(gsRef.current.customBasins ?? [], gsRef.current.processEquipment ?? [], gsRef.current.utilityConnections ?? [], gsRef.current.customBaffles ?? [])
             );
             setToast('Select mode — click a unit to inspect.');
           }
@@ -1622,7 +1636,8 @@ export const App: React.FC = () => {
       sceneRef.current.syncEquipment(
         next.processEquipment ?? [], next.customBasins ?? [], null,
         poweredEquipmentIds(next.processEquipment ?? [], next.utilityConnections ?? []),
-        aeratedDiffuserIds(next.processEquipment ?? [], next.utilityConnections ?? [])
+        aeratedDiffuserIds(next.processEquipment ?? [], next.utilityConnections ?? []),
+        filtrationLiveSets(next.customBasins ?? [], next.processEquipment ?? [], next.utilityConnections ?? [], next.customBaffles ?? [])
       );
       sceneRef.current.syncUtilityConnections(next.utilityConnections ?? [], null);
       sceneRef.current.syncBaffles(next.customBaffles ?? [], next.customBasins ?? [], null);
@@ -1893,7 +1908,8 @@ export const App: React.FC = () => {
               sceneRef.current?.syncEquipment(
                 gameState.processEquipment ?? [], gameState.customBasins ?? [], null,
                 poweredEquipmentIds(gameState.processEquipment ?? [], gameState.utilityConnections ?? []),
-                aeratedDiffuserIds(gameState.processEquipment ?? [], gameState.utilityConnections ?? [])
+                aeratedDiffuserIds(gameState.processEquipment ?? [], gameState.utilityConnections ?? []),
+                filtrationLiveSets(gameState.customBasins ?? [], gameState.processEquipment ?? [], gameState.utilityConnections ?? [], gameState.customBaffles ?? [])
               );
             }}
             onDemolish={id => {
@@ -1905,7 +1921,8 @@ export const App: React.FC = () => {
                 sceneRef.current?.syncEquipment(
                   res.newState.processEquipment ?? [], res.newState.customBasins ?? [], null,
                   poweredEquipmentIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
-                  aeratedDiffuserIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? [])
+                  aeratedDiffuserIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
+                  filtrationLiveSets(res.newState.customBasins ?? [], res.newState.processEquipment ?? [], res.newState.utilityConnections ?? [], res.newState.customBaffles ?? [])
                 );
                 sceneRef.current?.syncUtilityConnections(res.newState.utilityConnections ?? [], null);
                 setToast(res.refunded && res.refunded > 0
