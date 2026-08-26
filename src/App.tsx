@@ -25,12 +25,14 @@ import { BASIN_DEFAULT_DEPTH_M, validateBasinPlacement } from './design/CustomBa
 import { EQUIPMENT_TYPES, validateEquipmentPlacement } from './design/ProcessEquipment';
 import { UTILITY_TYPES, UtilityConnectionType, validateUtilityConnection } from './design/UtilityConnection';
 import { poweredEquipmentIds, aeratedDiffuserIds } from './design/ConstructionNetwork';
+import { validateBafflePlacement } from './design/BasinZone';
 
 // UI Components
 import { HeaderHUD } from './ui/HeaderHUD';
 import { BuildToolbar } from './ui/BuildToolbar';
 import { UnitInspector } from './ui/UnitInspector';
 import { EquipmentInspector } from './ui/EquipmentInspector';
+import { BaffleInspector } from './ui/BaffleInspector';
 import { ConstructionStatusChip } from './ui/ConstructionStatusChip';
 import { PlantFlowDiagram } from './ui/PlantFlowDiagram';
 import { defaultMaterialForPipeType } from './design/PipeSizing';
@@ -159,6 +161,14 @@ export const App: React.FC = () => {
   selectedUtilityIdRef.current = selectedUtilityId;
   const utilitySourceRef = useRef<{ x: number; y: number } | null>(null);
 
+  // ── CONSTRUCTION-BUILDER Phase 5: baffle walls (basin compartments) ────────
+  const [selectedBaffleOrientation, setSelectedBaffleOrientation] = useState<'vertical' | 'horizontal' | null>('vertical');
+  const selBaffleOrientRef = useRef<'vertical' | 'horizontal' | null>('vertical');
+  selBaffleOrientRef.current = selectedBaffleOrientation;
+  const [selectedBaffleId, setSelectedBaffleId] = useState<string | null>(null);
+  const selectedBaffleIdRef = useRef<string | null>(null);
+  selectedBaffleIdRef.current = selectedBaffleId;
+
   // Placement-time seed choice (backlog #1 follow-up): ON (default) hands over
   // a contractor-seeded reactor at full def.capex; OFF starts UNSEEDED at
   // def.capex − seed haul-in credit and lets the culture ramp over ~2 weeks.
@@ -251,6 +261,7 @@ export const App: React.FC = () => {
         aeratedDiffuserIds(state.processEquipment ?? [], state.utilityConnections ?? [])
       );
       sm.syncUtilityConnections(state.utilityConnections ?? [], null);
+      sm.syncBaffles(state.customBaffles ?? [], state.customBasins ?? [], null);
       if (state.suggestion) {
         sm.showNextStepGhost(state.suggestion.unitTypeId, state.suggestion.gridX, state.suggestion.gridY);
       } else {
@@ -296,6 +307,10 @@ export const App: React.FC = () => {
     if (!silent) setToast('Utility selection cancelled.');
   }, []);
 
+  const cancelBafflePreview = useCallback(() => {
+    sceneRef.current?.setBafflePreview(null, null, null);
+  }, []);
+
   // ─────────────────────────────────────────────────────────────────────────────
   // INITIALIZE THREE.JS SCENE (once)
   // ─────────────────────────────────────────────────────────────────────────────
@@ -324,6 +339,7 @@ export const App: React.FC = () => {
       aeratedDiffuserIds(initState.processEquipment ?? [], initState.utilityConnections ?? [])
     );
     sm.syncUtilityConnections(initState.utilityConnections ?? [], null);
+    sm.syncBaffles(initState.customBaffles ?? [], initState.customBasins ?? [], null);
 
     if (initState.suggestion) {
       sm.showNextStepGhost(initState.suggestion.unitTypeId, initState.suggestion.gridX, initState.suggestion.gridY);
@@ -393,6 +409,10 @@ export const App: React.FC = () => {
           }
         } else if (toolModeRef.current !== 'connect_utility') {
           sm.setUtilityPreview(null, null);
+        }
+        // Baffle preview clear when not in draw_baffle (ghost handled per-tile below)
+        if (toolModeRef.current !== 'draw_baffle') {
+          sm.setBafflePreview(null, null, null);
         }
 
         if (!tile) {
@@ -486,6 +506,20 @@ export const App: React.FC = () => {
               gsRef.current.utilityConnections ?? []
             );
             sm.terrainGrid.setGhostPreview(tile.x, tile.y, 1, 1, v.ok, true);
+          }
+        } else if (toolModeRef.current === 'draw_baffle') {
+          // Phase 5: baffle ghost — dashed wall line + tile validity inside a basin
+          const basin = gsRef.current.customBasins?.find(b => tile.x >= b.x && tile.x < b.x + b.w && tile.y >= b.y && tile.y < b.y + b.h) ?? null;
+          const orient = (selBaffleOrientRef.current ?? 'vertical') as 'vertical' | 'horizontal';
+          if (basin) {
+            const offset = orient === 'vertical' ? (tile.x - basin.x + 1) : (tile.y - basin.y + 1);
+            const v = validateBafflePlacement(basin, gsRef.current.customBaffles ?? [], orient, offset);
+            sm.terrainGrid.setGhostPreview(tile.x, tile.y, 1, 1, v.ok, true);
+            if (v.ok) sm.setBafflePreview(basin, orient, offset);
+            else sm.setBafflePreview(null, null, null);
+          } else {
+            sm.terrainGrid.setGhostPreview(tile.x, tile.y, 1, 1, false, true);
+            sm.setBafflePreview(null, null, null);
           }
         } else {
           sm.terrainGrid.setGhostPreview(0, 0, 1, 1, true, false);
@@ -702,6 +736,8 @@ export const App: React.FC = () => {
     // Phase 3: which utility line is near the cursor ground point (for inspect/demolish)?
     const groundPt = sm.getGroundPointFromScreen(clientX, clientY);
     const clickedUtility = groundPt ? GameManager.utilityAtPoint(gs, groundPt.x, groundPt.z) : null;
+    // Phase 5: interior baffle wall near cursor (for inspect/demolish)
+    const clickedBaffle = groundPt ? GameManager.baffleAtPoint(gs, groundPt.x, groundPt.z) : null;
 
     // Piping guidance: never leave a click in Pipes mode as a silent no-op
     if (mode === 'connect_pipe') {
@@ -721,9 +757,28 @@ export const App: React.FC = () => {
         setSelectedBasinId(null);
         setSelectedEquipmentId(null);
         setSelectedUtilityId(null);
+        setSelectedBaffleId(null);
         setGameState(prev => ({ ...prev, selectedUnitId: clickedUnit.instanceId }));
         const def = UNIT_DEFINITIONS[clickedUnit.typeId];
         setToast(`Inspecting: ${def?.name ?? clickedUnit.typeId}`);
+      } else if (clickedBaffle) {
+        // Phase 5: baffle walls are inspectable (above utility priority but below equipment)
+        SoundManager.playClick();
+        setSelectedBasinId(null);
+        setSelectedEquipmentId(null);
+        setSelectedUtilityId(null);
+        setSelectedBaffleId(clickedBaffle.id);
+        sm.syncBaffles(gs.customBaffles ?? [], gs.customBasins ?? [], clickedBaffle.id);
+        sm.syncBasins(gs.customBasins ?? [], null);
+        sm.syncEquipment(
+          gs.processEquipment ?? [], gs.customBasins ?? [], null,
+          poweredEquipmentIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
+          aeratedDiffuserIds(gs.processEquipment ?? [], gs.utilityConnections ?? [])
+        );
+        sm.syncUtilityConnections(gs.utilityConnections ?? [], null);
+        const basinOf = gs.customBasins?.find(b => b.id === clickedBaffle.basinId);
+        const len = basinOf ? (clickedBaffle.orientation === 'vertical' ? basinOf.h : basinOf.w) * 6 : 0;
+        setToast(`${clickedBaffle.orientation === 'vertical' ? 'Vertical' : 'Horizontal'} baffle · ${len} m wall in ${basinOf ? `${basinOf.w}×${basinOf.h}` : 'basin'} · offset ${clickedBaffle.offsetTiles}. Demolish to remove.`);
       } else if (clickedEquipment) {
         // Phase 2: installed machines are inspectable too.
         SoundManager.playClick();
@@ -752,8 +807,10 @@ export const App: React.FC = () => {
         SoundManager.playClick();
         setSelectedEquipmentId(null);
         setSelectedUtilityId(null);
+        setSelectedBaffleId(null);
         setSelectedBasinId(clickedBasin.id);
         sm.syncBasins(gs.customBasins ?? [], clickedBasin.id);
+        sm.syncBaffles(gs.customBaffles ?? [], gs.customBasins ?? [], null);
         sm.syncEquipment(
           gs.processEquipment ?? [], gs.customBasins ?? [], null,
           poweredEquipmentIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
@@ -762,13 +819,16 @@ export const App: React.FC = () => {
         sm.syncUtilityConnections(gs.utilityConnections ?? [], null);
         const area = clickedBasin.w * clickedBasin.h;
         const vol = area * clickedBasin.depthM;
-        setToast(`Custom Basin: ${clickedBasin.w}m × ${clickedBasin.h}m (${area}m², ${vol.toLocaleString()}m³, depth ${clickedBasin.depthM}m). Switch to Demolish to remove.`);
+        const zones = GameManager.zonesForBasin(gs, clickedBasin.id);
+        setToast(`Custom Basin: ${clickedBasin.w}×${clickedBasin.h} (${area}m², ${vol.toLocaleString()}m³, depth ${clickedBasin.depthM}m) · ${zones.length} zone${zones.length>1?'s':''}. Switch to Demolish to remove.`);
       } else if (clickedUtility) {
         SoundManager.playClick();
         setSelectedBasinId(null);
         setSelectedEquipmentId(null);
+        setSelectedBaffleId(null);
         setSelectedUtilityId(clickedUtility.id);
         sm.syncBasins(gs.customBasins ?? [], null);
+        sm.syncBaffles(gs.customBaffles ?? [], gs.customBasins ?? [], null);
         sm.syncEquipment(
           gs.processEquipment ?? [], gs.customBasins ?? [], null,
           poweredEquipmentIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
@@ -781,6 +841,8 @@ export const App: React.FC = () => {
         setSelectedBasinId(null);
         setSelectedEquipmentId(null);
         setSelectedUtilityId(null);
+        setSelectedBaffleId(null);
+        sm.syncBaffles(gs.customBaffles ?? [], gs.customBasins ?? [], null);
         sm.syncBasins(gs.customBasins ?? [], null);
         sm.syncEquipment(
           gs.processEquipment ?? [], gs.customBasins ?? [], null,
@@ -1110,8 +1172,49 @@ export const App: React.FC = () => {
         setToast(result.reason ?? 'Cannot connect utility here.');
       }
 
-    } else if (mode === 'demolish' && (clickedUnit || clickedBasin || clickedEquipment || clickedUtility)) {
-      if (clickedUnit) {
+    } else if (mode === 'draw_baffle' && tile) {
+      // ── CONSTRUCTION-BUILDER Phase 5: interior baffle wall (one-click inside a basin)
+      const basin = gs.customBasins?.find(b => tile.x >= b.x && tile.x < b.x + b.w && tile.y >= b.y && tile.y < b.y + b.h) ?? null;
+      if (!basin) {
+        SoundManager.playWarning();
+        setToast('Baffle: click INSIDE a drawn basin to place an interior wall. Draw a basin first.');
+      } else {
+        const orient = (selBaffleOrientRef.current ?? 'vertical') as 'vertical' | 'horizontal';
+        const offset = orient === 'vertical' ? (tile.x - basin.x + 1) : (tile.y - basin.y + 1);
+        const result = GameManager.placeBaffle(gs, basin.id, orient, offset);
+        if (result.success) {
+          SoundManager.playPlace();
+          pushHistory(gs);
+          setGameState(result.newState);
+          sm.syncBaffles(result.newState.customBaffles ?? [], result.newState.customBasins ?? [], result.newState.selectedBaffleId ?? null);
+          const cost = result.charged ?? 0;
+          const zones = GameManager.zonesForBasin(result.newState, basin.id);
+          setToast(`${orient === 'vertical' ? 'Vertical' : 'Horizontal'} baffle placed at offset ${offset} · basin now ${zones.length} zones${cost > 0 ? ` — $${cost.toLocaleString()}` : ' — $0 (sandbox)'}`);
+          sm.setBafflePreview(null, null, null);
+        } else {
+          SoundManager.playWarning();
+          setToast(result.reason ?? 'Cannot place baffle here.');
+        }
+      }
+
+    } else if (mode === 'demolish' && (clickedUnit || clickedBasin || clickedEquipment || clickedUtility || clickedBaffle)) {
+      if (clickedBaffle) {
+        // Phase 5: remove interior baffle (60% salvage, zones re-derive)
+        SoundManager.playDemolish();
+        const res = GameManager.demolishBaffle(gs, clickedBaffle.id);
+        if (res.success) {
+          pushHistory(gs);
+          setSelectedBaffleId(null);
+          setGameState(res.newState);
+          sm.syncBaffles(res.newState.customBaffles ?? [], res.newState.customBasins ?? [], null);
+          setToast(res.refunded && res.refunded > 0
+            ? `Baffle removed — salvage refund $${res.refunded.toLocaleString()}.`
+            : 'Baffle removed.');
+        } else {
+          SoundManager.playWarning();
+          setToast('Cannot remove baffle.');
+        }
+      } else if (clickedUnit) {
         if (clickedUnit.typeId === 'influent_inlet' || clickedUnit.typeId === 'effluent_outfall') {
           SoundManager.playWarning();
           setToast('Inlet and Outfall cannot be removed.');
@@ -1159,6 +1262,7 @@ export const App: React.FC = () => {
           setSelectedBasinId(null);
           setGameState(res.newState);
           sm.syncBasins(res.newState.customBasins, selectedBasinId);
+          sm.syncBaffles(res.newState.customBaffles ?? [], res.newState.customBasins ?? [], null);
           sm.syncUtilityConnections(res.newState.utilityConnections ?? [], null);
           sm.syncEquipment(
             res.newState.processEquipment ?? [], res.newState.customBasins ?? [], null,
@@ -1338,6 +1442,11 @@ export const App: React.FC = () => {
             cancelPipeSelection();
           } else if (toolModeRef.current === 'connect_utility' && utilitySourceRef.current) {
             cancelUtilitySelection();
+          } else if (toolModeRef.current === 'draw_baffle') {
+            cancelBafflePreview();
+            sceneRef.current?.terrainGrid.setGhostPreview(0, 0, 1, 1, true, false);
+            setToolState(prev => reduceToolSelection(prev, { type: 'cancel_placement' }));
+            setToast('Baffle placement cancelled — click BAFFLE again to arm.');
           } else if (toolModeRef.current === 'draw_basin' && drawStartTileRef.current) {
             // Cancel an in-progress basin draw (anchor reset, no construction).
             drawStartTileRef.current = null;
@@ -1348,13 +1457,16 @@ export const App: React.FC = () => {
             setToolState(prev => reduceToolSelection(prev, { type: 'cancel_placement' }));
             cancelPipeSelection(true);
             cancelUtilitySelection(true);
+            cancelBafflePreview();
             sceneRef.current?.setPipeSourceHighlight(null, gsRef.current.units);
             setGameState(prev => ({ ...prev, selectedUnitId: null }));
             setSelectedEquipmentId(null);
             setSelectedBasinId(null);
             setSelectedUtilityId(null);
+            setSelectedBaffleId(null);
             // clear construction selection hl with Phase 4 powered status
             sceneRef.current?.syncBasins(gsRef.current.customBasins ?? [], null);
+            sceneRef.current?.syncBaffles(gsRef.current.customBaffles ?? [], gsRef.current.customBasins ?? [], null);
             sceneRef.current?.syncUtilityConnections(gsRef.current.utilityConnections ?? [], null);
             sceneRef.current?.syncEquipment(
               gsRef.current.processEquipment ?? [], gsRef.current.customBasins ?? [], null,
@@ -1505,6 +1617,7 @@ export const App: React.FC = () => {
         aeratedDiffuserIds(next.processEquipment ?? [], next.utilityConnections ?? [])
       );
       sceneRef.current.syncUtilityConnections(next.utilityConnections ?? [], null);
+      sceneRef.current.syncBaffles(next.customBaffles ?? [], next.customBasins ?? [], null);
       // Clear any stale hover/ghost placement preview from the old level.
       sceneRef.current.terrainGrid.setGhostPreview(0, 0, 1, 1, true, false);
       sceneRef.current.terrainGrid.setHoverTile(0, 0, false);
@@ -1640,9 +1753,10 @@ export const App: React.FC = () => {
           setToolMode(mode);
           if (mode !== 'place_unit') cancelPipeSelection(true);
           if (mode !== 'connect_utility') cancelUtilitySelection(true);
+          if (mode !== 'draw_baffle') cancelBafflePreview();
           if (mode === 'select')       setToast('Inspect Mode: Click any tank to configure parameters.');
           if (mode === 'connect_pipe') setToast('Pipes: LEFT-CLICK a unit → click the destination. Click the SAME unit to switch its output port. RIGHT-CLICK to cancel. Ctrl+Z undo / Ctrl+Y redo.');
-          if (mode === 'demolish')     setToast('Demolish Mode: Click any unit to remove for 70% cash refund.');
+          if (mode === 'demolish')     setToast('Demolish Mode: Click any unit/baffle/utility to remove for salvage. Baffles refund 60%.');
           if (mode === 'place_unit')   setToast('Choose a unit type below, then click on the grid to place.');
           if (mode === 'draw_basin')   setToast('STRUCTURES → Basin: click the FIRST corner, then the opposite corner. Esc cancels. Cost is shown as you draw.');
           if (mode === 'place_equipment') setToast('EQUIPMENT: pick a machine in the toolbar, then click a valid tile — diffusers/mixers mount INSIDE drawn basins, pumps/blowers on open ground. Esc cancels.');
@@ -1650,11 +1764,19 @@ export const App: React.FC = () => {
             const util = UTILITY_TYPES[selectedUtilityTypeId ?? 'water_pipe'];
             setToast(`UTILITY: ${util.name} — ${util.blurb} Two clicks: source host tile → destination host tile. Cost shown after. Esc cancels.`);
           }
+          if (mode === 'draw_baffle') {
+            const orient = selectedBaffleOrientation ?? 'vertical';
+            setToast(`BAFFLE (${orient}): click INSIDE a basin to place an interior wall at that tile · splits basin into zones. Esc cancels.`);
+          }
           if (mode !== 'place_equipment') setSelectedEquipmentTypeId(null);
           if (mode !== 'connect_utility') {
             setSelectedUtilityId(null);
             utilitySourceRef.current = null;
             sceneRef.current?.setUtilityPreview(null, null);
+          }
+          if (mode !== 'draw_baffle') {
+            setSelectedBaffleId(null);
+            sceneRef.current?.syncBaffles(gsRef.current.customBaffles ?? [], gsRef.current.customBasins ?? [], null);
           }
         }}
         selectedUnitTypeId={selectedUnitTypeId}
@@ -1677,6 +1799,13 @@ export const App: React.FC = () => {
             const util = UTILITY_TYPES[id];
             setToast(`${util.name} armed — $${util.perMeterUsd}/m + $${util.fixedUsd} tie-in. Click source host tile, then destination host tile.`);
           }
+        }}
+        selectedBaffleOrientation={selectedBaffleOrientation}
+        onSelectBaffleOrientation={o => {
+          setSelectedBaffleOrientation(o ?? 'vertical');
+          setSelectedBaffleId(null);
+          sceneRef.current?.syncBaffles(gameState.customBaffles ?? [], gameState.customBasins ?? [], null);
+          if (o) setToast(`${o === 'vertical' ? 'Vertical' : 'Horizontal'} baffle armed — click INSIDE a basin. Splits it into compartments.`);
         }}
         onSelectUnitTypeId={id => {
           // ATOMIC: a non-null id enters place_unit WITH that unit; null merely
@@ -1709,7 +1838,7 @@ export const App: React.FC = () => {
       />
 
       {/* ── Phase 4: construction status HUD (live power & aeration at a glance) ── */}
-      <ConstructionStatusChip stats={GameManager.constructionStats(gameState)} />
+      <ConstructionStatusChip stats={GameManager.constructionStats(gameState)} zoneStats={GameManager.basinZoneStats(gameState)} />
 
       {/* ── Unit Inspector ──────────────────────────────────────────────────── */}
       {selectedUnit && (
@@ -1772,6 +1901,36 @@ export const App: React.FC = () => {
                 setToast(res.refunded && res.refunded > 0
                   ? `${EQUIPMENT_TYPES[item.typeId]?.name ?? 'Equipment'} removed — salvage refund $${res.refunded.toLocaleString()}.`
                   : `${EQUIPMENT_TYPES[item.typeId]?.name ?? 'Equipment'} removed.`);
+              }
+            }}
+          />
+        );
+      })()}
+
+      {/* ── Phase 5: baffle inspector (interior compartment wall) ── */}
+      {selectedBaffleId && (() => {
+        const baffle = gameState.customBaffles?.find(b => b.id === selectedBaffleId);
+        if (!baffle) return null;
+        const basin = gameState.customBasins?.find(b => b.id === baffle.basinId);
+        if (!basin) return null;
+        return (
+          <BaffleInspector
+            baffle={baffle}
+            basin={basin}
+            onClose={() => {
+              setSelectedBaffleId(null);
+              sceneRef.current?.syncBaffles(gameState.customBaffles ?? [], gameState.customBasins ?? [], null);
+            }}
+            onDemolish={id => {
+              pushHistory(gsRef.current);
+              const res = GameManager.demolishBaffle(gsRef.current, id);
+              if (res.success) {
+                setSelectedBaffleId(null);
+                setGameState(res.newState);
+                sceneRef.current?.syncBaffles(res.newState.customBaffles ?? [], res.newState.customBasins ?? [], null);
+                setToast(res.refunded && res.refunded > 0
+                  ? `Baffle removed — salvage refund $${res.refunded.toLocaleString()}.`
+                  : 'Baffle removed.');
               }
             }}
           />

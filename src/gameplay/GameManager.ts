@@ -42,6 +42,18 @@ import {
   ConstructionStats,
 } from '../design/ConstructionNetwork';
 import { evaluateConstructionEffects } from '../design/ConstructionAdapter';
+import {
+  BaffleWall,
+  BaffleOrientation,
+  BasinZone,
+  estimateBaffleCAPEX,
+  validateBafflePlacement,
+  zonesForBasin as _zonesForBasin,
+  allZones as _allZones,
+  basinZoneStats as _basinZoneStats,
+  BasinZoneStats,
+  pointNearBaffle,
+} from '../design/BasinZone';
 import { evaluatePermitCriteria } from '../sim/PermitEngine';
 
 export interface NextStepSuggestion {
@@ -103,6 +115,15 @@ export interface GameState {
   utilityConnections: UtilityConnection[];
   /** Selected utility line id for Inspect/Demolish. */
   selectedUtilityId?: string | null;
+  /**
+   * CONSTRUCTION-BUILDER Phase 5: interior baffle walls that partition
+   * each CustomBasin into functional zones (anoxic/aerobic/settling).
+   * Zones themselves are DERIVED from basins+baffles (see BasinZone.ts)
+   * so only baffles are persisted. Empty = each basin is one zone.
+   */
+  customBaffles: BaffleWall[];
+  /** Selected baffle id for Inspect/Demolish. */
+  selectedBaffleId?: string | null;
 }
 
 export class GameManager {
@@ -222,7 +243,9 @@ export class GameManager {
       customBasins: [],
       processEquipment: [],
       utilityConnections: [],
-      selectedUtilityId: null
+      selectedUtilityId: null,
+      customBaffles: [],
+      selectedBaffleId: null
     };
   }
 
@@ -1106,19 +1129,27 @@ export class GameManager {
       : 0;
     const remainingUtils = (state.utilityConnections ?? []).filter(c => !attached.includes(c));
 
+    // Phase 5: also cascade-remove baffles interior to this basin
+    const removedBaffles = (state.customBaffles ?? []).filter(b => b.basinId === basinId);
+    const baffleSalvage = (state.gameMode !== 'sandbox' && !state.tutorialActive)
+      ? removedBaffles.reduce((s, bf) => s + Math.round(estimateBaffleCAPEX(basin, bf.orientation) * GameManager.BAFFLE_SALVAGE_RATE), 0)
+      : 0;
+
     return {
       newState: {
         ...state,
         financials: {
           ...state.financials,
-          cash: state.financials.cash + refunded + utilSalvage,
+          cash: state.financials.cash + refunded + utilSalvage + baffleSalvage,
         },
         customBasins: (state.customBasins ?? []).filter(b => b.id !== basinId),
         utilityConnections: remainingUtils,
         selectedUtilityId: attached.some(c => c.id === state.selectedUtilityId) ? null : state.selectedUtilityId,
+        customBaffles: (state.customBaffles ?? []).filter(b => b.basinId !== basinId),
+        selectedBaffleId: removedBaffles.some(b => b.id === state.selectedBaffleId) ? null : state.selectedBaffleId,
       },
       success: true,
-      refunded: refunded + utilSalvage,
+      refunded: refunded + utilSalvage + baffleSalvage,
     };
   }
 
@@ -1312,6 +1343,109 @@ export class GameManager {
     return (state.utilityConnections ?? []).filter(c =>
       (c.ax === tx && c.ay === ty) || (c.bx === tx && c.by === ty)
     );
+  }
+
+  // ── CONSTRUCTION-BUILDER Phase 5: interior baffle walls (zones) ────────────
+  /** Salvage for demolished baffles (interior concrete keeps less value). */
+  public static readonly BAFFLE_SALVAGE_RATE = 0.6;
+
+  /**
+   * Installs one interior baffle wall inside a player-drawn basin, partitioning
+   * it into an extra zone. Cash-gated like every builder action; sandbox skips
+   * only the cash gate. Cost is wall area × $55 + fixed (see BasinZone).
+   */
+  public static placeBaffle(
+    state: GameState,
+    basinId: string,
+    orientation: BaffleOrientation,
+    offsetTiles: number,
+  ): { newState: GameState; success: boolean; reason?: string; charged?: number } {
+    const basin = (state.customBasins ?? []).find(b => b.id === basinId);
+    const v = validateBafflePlacement(basin, state.customBaffles ?? [], orientation, offsetTiles);
+    if (!v.ok) return { newState: state, success: false, reason: v.reason };
+    const capex = estimateBaffleCAPEX(basin!, orientation);
+    if (state.gameMode !== 'sandbox' && state.financials.cash < capex) {
+      return { newState: state, success: false, reason: `Insufficient funds ($${capex.toLocaleString()} required)` };
+    }
+    const baffle: BaffleWall = {
+      id: `baffle_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      basinId,
+      orientation,
+      offsetTiles,
+      createdAtDay: state.gameTimeDays,
+    };
+    const newCash = state.gameMode === 'sandbox' ? state.financials.cash : state.financials.cash - capex;
+    return {
+      newState: {
+        ...state,
+        financials: { ...state.financials, cash: newCash },
+        customBaffles: [...(state.customBaffles ?? []), baffle],
+        selectedBaffleId: baffle.id,
+      },
+      success: true,
+      charged: state.gameMode === 'sandbox' ? 0 : capex,
+    };
+  }
+
+  /** Removes one baffle wall and refunds its salvage (60%). Zones re-derive. */
+  public static demolishBaffle(state: GameState, baffleId: string): {
+    newState: GameState; success: boolean; refunded?: number;
+  } {
+    const baffle = (state.customBaffles ?? []).find(b => b.id === baffleId);
+    if (!baffle) return { newState: state, success: false };
+    const basin = (state.customBasins ?? []).find(b => b.id === baffle.basinId);
+    const refunded = (state.gameMode !== 'sandbox' && !state.tutorialActive && basin)
+      ? Math.round(estimateBaffleCAPEX(basin, baffle.orientation) * GameManager.BAFFLE_SALVAGE_RATE)
+      : 0;
+    return {
+      newState: {
+        ...state,
+        financials: { ...state.financials, cash: state.financials.cash + refunded },
+        customBaffles: (state.customBaffles ?? []).filter(b => b.id !== baffleId),
+        selectedBaffleId: state.selectedBaffleId === baffleId ? null : state.selectedBaffleId,
+      },
+      success: true,
+      refunded,
+    };
+  }
+
+  /** All zones derived for a specific basin (empty if basin unknown). */
+  public static zonesForBasin(state: GameState, basinId: string): BasinZone[] {
+    const basin = (state.customBasins ?? []).find(b => b.id === basinId);
+    if (!basin) return [];
+    return _zonesForBasin(basin, state.customBaffles ?? []);
+  }
+
+  /** All zones across the entire plant. */
+  public static allZones(state: GameState): BasinZone[] {
+    return _allZones(state.customBasins ?? [], state.customBaffles ?? []);
+  }
+
+  /** Zone that contains a given tile (or null). */
+  public static zoneAtTile(state: GameState, tx: number, ty: number): BasinZone | null {
+    const zones = GameManager.allZones(state);
+    return zones.find(z => tx >= z.x && tx < z.x + z.w && ty >= z.y && ty < z.y + z.h) ?? null;
+  }
+
+  /** Which baffle is near (px,pz) in world tile-space (for click selection). */
+  public static baffleAtPoint(state: GameState, px: number, pz: number): BaffleWall | null {
+    for (const bf of state.customBaffles ?? []) {
+      const basin = (state.customBasins ?? []).find(b => b.id === bf.basinId);
+      if (!basin) continue;
+      if (pointNearBaffle(px, pz, bf, basin, 0.55)) return bf;
+    }
+    return null;
+  }
+
+  /** Zone that hosts a specific equipment tile (null for ground kit). */
+  public static zoneForEquipmentItem(state: GameState, itemId: string): BasinZone | null {
+    const item = (state.processEquipment ?? []).find(e => e.id === itemId);
+    if (!item) return null;
+    return GameManager.zoneAtTile(state, item.x, item.y);
+  }
+
+  public static basinZoneStats(state: GameState): BasinZoneStats {
+    return _basinZoneStats(state.customBasins ?? [], state.customBaffles ?? []);
   }
 
   /**

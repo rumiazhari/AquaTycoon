@@ -12,7 +12,8 @@ export type ToolMode =
   | 'pave_road'
   | 'draw_basin'
   | 'place_equipment'
-  | 'connect_utility';
+  | 'connect_utility'
+  | 'draw_baffle';
 
 export interface VisualTheme {
   waterTurbidColor: string;

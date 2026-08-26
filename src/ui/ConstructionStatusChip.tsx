@@ -1,13 +1,15 @@
 import React from 'react';
 import { ConstructionStats } from '../design/ConstructionNetwork';
-import { Zap, Waves, Droplets, Cable } from 'lucide-react';
+import { BasinZoneStats } from '../design/BasinZone';
+import { Zap, Waves, Droplets, Cable, Columns3 } from 'lucide-react';
 
 interface Props {
   stats: ConstructionStats;
+  zoneStats?: BasinZoneStats | null;
 }
 
-export const ConstructionStatusChip: React.FC<Props> = ({ stats }) => {
-  const hasBuild = stats.totalBasins > 0 || stats.totalEquipment > 0 || stats.totalUtilityConnections > 0;
+export const ConstructionStatusChip: React.FC<Props> = ({ stats, zoneStats }) => {
+  const hasBuild = stats.totalBasins > 0 || stats.totalEquipment > 0 || stats.totalUtilityConnections > 0 || (zoneStats && zoneStats.totalBaffles > 0);
   if (!hasBuild) return null;
 
   const powerTone = stats.unpoweredEquipment > 0
@@ -43,6 +45,13 @@ export const ConstructionStatusChip: React.FC<Props> = ({ stats }) => {
         <span className="pointer-events-auto inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-900 border border-slate-700 text-slate-300 text-[11px] font-mono shadow-lg">
           <Cable size={12} className="text-slate-400" />
           <span>{stats.totalUtilityConnections} utility line{stats.totalUtilityConnections > 1 ? 's' : ''}</span>
+        </span>
+      )}
+      {zoneStats && (zoneStats.totalBaffles > 0 || zoneStats.totalZones !== zoneStats.totalBasins) && (
+        <span className="pointer-events-auto inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-violet-950/40 border border-violet-500/30 text-violet-300 text-[11px] font-mono shadow-lg">
+          <Columns3 size={12} className="text-violet-400" />
+          <span className="font-bold">{zoneStats.totalZones} zone{zoneStats.totalZones>1?'s':''}</span>
+          <span className="opacity-80">· {zoneStats.totalBaffles} baffle{zoneStats.totalBaffles!==1?'s':''}</span>
         </span>
       )}
     </div>

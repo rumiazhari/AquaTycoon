@@ -1034,6 +1034,136 @@ export class SceneManager {
     this.pipeRenderer.updatePipes(pipes, this.visualSimElapsed);
   }
 
+  // ── CONSTRUCTION-BUILDER Phase 5: baffle walls (basin compartmentalisation)
+  private baffleGroup: THREE.Group = new THREE.Group();
+  private baffleMeshMap: Map<string, THREE.Group> = new Map();
+  private bafflePreviewLine: THREE.Line | null = null;
+
+  private ensureBafflePreviewLine(): THREE.Line {
+    if (this.bafflePreviewLine) return this.bafflePreviewLine;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+    const mat = new THREE.LineDashedMaterial({
+      color: 0xa78bfa,
+      transparent: true,
+      opacity: 0.95,
+      linewidth: 2,
+      dashSize: 0.35,
+      gapSize: 0.2,
+    });
+    const line = new THREE.Line(geo, mat);
+    line.computeLineDistances();
+    line.visible = false;
+    line.frustumCulled = false;
+    this.bafflePreviewLine = line;
+    this.scene.add(line);
+    return line;
+  }
+
+  /**
+   * Renders each interior baffle wall as a thin concrete wall standing
+   * inside its basin (full span, height = basin depth). Mirrors syncUnits
+   * add/remove/dispose discipline. Selection = purple emissive.
+   */
+  public syncBaffles(
+    baffles: { id: string; basinId: string; orientation: string; offsetTiles: number }[],
+    basins: { id: string; x: number; y: number; w: number; h: number; depthM: number }[],
+    selectedId?: string | null,
+  ) {
+    if (!this.baffleGroup.parent) this.scene.add(this.baffleGroup);
+    const activeIds = new Set(baffles.map(b => b.id));
+    for (const [id, group] of this.baffleMeshMap.entries()) {
+      if (!activeIds.has(id)) {
+        this.baffleGroup.remove(group);
+        group.traverse(o => {
+          const mm = o as THREE.Mesh;
+          if (mm.geometry) mm.geometry.dispose();
+        });
+        this.baffleMeshMap.delete(id);
+      }
+    }
+    for (const bf of baffles) {
+      let group = this.baffleMeshMap.get(bf.id);
+      const basin = basins.find(b => b.id === bf.basinId);
+      if (!basin) continue;
+      if (!group) {
+        group = this.buildBaffleMesh(bf.orientation as 'vertical'|'horizontal', basin.depthM, basin);
+        this.baffleMeshMap.set(bf.id, group);
+        this.baffleGroup.add(group);
+      }
+      // Position wall on its basin-relative offset
+      if (bf.orientation === 'vertical') {
+        group.position.set(basin.x + bf.offsetTiles, 0, basin.y);
+      } else {
+        group.position.set(basin.x, 0, basin.y + bf.offsetTiles);
+      }
+      const selected = bf.id === selectedId;
+      group.traverse(o => {
+        const mm = o as THREE.Mesh;
+        if (mm.isMesh && mm.material) {
+          const mat = Array.isArray(mm.material) ? mm.material[0] : mm.material;
+          const m = mat as THREE.MeshStandardMaterial;
+          if ((m as any)._baffleBase) {
+            m.emissive.setHex(selected ? 0x4c1d95 : 0x000000);
+            m.emissiveIntensity = selected ? 0.7 : 0;
+          }
+        }
+      });
+    }
+  }
+
+  private buildBaffleMesh(orientation: 'vertical'|'horizontal', depthM: number, basin: { w: number; h: number }): THREE.Group {
+    const g = new THREE.Group();
+    const wallT = 0.18;
+    const depth = Math.max(1, depthM);
+    const concrete = new THREE.MeshStandardMaterial({ color: 0xc4b5fd, roughness: 0.85, metalness: 0.05 });
+    (concrete as any)._baffleBase = true;
+    let geo: THREE.BoxGeometry;
+    if (orientation === 'vertical') {
+      // Wall runs south–north (along Z), thin in X
+      geo = new THREE.BoxGeometry(wallT, depth, basin.h);
+      const m = new THREE.Mesh(geo, concrete);
+      m.position.set(0, depth / 2, basin.h / 2);
+      m.castShadow = true; m.receiveShadow = true;
+      g.add(m);
+    } else {
+      geo = new THREE.BoxGeometry(basin.w, depth, wallT);
+      const m = new THREE.Mesh(geo, concrete);
+      m.position.set(basin.w / 2, depth / 2, 0);
+      m.castShadow = true; m.receiveShadow = true;
+      g.add(m);
+    }
+    return g;
+  }
+
+  /** Live preview for baffle placement: dashed line across the hovered basin at the hovered offset. */
+  public setBafflePreview(
+    basin: { x: number; y: number; w: number; h: number; depthM: number } | null,
+    orientation: 'vertical'|'horizontal' | null,
+    offsetTiles: number | null,
+  ) {
+    const line = this.ensureBafflePreviewLine();
+    if (!basin || !orientation || offsetTiles == null) {
+      line.visible = false;
+      return;
+    }
+    const pos = line.geometry.getAttribute('position') as THREE.BufferAttribute;
+    const y = basin.depthM * 0.55 + 0.25;
+    if (orientation === 'vertical') {
+      const wx = basin.x + offsetTiles;
+      pos.setXYZ(0, wx, y, basin.y);
+      pos.setXYZ(1, wx, y, basin.y + basin.h);
+    } else {
+      const wz = basin.y + offsetTiles;
+      pos.setXYZ(0, basin.x, y, wz);
+      pos.setXYZ(1, basin.x + basin.w, y, wz);
+    }
+    pos.needsUpdate = true;
+    line.geometry.computeBoundingSphere();
+    line.computeLineDistances();
+    line.visible = true;
+  }
+
   /**
    * Pushes the authoritative game clock into the renderer. Lighting derives
    * from this via getDayNightFactor — no independent real-time lerp.

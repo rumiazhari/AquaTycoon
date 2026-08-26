@@ -49,6 +49,15 @@ import {
   constructionStats,
 } from '../src/design/ConstructionNetwork';
 import { evaluateConstructionEffects } from '../src/design/ConstructionAdapter';
+import {
+  estimateBaffleCAPEX,
+  validateBafflePlacement,
+  zonesForBasin,
+  allZones,
+  basinZoneStats,
+  pointNearBaffle,
+  baffleLengthM,
+} from '../src/design/BasinZone';
 import * as THREE from 'three';
 
 let failures = 0;
@@ -2359,6 +2368,166 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
     const ce16 = evaluateConstructionEffects(basins, equip, conns);
     assert(Math.abs(ce16.bodMultiplier - ce8.bodMultiplier) < 0.02,
       'CA6b. benefit capped: 16 diffusers bod× '+ce16.bodMultiplier.toFixed(3)+' ≈ 8 diffusers '+ce8.bodMultiplier.toFixed(3));
+  }
+
+  // ── PHASE 5 — zones & baffles (basin compartments) ───────────────────────
+  // Z1: single basin with zero baffles = exactly one zone covering whole footprint
+  {
+    const basin = { x:5,y:6,w:8,h:6, depthM:4, id:'bz1', createdAtDay:0 } as any;
+    const zones = zonesForBasin(basin, []);
+    assert(zones.length === 1 && zones[0].x===5 && zones[0].y===6 && zones[0].w===8 && zones[0].h===6,
+      'Z1. zero baffles → single zone ' + JSON.stringify(zones[0]));
+    assert(zones[0].role === 'aerobic', 'Z1b. single zone defaults to aerobic ('+zones[0].role+')');
+  }
+  // Z2: one vertical baffle splits basin into 2 zones (anoxic | aerobic default)
+  {
+    const basin = { x:2,y:3,w:8,h:4, depthM:4, id:'bz2', createdAtDay:0 } as any;
+    const baffles: any[] = [{ id:'bf1', basinId:'bz2', orientation:'vertical', offsetTiles:4, createdAtDay:0 }];
+    const zones = zonesForBasin(basin, baffles);
+    assert(zones.length === 2, 'Z2. one vertical baffle → 2 zones (got '+zones.length+')');
+    // w=8 split at 4 → left w=4 right w=4
+    const widths = zones.map(z=>z.w).sort((a,b)=>a-b);
+    assert(widths[0]===4 && widths[1]===4, 'Z2b. split widths 4/4 (got '+widths+')');
+    const roles = zones.map(z=>z.role).sort();
+    assert(roles.includes('anoxic') && roles.includes('aerobic'), 'Z2c. default roles anoxic+aerobic (got '+roles+')');
+  }
+  // Z3: one horizontal baffle splits into 2 zones
+  {
+    const basin = { x:0,y:0,w:6,h:8, depthM:3, id:'bz3', createdAtDay:0 } as any;
+    const baffles: any[] = [{ id:'bf1', basinId:'bz3', orientation:'horizontal', offsetTiles:3, createdAtDay:0 }];
+    const zones = zonesForBasin(basin, baffles);
+    assert(zones.length === 2, 'Z3. one horizontal baffle → 2 zones (got '+zones.length+')');
+    const heights = zones.map(z=>z.h).sort((a,b)=>a-b);
+    assert(heights[0]===3 && heights[1]===5, 'Z3b. split heights 3/5 (got '+heights+')');
+  }
+  // Z4: 2 vertical + 1 horizontal = 6 zones (grid)
+  {
+    const basin = { x:10,y:10,w:6,h:6, depthM:4, id:'bz4', createdAtDay:0 } as any;
+    const baffles: any[] = [
+      { id:'bf1', basinId:'bz4', orientation:'vertical', offsetTiles:2, createdAtDay:0 },
+      { id:'bf2', basinId:'bz4', orientation:'vertical', offsetTiles:4, createdAtDay:0 },
+      { id:'bf3', basinId:'bz4', orientation:'horizontal', offsetTiles:3, createdAtDay:0 },
+    ];
+    const zones = zonesForBasin(basin, baffles);
+    assert(zones.length === 6, 'Z4. 2V+1H baffles → 6 zones (got '+zones.length+')');
+    // total area should still equal basin area
+    const totalArea = zones.reduce((s,z)=>s+z.w*z.h, 0);
+    assert(totalArea === 36, 'Z4b. total cells area 36 tiles (got '+totalArea+')');
+  }
+  // Z5: validation — offset out of range and duplicate guard
+  {
+    const basin = { x:0,y:0,w:4,h:4, depthM:4, id:'bz5', createdAtDay:0 } as any;
+    const v0 = validateBafflePlacement(basin, [], 'vertical', 0);
+    const v5 = validateBafflePlacement(basin, [], 'vertical', 4);
+    const vOk = validateBafflePlacement(basin, [], 'vertical', 2);
+    assert(!v0.ok && !v5.ok && vOk.ok, 'Z5. offset bounds enforce 1..'+(basin.w-1)+' (0 fail, 4 fail, 2 ok)');
+    const dup = validateBafflePlacement(basin, [{ id:'bf1', basinId:'bz5', orientation:'vertical', offsetTiles:2, createdAtDay:0 } as any], 'vertical', 2);
+    assert(!dup.ok, 'Z5b. duplicate offset rejected');
+    const diffOrientOk = validateBafflePlacement(basin, [{ id:'bf1', basinId:'bz5', orientation:'vertical', offsetTiles:2, createdAtDay:0 } as any], 'horizontal', 2);
+    assert(diffOrientOk.ok, 'Z5c. same offset different orientation allowed');
+  }
+  // Z6: CAPEX grows with basin depth and orientation length; deterministic
+  {
+    const basin = { x:0,y:0,w:8,h:4, depthM:4, id:'bz6', createdAtDay:0 } as any;
+    const costV = estimateBaffleCAPEX(basin, 'vertical'); // length = 4*6=24m
+    const costH = estimateBaffleCAPEX(basin, 'horizontal'); // length = 8*6=48m
+    assert(costH > costV, 'Z6. horizontal baffle longer (48m) costs more than vertical (24m): H $'+costH+' > V $'+costV);
+    assert(costV === estimateBaffleCAPEX(basin, 'vertical'), 'Z6b. deterministic cost');
+    const shallow = { ...basin, depthM:2 } as any;
+    const costShallow = estimateBaffleCAPEX(shallow, 'vertical');
+    assert(costShallow < costV, 'Z6c. shallower basin cheaper baffle (2m $'+costShallow+' < 4m $'+costV+')');
+  }
+  // Z7: allZones aggregates across multiple basins
+  {
+    const b1 = { x:0,y:0,w:4,h:4, depthM:4, id:'bA', createdAtDay:0 } as any;
+    const b2 = { x:10,y:10,w:6,h:6, depthM:4, id:'bB', createdAtDay:0 } as any;
+    const baffles: any[] = [
+      { id:'bf1', basinId:'bA', orientation:'vertical', offsetTiles:2, createdAtDay:0 },
+    ];
+    const zones = allZones([b1,b2], baffles);
+    // bA splits →2, bB unsplit →1 => total 3
+    assert(zones.length === 3, 'Z7. allZones across 2 basins = 3 (got '+zones.length+')');
+  }
+  // Z8: basinZoneStats counts
+  {
+    const b1 = { x:0,y:0,w:4,h:4, depthM:4, id:'bS1', createdAtDay:0 } as any;
+    const b2 = { x:10,y:10,w:6,h:6, depthM:4, id:'bS2', createdAtDay:0 } as any;
+    const baffles: any[] = [
+      { id:'bf1', basinId:'bS1', orientation:'vertical', offsetTiles:2, createdAtDay:0 },
+      { id:'bf2', basinId:'bS2', orientation:'horizontal', offsetTiles:3, createdAtDay:0 },
+    ];
+    const stats = basinZoneStats([b1,b2], baffles);
+    assert(stats.totalBasins===2 && stats.totalBaffles===2 && stats.totalZones===4,
+      'Z8. stats 2 basins · 2 baffles · 4 zones (got '+stats.totalBasins+'/'+stats.totalBaffles+'/'+stats.totalZones+')');
+    assert(stats.verticalBaffles===1 && stats.horizontalBaffles===1, 'Z8b. per-orientation counts V1 H1');
+  }
+  // Z9: pointNearBaffle hit-test (vertical/horizontal)
+  {
+    const basin = { x:5,y:5,w:8,h:6, depthM:4, id:'bHit', createdAtDay:0 } as any;
+    const bfV: any = { id:'bfV', basinId:'bHit', orientation:'vertical', offsetTiles:3, createdAtDay:0 };
+    const bfH: any = { id:'bfH', basinId:'bHit', orientation:'horizontal', offsetTiles:2, createdAtDay:0 };
+    // Vertical wall at x=8, spanning y 5..11
+    assert(pointNearBaffle(8.1, 7, bfV, basin, 0.45), 'Z9. point near vertical wall (8.1,7) hit');
+    assert(!pointNearBaffle(9.5, 7, bfV, basin, 0.45), 'Z9b. point far from vertical wall miss');
+    assert(!pointNearBaffle(8.1, 12, bfV, basin, 0.45), 'Z9c. point outside basin Y miss');
+    assert(pointNearBaffle(7, 7.1, bfH, basin, 0.45), 'Z9d. point near horizontal wall hit');
+    assert(!pointNearBaffle(7, 8.5, bfH, basin, 0.45), 'Z9e. point far from horizontal wall miss');
+  }
+  // Z10: GameManager baffle placement funds gate + duplicate guard + baffleAtPoint
+  {
+    let s: any = GameManager.createInitialState(0, true);
+    s.financials.cash = 10_000_000;
+    let rB = GameManager.placeCustomBasin(s, { x:2,y:2,w:6,h:6 });
+    assert(rB.success, 'Z10-pre. basin for baffle placement');
+    s = rB.newState;
+    const basinId = s.customBasins[0].id;
+    let r1 = GameManager.placeBaffle(s, basinId, 'vertical', 3);
+    assert(r1.success, 'Z10. first baffle placed at offset 3');
+    s = r1.newState;
+    let rDup = GameManager.placeBaffle(s, basinId, 'vertical', 3);
+    assert(!rDup.success, 'Z10b. duplicate baffle rejected');
+    let r2 = GameManager.placeBaffle(s, basinId, 'horizontal', 2);
+    assert(r2.success, 'Z10c. second baffle (other orientation) ok');
+    s = r2.newState;
+    assert(GameManager.allZones(s).length === 4, 'Z10d. 1V+1H → 4 zones (got '+GameManager.allZones(s).length+')');
+    // baffleAtPoint near the vertical wall
+    const hit = GameManager.baffleAtPoint(s, s.customBasins[0].x + 3.05, s.customBasins[0].y + 2);
+    assert(hit !== null && hit.orientation === 'vertical', 'Z10e. baffleAtPoint finds vertical wall');
+    // demolish refunds and zones collapse
+    const cashBefore = s.financials.cash;
+    let rDem = GameManager.demolishBaffle(s, r1.newState.customBaffles[0].id);
+    assert(rDem.success, 'Z10f. demolish baffle succeeds');
+    assert(GameManager.allZones(rDem.newState).length === 2, 'Z10g. after demolish → 2 zones (got '+GameManager.allZones(rDem.newState).length+')');
+    // sandbox still tracks but free
+    const beforeSandboxFree = rDem.newState.financials.cash;
+    // basin demolish cascade removes baffles too
+    let rB2 = GameManager.placeBaffle(rDem.newState, basinId, 'vertical', 3);
+    s = rB2.newState;
+    const beforeBasinDem = s.financials.cash;
+    let rBasDem = GameManager.demolishCustomBasin(s, basinId);
+    assert(rBasDem.success, 'Z10h. basin demolish cascades baffles');
+    assert((rBasDem.newState.customBaffles ?? []).length === 0, 'Z10i. baffles cleared after basin demolish');
+  }
+  // Z11: equipment zone membership follows baffle grid
+  {
+    let s: any = GameManager.createInitialState(0, true);
+    s.financials.cash = 10_000_000;
+    let rB = GameManager.placeCustomBasin(s, { x:5,y:5,w:8,h:4 });
+    assert(rB.success, 'Z11-pre. basin for zone membership');
+    s = rB.newState;
+    const basinId = s.customBasins[0].id;
+    let rBf = GameManager.placeBaffle(s, basinId, 'vertical', 4);
+    assert(rBf.success, 'Z11-pre. vertical baffle at 4');
+    s = rBf.newState;
+    // Diffuser on left zone (x=6) vs right zone (x=10) — basin at 5, split at 9
+    let rD1 = GameManager.placeProcessEquipment(s, 'fine_bubble_diffuser', 6, 6);
+    let rD2 = GameManager.placeProcessEquipment(s, 'fine_bubble_diffuser', 10, 6);
+    assert(rD1.success && rD2.success, 'Z11. two diffusers on opposite sides of baffle');
+    s = rD2.newState;
+    const z1 = GameManager.zoneAtTile(s, 6, 6);
+    const z2 = GameManager.zoneAtTile(s, 10, 6);
+    assert(z1 !== null && z2 !== null && z1.id !== z2.id, 'Z11b. diffusers map to distinct zones ('+z1?.id+' vs '+z2?.id+')');
+    assert(z1!.w===4 && z2!.w===4, 'Z11c. zone widths 4 each after split (got '+z1?.w+'/'+z2?.w+')');
   }
 }
 

@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import {
   MousePointer, Cable, Trash2, RotateCw, Filter,
   Layers, Activity, Sparkles, Recycle, ArrowRightLeft,
-  Info, Star, Zap, Lock, Droplets, Fan, Wind, Cog, Waves
+  Info, Star, Zap, Lock, Droplets, Fan, Wind, Cog, Waves, Columns3, Rows3
 } from 'lucide-react';
 import { UnitCategory, UnitDefinition, UnitTypeId } from '../types/simulation';
 import { ToolMode } from '../types/graphics';
@@ -40,6 +40,9 @@ interface BuildToolbarProps {
   /** CONSTRUCTION-BUILDER Phase 3: armed utility for connect_utility mode. */
   selectedUtilityTypeId?: UtilityConnectionType | null;
   onSelectUtilityTypeId?: (typeId: UtilityConnectionType | null) => void;
+  /** CONSTRUCTION-BUILDER Phase 5: baffle orientation for draw_baffle mode. */
+  selectedBaffleOrientation?: 'vertical' | 'horizontal' | null;
+  onSelectBaffleOrientation?: (o: 'vertical' | 'horizontal' | null) => void;
   currentRotation: 0 | 90 | 180 | 270;
   onRotate: () => void;
   techTree: TechNode[];
@@ -76,6 +79,8 @@ export const BuildToolbar: React.FC<BuildToolbarProps> = ({
   onSelectEquipmentTypeId,
   selectedUtilityTypeId,
   onSelectUtilityTypeId,
+  selectedBaffleOrientation,
+  onSelectBaffleOrientation,
   currentRotation,
   onRotate,
   techTree,
@@ -258,6 +263,35 @@ export const BuildToolbar: React.FC<BuildToolbarProps> = ({
                 >
                   <Icon size={14} />
                   <span>{label}</span>
+                </button>
+              );
+            })}
+            {/* CONSTRUCTION-BUILDER Phase 5: baffle walls — partition a basin into zones. */}
+            {([
+              ['vertical', Columns3, 'Vertical Baffle'] as const,
+              ['horizontal', Rows3, 'Horizontal Baffle'] as const,
+            ]).map(([orient, Icon, label]) => {
+              const active = toolMode === 'draw_baffle' && selectedBaffleOrientation === orient;
+              return (
+                <button
+                  key={orient}
+                  onClick={() => {
+                    SoundManager.playClick();
+                    onSelectUnitTypeId(null);
+                    onSelectEquipmentTypeId?.(null);
+                    onSelectUtilityTypeId?.(null);
+                    onSelectBaffleOrientation?.(orient);
+                    onSetToolMode('draw_baffle');
+                  }}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+                    active
+                      ? 'bg-violet-500 text-white shadow-md font-bold'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+                  }`}
+                  title={`BAFFLE: ${label} — interior concrete wall that splits a basin into compartments (anoxic/aerobic/settling). Click inside a basin to place. Esc cancels.`}
+                >
+                  <Icon size={14} />
+                  <span>{orient === 'vertical' ? '│ Baffle' : '─ Baffle'}</span>
                 </button>
               );
             })}
