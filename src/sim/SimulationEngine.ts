@@ -498,6 +498,7 @@ export class SimulationEngine {
       dailyBiogasRevenue: dailyBiogasElectricityRevenue,
       dailyFines,
       dailyFinancingCost,
+      dailyReclaimBonus: 0,
       totalTreatedM3: currentFinancials.totalTreatedM3, // accumulated by GameManager per simulated day
       netDailyProfit
     };

@@ -69,6 +69,8 @@ export interface GameFinancials {
   dailyFines: number;
   /** Municipal overdraft financing cost when cash is negative (USD/day) — tycoon polish iter 39. */
   dailyFinancingCost: number;
+  /** Reclaimed-water tariff premium for RO-polished potable reuse (USD/day) — tycoon iter 43. Optional for legacy saves. */
+  dailyReclaimBonus?: number;
   totalTreatedM3: number;
   netDailyProfit: number;
 }

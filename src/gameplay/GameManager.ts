@@ -42,6 +42,7 @@ import {
   ConstructionStats,
 } from '../design/ConstructionNetwork';
 import { evaluateConstructionEffects } from '../design/ConstructionAdapter';
+import { reclaimedWaterBonusPerDay } from '../design/ConstructionAdapter';
 import {
   BaffleWall,
   BaffleOrientation,
@@ -208,6 +209,7 @@ export class GameManager {
       dailyBiogasRevenue: 0,
       dailyFines: 0,
       dailyFinancingCost: 0,
+      dailyReclaimBonus: 0,
       totalTreatedM3: 0,
       netDailyProfit: 0
     };
@@ -730,6 +732,42 @@ export class GameManager {
           // Clear stale haulage alert when handling closes the loop or flow stops
           if (simResult.overallStats.activeAlerts.some(a => a.id === 'brine_haulage')) {
             simResult.overallStats.activeAlerts = simResult.overallStats.activeAlerts.filter(a => a.id !== 'brine_haulage');
+          }
+        }
+      }
+      // ── TYCOON DIVIDEND iter 43 — reclaimed water premium (potable reuse) ──────
+      // Flow-scaled tariff bonus when RO-polished effluent is reclaimed-grade
+      // (TSS/pathogen/turbidity/toxic all pass). Uses the POLISHED effluent
+      // (after RO multipliers) so quality gating reflects real potable output.
+      {
+        const liveRo = (ce as any).liveRoSkids ?? 0;
+        const hasFlowB = simResult.finalEffluent.flowRate > 10;
+        const hasBasins = (state.customBasins?.length ?? 0) > 0;
+        if (liveRo > 0 && hasFlowB && hasBasins) {
+          const bonus = reclaimedWaterBonusPerDay(liveRo, simResult.finalEffluent.flowRate, state.currentLevel.tariffPerM3, simResult.finalEffluent as any);
+          if (bonus > 0.5) {
+            simResult.financials.dailyReclaimBonus = bonus;
+            simResult.financials.dailyRevenue += bonus;
+            simResult.financials.netDailyProfit += bonus;
+            const ratePct = Math.round(Math.min(0.36, liveRo * 0.15) * 100);
+            if (!simResult.overallStats.activeAlerts.some(a => a.id === 'reclaim_bonus')) {
+              simResult.overallStats.activeAlerts.push({
+                id: 'reclaim_bonus',
+                type: 'success' as const,
+                message: `Potable reuse bonus: +$${bonus.toFixed(0)}/d premium for reclaimed water (${ratePct}% × ${liveRo} RO skid${liveRo>1?'s':''} — TSS/pathogen polishing qualifies) — zero-liquid loop adding value!`,
+                timestamp: Date.now(),
+              });
+            }
+          } else {
+            simResult.financials.dailyReclaimBonus = 0;
+            if (simResult.overallStats.activeAlerts.some(a => a.id === 'reclaim_bonus')) {
+              simResult.overallStats.activeAlerts = simResult.overallStats.activeAlerts.filter(a => a.id !== 'reclaim_bonus');
+            }
+          }
+        } else {
+          simResult.financials.dailyReclaimBonus = 0;
+          if (simResult.overallStats.activeAlerts.some(a => a.id === 'reclaim_bonus')) {
+            simResult.overallStats.activeAlerts = simResult.overallStats.activeAlerts.filter(a => a.id !== 'reclaim_bonus');
           }
         }
       }

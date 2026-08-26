@@ -49,7 +49,7 @@ import {
   constructionStats,
   constructionSummaryLine,
 } from '../src/design/ConstructionNetwork';
-import { evaluateConstructionEffects, filtrationLiveSets, chemicalReagentOpexPerDay, CHEMICAL_REAGENT_COST_PER_M3_PER_PUMP, brineDisposalOpexPerDay, RO_BRINE_DISPOSAL_COST_PER_M3_HANDLED, RO_BRINE_DISPOSAL_COST_PER_M3_UNHANDLED } from '../src/design/ConstructionAdapter';
+import { evaluateConstructionEffects, filtrationLiveSets, chemicalReagentOpexPerDay, CHEMICAL_REAGENT_COST_PER_M3_PER_PUMP, brineDisposalOpexPerDay, RO_BRINE_DISPOSAL_COST_PER_M3_HANDLED, RO_BRINE_DISPOSAL_COST_PER_M3_UNHANDLED, reclaimedWaterBonusPerDay, RECLAIMED_BONUS_RATE_PER_SKID, RECLAIMED_BONUS_MAX_RATE, RECLAIMED_BONUS_TSS_THRESHOLD, RECLAIMED_BONUS_PATHOGEN_THRESHOLD } from '../src/design/ConstructionAdapter';
 import {
   estimateBaffleCAPEX,
   validateBafflePlacement,
@@ -4481,6 +4481,196 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
     assert(tert.tone==='amber' && tert.detail.includes('hauled'), 'BR11. 2 skids 1 brine -> amber still hauled: '+tert.detail);
     const badgesFull = recognizeProcess([basin] as any, [], [mkRoBr('ro1',22,5), mkRoBr('ro2',23,5), mkBrineBr('br1',24,5), mkBrineBr('br2',25,5)] as any, [cableBr(22,5,22,5), cableBr(23,5,22,5), cableBr(24,5,22,5), cableBr(25,5,22,5)] as any);
     assert(badgesFull.find(b=>b.id==='tertiary')!.tone==='cyan', 'BR11b. 2+2 fully handled -> cyan');
+  }
+}
+
+// ═════════════════════════════════════════════════════════════
+// RC — TYCOON DIVIDEND iter 43: potable reuse tariff premium
+// When RO-polished effluent is reclaimed-grade, city pays % tariff
+// premium per live skid (15%/skid, cap 36%). Gated on basins+flow+quality.
+// ═════════════════════════════════════════════════════════════
+{
+  const mkBasinRc = (x=5,y=5,w=8,h=6,id='bRc1') => ({ x, y, w, h, depthM:4, id, createdAtDay:0 });
+  const basinRc = mkBasinRc();
+  const mkRoRc = (id:string,x:number,y:number) => ({ id, typeId:'ro_skid', x, y, createdAtDay:0 });
+  const mkBrineRc = (id:string,x:number,y:number) => ({ id, typeId:'brine_tank', x, y, createdAtDay:0 });
+  const mkMixerRc = (id:string,x:number,y:number) => ({ id, typeId:'submersible_mixer', x, y, createdAtDay:0 });
+  const cableRc = (ax:number,ay:number,bx:number,by:number) => ({ id:'cr_'+ax+'_'+ay+'_'+bx+'_'+by, type:'power_cable', ax, ay, bx, by, createdAtDay:0 });
+  const cleanEff = { tss: 0.8, pathogens: 120, turbidity: 0.9, toxicIndex: 1.2 };
+  const dirtyTssEff = { tss: 5.5, pathogens: 120, turbidity: 0.9, toxicIndex: 1.2 };
+  const dirtyPathEff = { tss: 0.8, pathogens: 3000, turbidity: 0.9, toxicIndex: 1.2 };
+  const dirtyTurbEff = { tss: 0.8, pathogens: 120, turbidity: 3.5, toxicIndex: 1.2 };
+  const dirtyToxEff = { tss: 0.8, pathogens: 120, turbidity: 0.9, toxicIndex: 8 };
+
+  // RC01: pure helper guards — 0 skids / 0 flow / null effluent / NaN -> $0
+  {
+    assert(reclaimedWaterBonusPerDay(0, 3500, 0.45, cleanEff) === 0, 'RC01. 0 skids -> $0 even with clean effluent');
+    assert(reclaimedWaterBonusPerDay(1, 0, 0.45, cleanEff) === 0, 'RC01b. 1 skid at 0 flow -> $0');
+    assert(reclaimedWaterBonusPerDay(1, 5, 0.45, cleanEff) === 0, 'RC01c. flow 5 -> $0 (threshold 10)');
+    assert(reclaimedWaterBonusPerDay(1, 3500, 0.45, null as any) === 0, 'RC01d. null effluent -> $0');
+    assert(reclaimedWaterBonusPerDay(1, 3500, 0, cleanEff) === 0, 'RC01e. 0 tariff -> $0');
+    assert(reclaimedWaterBonusPerDay(NaN, 3500, 0.45, cleanEff) === 0, 'RC01f. NaN skids -> $0');
+  }
+  // RC02: pure helper — 1 skid at L1 3500 clean => 15% premium => $236.25
+  {
+    const b1 = reclaimedWaterBonusPerDay(1, 3500, 0.45, cleanEff);
+    assert(Math.abs(b1 - 3500*0.45*0.15) < 0.01, 'RC02. 1 skid L1 => $'+b1.toFixed(2)+' ~ '+(3500*0.45*0.15).toFixed(2));
+    assert(Math.abs(b1 - 236.25) < 0.5, 'RC02b. 1 skid ~236/d got '+b1.toFixed(1));
+    const b2 = reclaimedWaterBonusPerDay(2, 3500, 0.45, cleanEff);
+    assert(Math.abs(b2 - 3500*0.45*0.30) < 0.01, 'RC02c. 2 skids 30% => $'+b2.toFixed(1)+' ~ '+(3500*0.45*0.30).toFixed(1));
+    assert(b2 > b1, 'RC02d. 2 skids pays more than 1 skid ('+b2.toFixed(1)+' > '+b1.toFixed(1)+')');
+  }
+  // RC03: cap at 36% — 3 skids same as 2.4 but not >36%
+  {
+    const b3 = reclaimedWaterBonusPerDay(3, 3500, 0.45, cleanEff);
+    const expectedCap = 3500*0.45*RECLAIMED_BONUS_MAX_RATE;
+    assert(Math.abs(b3 - expectedCap) < 0.01, 'RC03. 3 skids capped at 36% => $'+b3.toFixed(1)+' ~ '+expectedCap.toFixed(1));
+    assert(b3 === reclaimedWaterBonusPerDay(5, 3500, 0.45, cleanEff), 'RC03b. 5 skids same cap as 3 skids');
+    assert(Math.abs(RECLAIMED_BONUS_MAX_RATE - 0.36) < 0.001, 'RC03c. max rate is 0.36');
+    assert(Math.abs(RECLAIMED_BONUS_RATE_PER_SKID - 0.15) < 0.001, 'RC03d. per-skid rate 0.15');
+  }
+  // RC04: quality gating — each exceeding threshold blocks bonus
+  {
+    assert(reclaimedWaterBonusPerDay(1, 3500, 0.45, dirtyTssEff) === 0, 'RC04. dirty TSS 5.5 >2.0 -> $0');
+    assert(reclaimedWaterBonusPerDay(1, 3500, 0.45, dirtyPathEff) === 0, 'RC04b. dirty pathogens 3000 >2000 -> $0');
+    assert(reclaimedWaterBonusPerDay(1, 3500, 0.45, dirtyTurbEff) === 0, 'RC04c. dirty turbidity 3.5 >2.0 -> $0');
+    assert(reclaimedWaterBonusPerDay(1, 3500, 0.45, dirtyToxEff) === 0, 'RC04d. dirty toxic 8 >5 -> $0');
+    const atThreshold = { tss: RECLAIMED_BONUS_TSS_THRESHOLD, pathogens: RECLAIMED_BONUS_PATHOGEN_THRESHOLD, turbidity: 2.0, toxicIndex: 5 };
+    const bAt = reclaimedWaterBonusPerDay(1, 3500, 0.45, atThreshold);
+    assert(bAt > 0, 'RC04e. at exact threshold still qualifies: $'+bAt.toFixed(1));
+  }
+  // RC05: flow/tariff scaling — L4 L5 large flows scale linearly
+  {
+    const bL5_1 = reclaimedWaterBonusPerDay(1, 18000, 2.50, cleanEff);
+    assert(Math.abs(bL5_1 - 18000*2.50*0.15) < 0.5, 'RC05. L5 18k 1 skid => $'+bL5_1.toFixed(0)+' ~ '+(18000*2.50*0.15).toFixed(0));
+    assert(Math.abs(bL5_1 - 6750) < 1, 'RC05b. L5 1 skid ~6750/d got '+bL5_1.toFixed(0));
+    const bL5_2 = reclaimedWaterBonusPerDay(2, 18000, 2.50, cleanEff);
+    assert(Math.abs(bL5_2 - 13500) < 1, 'RC05c. L5 2 skids ~13500/d capped? got '+bL5_2.toFixed(0)+' expected 13500 but cap 36% is 16200? wait 2*15=30% => 13500');
+    const bL5_3 = reclaimedWaterBonusPerDay(3, 18000, 2.50, cleanEff);
+    assert(Math.abs(bL5_3 - 16200) < 1, 'RC05d. L5 3 skids capped at 36% => 16200 got '+bL5_3.toFixed(0));
+  }
+  // RC06: evaluateConstructionEffects summary + basin gate
+  {
+    const mixer = mkMixerRc('mxRc',6,6);
+    const ro1 = mkRoRc('roRc1',22,5);
+    const ceNoBonus = evaluateConstructionEffects([basinRc], [mixer, ro1] as any, [cableRc(6,6,22,5), cableRc(22,5,22,5)] as any, [] as any, 3500, 0.45, null as any);
+    assert(ceNoBonus.reuseBonusPerDay===0 && ceNoBonus.reuseBonusRate===0, 'RC06. no effluent -> $0 bonus (got '+ceNoBonus.reuseBonusPerDay+')');
+    assert(!ceNoBonus.summary.includes('reclaim'), 'RC06b. summary omits reclaim when effluent null: '+ceNoBonus.summary);
+    const effClean = { tss:1.0, pathogens:200, turbidity:1.0, toxicIndex:1 };
+    const ceBonus = evaluateConstructionEffects([basinRc], [mixer, ro1] as any, [cableRc(6,6,22,5), cableRc(22,5,22,5)] as any, [] as any, 3500, 0.45, effClean as any);
+    assert(ceBonus.reuseBonusPerDay > 0, 'RC06c. clean effluent -> bonus $'+ceBonus.reuseBonusPerDay.toFixed(1));
+    assert(ceBonus.summary.includes('reclaim'), 'RC06d. summary includes reclaim when bonus live: '+ceBonus.summary);
+    assert(Math.abs(ceBonus.reuseBonusRate - 0.15) < 0.001, 'RC06e. 1 skid rate 0.15 got '+ceBonus.reuseBonusRate);
+    const ceNoBasin = evaluateConstructionEffects([], [ro1] as any, [cableRc(22,5,22,5)] as any, [] as any, 3500, 0.45, effClean as any);
+    assert(ceNoBasin.reuseBonusPerDay===0, 'RC06f. no basin -> $0 bonus even with clean+powered RO (got '+ceNoBasin.reuseBonusPerDay+')');
+    assert(!ceNoBasin.summary.includes('reclaim'), 'RC06g. no-basin summary omits reclaim');
+  }
+  // RC07: evaluate with dirty effluent still $0 even with powered RO
+  {
+    const mixer = mkMixerRc('mxRc2',6,6);
+    const ro1 = mkRoRc('roRc2',22,5);
+    const ceDirty = evaluateConstructionEffects([basinRc], [mixer, ro1] as any, [cableRc(6,6,22,5), cableRc(22,5,22,5)] as any, [] as any, 3500, 0.45, dirtyTssEff as any);
+    assert(ceDirty.reuseBonusPerDay===0, 'RC07. dirty TSS -> $0 bonus even powered (got '+ceDirty.reuseBonusPerDay+')');
+  }
+  // RC08: two skids summary escalates to 30%, three to capped 36%
+  {
+    const mixer = mkMixerRc('mxRc3',6,6);
+    const roA = mkRoRc('roA',22,5);
+    const roB = mkRoRc('roB',23,5);
+    const roC = mkRoRc('roC',24,5);
+    const cables2 = [cableRc(6,6,22,5), cableRc(22,5,22,5), cableRc(23,5,22,5)];
+    const cables3 = [...cables2, cableRc(24,5,22,5)];
+    const effClean = { tss:0.5, pathogens:100, turbidity:0.5, toxicIndex:1 };
+    const ce2 = evaluateConstructionEffects([basinRc], [mixer, roA, roB] as any, cables2 as any, [] as any, 3500, 0.45, effClean as any);
+    assert(ce2.reuseBonusPerDay > 400 && ce2.reuseBonusPerDay < 550, 'RC08. 2 skids bonus ~472 got '+ce2.reuseBonusPerDay.toFixed(1));
+    assert(ce2.summary.includes('30%'), 'RC08b. 2 skids summary shows 30% (got '+ce2.summary+')');
+    const ce3 = evaluateConstructionEffects([basinRc], [mixer, roA, roB, roC] as any, cables3 as any, [] as any, 3500, 0.45, effClean as any);
+    assert(Math.abs(ce3.reuseBonusRate - 0.36) < 0.01, 'RC08c. 3 skids capped 36% (got '+ce3.reuseBonusRate.toFixed(2)+')');
+    assert(ce3.summary.includes('36%'), 'RC08d. 3 skids summary shows 36% (got '+ce3.summary+')');
+    assert(ce3.reuseBonusPerDay > ce2.reuseBonusPerDay, 'RC08e. 3 skids pays more than 2 ('+ce3.reuseBonusPerDay.toFixed(1)+' > '+ce2.reuseBonusPerDay.toFixed(1)+')');
+  }
+  // RC09: tick integration — potable plant earns bonus, raises revenue & profit, success alert lives; dirty plant earns 0
+  {
+    // Build a RO-polished plant with 3 skids (so even dirty upstream qualifies for threshold)
+    let gs:any = GameManager.createInitialState(0, true); // sandbox, tariff 0.45, inflam 230 TSS/500k path
+    let rr = GameManager.placeCustomBasin(gs, { x:5,y:5,w:8,h:6 }); gs=rr.newState;
+    rr = GameManager.placeProcessEquipment(gs, 'submersible_mixer', 6,6); gs=rr.newState;
+    // 3 RO skids on open ground clustered near each other, each powered
+    rr = GameManager.placeProcessEquipment(gs, 'ro_skid', 22,5); gs=rr.newState;
+    rr = GameManager.placeProcessEquipment(gs, 'ro_skid', 23,5); gs=rr.newState;
+    rr = GameManager.placeProcessEquipment(gs, 'ro_skid', 24,5); gs=rr.newState;
+    gs.utilityConnections.push({ id:'cr_mxRc', type:'power_cable', ax:6, ay:6, bx:22, by:5, createdAtDay:0 } as any);
+    gs.utilityConnections.push({ id:'cr_ro1', type:'power_cable', ax:22, ay:5, bx:22, by:5, createdAtDay:0 } as any);
+    gs.utilityConnections.push({ id:'cr_ro2', type:'power_cable', ax:23, ay:5, bx:23, by:5, createdAtDay:0 } as any);
+    gs.utilityConnections.push({ id:'cr_ro3', type:'power_cable', ax:24, ay:5, bx:24, by:5, createdAtDay:0 } as any);
+    const scr = { instanceId:'scrRc', typeId:'bar_screen', gridX:10, gridY:10, rotation:0, volume:200, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:0, lastOpexActual:0 } as any;
+    gs.units.push(scr);
+    gs.pipes.push(
+      { id:'pRc1', fromUnitId:'inlet_0', fromPortId:'outlet', toUnitId:'scrRc', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'} as any,
+      { id:'pRc2', fromUnitId:'scrRc', fromPortId:'outlet', toUnitId:'outfall_0', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'} as any
+    );
+    for(let i=0;i<8;i++) gs = GameManager.tick(gs, 0.5);
+    // After 3 RO skids, effluent should be reclaimed-grade (check)
+    assert(gs.finalEffluent.flowRate > 10, 'RC09a. flow established '+gs.finalEffluent.flowRate.toFixed(0));
+    assert(gs.finalEffluent.tss <= RECLAIMED_BONUS_TSS_THRESHOLD, 'RC09b. 3-RO polished TSS '+gs.finalEffluent.tss.toFixed(2)+' <= '+RECLAIMED_BONUS_TSS_THRESHOLD+' threshold');
+    assert(gs.finalEffluent.pathogens <= RECLAIMED_BONUS_PATHOGEN_THRESHOLD, 'RC09c. 3-RO pathogens '+gs.finalEffluent.pathogens.toFixed(0)+' <= '+RECLAIMED_BONUS_PATHOGEN_THRESHOLD);
+    assert(gs.finalEffluent.turbidity <= 2.0, 'RC09d. turbidity '+gs.finalEffluent.turbidity.toFixed(2)+' <=2.0');
+    assert((gs.financials.dailyReclaimBonus ?? 0) > 100, 'RC09e. reclaim bonus live $'+(gs.financials.dailyReclaimBonus??0).toFixed(1)+' >100');
+    const flow = gs.finalEffluent.flowRate;
+    const expectedBonus = reclaimedWaterBonusPerDay(3, flow, gs.currentLevel.tariffPerM3, gs.finalEffluent);
+    assert(Math.abs((gs.financials.dailyReclaimBonus ?? 0) - expectedBonus) < 1, 'RC09f. bonus matches helper $'+(gs.financials.dailyReclaimBonus??0).toFixed(1)+' ~ '+expectedBonus.toFixed(1));
+    assert(gs.overallStats.activeAlerts.some((a:any)=>a.id==='reclaim_bonus'), 'RC09g. reclaim success alert present');
+    assert(gs.financials.dailyRevenue > 0 && gs.financials.dailyReclaimBonus! < gs.financials.dailyRevenue, 'RC09h. bonus is part of revenue (revenue '+gs.financials.dailyRevenue.toFixed(0)+' bonus '+gs.financials.dailyReclaimBonus!.toFixed(0)+')');
+    // Baseline without RO should have 0 bonus and lower profit (even after brine cost, RO bonus net positive)
+    let gBase:any = GameManager.createInitialState(0, true);
+    rr = GameManager.placeCustomBasin(gBase, { x:5,y:5,w:8,h:6 }); gBase=rr.newState;
+    rr = GameManager.placeProcessEquipment(gBase, 'submersible_mixer', 6,6); gBase=rr.newState;
+    gBase.utilityConnections.push({ id:'cr_mxB', type:'power_cable', ax:6, ay:6, bx:22, by:5, createdAtDay:0 } as any);
+    gBase.units.push({ ...scr, instanceId:'scrRcB' });
+    gBase.pipes.push(
+      { id:'pRc1B', fromUnitId:'inlet_0', fromPortId:'outlet', toUnitId:'scrRcB', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'} as any,
+      { id:'pRc2B', fromUnitId:'scrRcB', fromPortId:'outlet', toUnitId:'outfall_0', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'} as any
+    );
+    for(let i=0;i<8;i++) gBase = GameManager.tick(gBase, 0.5);
+    assert((gBase.financials.dailyReclaimBonus ?? 0) === 0, 'RC09i. baseline without RO -> $0 bonus (got '+(gBase.financials.dailyReclaimBonus??0)+')');
+    assert(!gBase.overallStats.activeAlerts.some((a:any)=>a.id==='reclaim_bonus'), 'RC09j. no reclaim alert on baseline');
+    // 3-RO profit should beat baseline despite power+brine costs (bonus offsets)
+    assert(gs.financials.netDailyProfit > gBase.financials.netDailyProfit, 'RC09k. 3-RO profit '+gs.financials.netDailyProfit.toFixed(0)+' > baseline '+gBase.financials.netDailyProfit.toFixed(0)+' (bonus offsets costs)');
+  }
+  // RC10: no-basin or no-flow inside tick -> $0 bonus even with RO
+  {
+    let gs:any = GameManager.createInitialState(0, true);
+    // No basin but powered RO skid + pipes -> flow exists but no basin -> gated 0
+    let rr = GameManager.placeProcessEquipment(gs, 'ro_skid', 22,5); gs=rr.newState;
+    gs.utilityConnections.push({ id:'cr_ro_nb', type:'power_cable', ax:22, ay:5, bx:22, by:5, createdAtDay:0 } as any);
+    const scr = { instanceId:'scrNb', typeId:'bar_screen', gridX:10, gridY:10, rotation:0, volume:200, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:0, lastOpexActual:0 } as any;
+    gs.units.push(scr);
+    gs.pipes.push(
+      { id:'pNb1', fromUnitId:'inlet_0', fromPortId:'outlet', toUnitId:'scrNb', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'} as any,
+      { id:'pNb2', fromUnitId:'scrNb', fromPortId:'outlet', toUnitId:'outfall_0', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'} as any
+    );
+    for(let i=0;i<5;i++) gs = GameManager.tick(gs, 0.5);
+    assert((gs.financials.dailyReclaimBonus ?? 0) === 0, 'RC10. no basin -> $0 bonus even with RO flow (got '+(gs.financials.dailyReclaimBonus??0)+')');
+    assert(!gs.overallStats.activeAlerts.some((a:any)=>a.id==='reclaim_bonus'), 'RC10b. no reclaim alert when no basin');
+    // Now with basin but no pipes (no flow) -> also $0
+    let gs2:any = GameManager.createInitialState(0, true);
+    rr = GameManager.placeCustomBasin(gs2, { x:5,y:5,w:4,h:4 }); gs2=rr.newState;
+    rr = GameManager.placeProcessEquipment(gs2, 'submersible_mixer', 6,6); gs2=rr.newState;
+    rr = GameManager.placeProcessEquipment(gs2, 'ro_skid', 22,5); gs2=rr.newState;
+    rr = GameManager.placeUtilityConnection(gs2, 'power_cable', 6,6,22,5); gs2=rr.newState;
+    gs2 = GameManager.tick(gs2, 0.5);
+    assert((gs2.financials.dailyReclaimBonus ?? 0) === 0, 'RC10c. no flow -> $0 bonus (got '+(gs2.financials.dailyReclaimBonus??0)+')');
+    assert(!gs2.overallStats.activeAlerts.some((a:any)=>a.id==='reclaim_bonus'), 'RC10d. no alert with no flow');
+  }
+  // RC11: one skid with marginal quality -> not enough polish to qualify (quality gate)
+  {
+    const basin = mkBasinRc();
+    const mixer = mkMixerRc('mxQ',6,6);
+    const ro1 = mkRoRc('roQ',22,5);
+    const cables = [cableRc(6,6,22,5), cableRc(22,5,22,5)];
+    const effDirty = { tss: 5.0, pathogens: 3000, turbidity: 1.0, toxicIndex: 1 };
+    const ceDirty = evaluateConstructionEffects([basin], [mixer, ro1] as any, cables as any, [] as any, 3500, 0.45, effDirty as any);
+    assert(ceDirty.reuseBonusPerDay===0, 'RC11. 1 skid with dirty effluent still $0 (got '+ceDirty.reuseBonusPerDay+')');
   }
 }
 

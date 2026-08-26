@@ -1,7 +1,7 @@
 # AUTOPILOT STATE — Aquatycoon
 
 STATUS: OK
-Last run: 2026-08-27 (iter 42 — RO SLICE 3 — brine disposal economics (handled $0.005/m³ vs hauled $0.022/m³ premium; flow-scaled 1-tank-per-skid handling; summary brine chip + Tertiary RO haulage amber vs zero-liquid cyan badge + haulage warning alert; 11 BR-tests); gates: build ✅ tsc ✅ sim ALL PASS ✅ ui 70/70+62/62 ✅ eng 368/368 ✅)
+Last run: 2026-08-28 (iter 43 — TYCOON DIVIDEND — reclaimed water tariff premium (15%/skid cap 36% on potable reuse TSS≤2/path≤2000/turb≤2/tox≤5; flow×tariff scaling L1 $236/d → L5 $6750/d; $brine cost then +$reclaim bonus stacked; dailyReclaimBonus field + revenue/profit + success alert; HeaderHUD cyan bonus pill; 13 RC-tests); gates: build ✅ tsc ✅ sim ALL PASS ✅ ui 70/70+62/62 ✅ eng 368/368 ✅)
 
 Gate policy: `npm run build` + `npx tsc --noEmit` must be clean; suites:
 `npm test` (sim), `npm run test:ui` (= static ui-tests + ui-interaction-tests),

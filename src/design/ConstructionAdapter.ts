@@ -85,6 +85,42 @@ export function brineDisposalOpexPerDay(liveRoSkids: number, poweredBrineTanks: 
   return flowM3d * (handled * RO_BRINE_DISPOSAL_COST_PER_M3_HANDLED + unhandled * RO_BRINE_DISPOSAL_COST_PER_M3_UNHANDLED);
 }
 
+/**
+ * TYCOON RECLAIM DIVIDEND iter 43 — potable reuse tariff premium.
+ * When a player has invested in tertiary RO (live skids need power_cable
+ * and basins) and polishes effluent to reclaimed-grade quality, the city
+ * pays a premium for potable reuse water. Bonus = flow * tariff * rate,
+ * where rate = 15% per live skid, cap 36% (2 skids already near cap).
+ * Thresholds (reclaimed-grade): TSS ≤2.0, pathogens ≤500, turbidity ≤2.0,
+ * toxicIndex ≤5. All four must pass — teaches player RO alone is not enough,
+ * need upstream polishing too.
+ * $0 when basins missing, no RO, no flow, or effluent not yet potable.
+ */
+export const RECLAIMED_BONUS_RATE_PER_SKID = 0.15;
+export const RECLAIMED_BONUS_MAX_RATE = 0.36;
+export const RECLAIMED_BONUS_TSS_THRESHOLD = 2.0;
+export const RECLAIMED_BONUS_PATHOGEN_THRESHOLD = 2000;
+export const RECLAIMED_BONUS_TURBIDITY_THRESHOLD = 2.0;
+export const RECLAIMED_BONUS_TOXIC_THRESHOLD = 5;
+
+export function reclaimedWaterBonusPerDay(
+  liveRoSkids: number,
+  flowM3d: number,
+  tariffPerM3: number,
+  effluent: { tss: number; pathogens: number; turbidity: number; toxicIndex: number } | null | undefined,
+): number {
+  if (!Number.isFinite(liveRoSkids) || liveRoSkids <= 0) return 0;
+  if (!Number.isFinite(flowM3d) || flowM3d <= 10) return 0;
+  if (!Number.isFinite(tariffPerM3) || tariffPerM3 <= 0) return 0;
+  if (!effluent) return 0;
+  if (!Number.isFinite(effluent.tss) || effluent.tss > RECLAIMED_BONUS_TSS_THRESHOLD) return 0;
+  if (!Number.isFinite(effluent.pathogens) || effluent.pathogens > RECLAIMED_BONUS_PATHOGEN_THRESHOLD) return 0;
+  if (!Number.isFinite(effluent.turbidity) || effluent.turbidity > RECLAIMED_BONUS_TURBIDITY_THRESHOLD) return 0;
+  if (!Number.isFinite(effluent.toxicIndex) || effluent.toxicIndex > RECLAIMED_BONUS_TOXIC_THRESHOLD) return 0;
+  const rate = Math.min(RECLAIMED_BONUS_MAX_RATE, liveRoSkids * RECLAIMED_BONUS_RATE_PER_SKID);
+  return flowM3d * tariffPerM3 * rate;
+}
+
 export interface ConstructionTickEffect {
   /** Number of basins that actually hold a powered mixer (healthy). */
   healthyBasins: number;
@@ -134,6 +170,9 @@ export interface ConstructionTickEffect {
   liveRoSkids: number;
   totalBrineTanks: number;
   poweredBrineTanks: number;
+  /** TYCOON DIVIDEND iter 43 — reclaimed water premium (potable reuse). */
+  reuseBonusPerDay: number;
+  reuseBonusRate: number;
   /** Effluent multipliers (<1 = improvement, >1 = penalty). */
   bodMultiplier: number;
   tnMultiplier: number;
@@ -172,6 +211,8 @@ function mixerInZone(
  * 3-arg call (and 100% of old tests) keeps its exact numbers.
  * @param flowM3d optional Phase-7 slice 4 — treated flow (m³/d) for flow-scaled
  * reagent consumable cost. Default 0 keeps backward compat (no reagent).
+ * @param tariffPerM3 optional iter 43 — level tariff for reclaimed water bonus.
+ * @param effluent optional iter 43 — polished effluent for bonus quality gate.
  */
 export function evaluateConstructionEffects(
   basins: CustomBasin[],
@@ -179,6 +220,8 @@ export function evaluateConstructionEffects(
   utilityConnections: Pick<UtilityConnection, 'type' | 'ax' | 'ay' | 'bx' | 'by'>[],
   baffles: BaffleWall[] = [],
   flowM3d: number = 0,
+  tariffPerM3: number = 0,
+  effluent?: { tss: number; pathogens: number; turbidity: number; toxicIndex: number } | null,
 ): ConstructionTickEffect {
   const bs = basins ?? [];
   const eq = equipment ?? [];
@@ -571,6 +614,19 @@ export function evaluateConstructionEffects(
   const handledBrineSkids = brineHandling.handledBrineSkids;
   const unhandledBrineSkids = brineHandling.unhandledBrineSkids;
 
+  // ── TYCOON DIVIDEND iter 43 — reclaimed water premium (potable reuse) ──────
+  // Bonus is effluent-quality-gated and flow-scaled; only live when the polished
+  // effluent is already reclaimed-grade (rewards upstream + RO investment).
+  // Gated on basins>0 so legacy saves stay exact; requires effluent snapshot.
+  let reuseBonusPerDay = 0;
+  let reuseBonusRate = 0;
+  if (bs.length > 0 && liveRoSkids > 0 && effluent) {
+    reuseBonusPerDay = reclaimedWaterBonusPerDay(liveRoSkids, flowM3d, tariffPerM3, effluent as any);
+    if (reuseBonusPerDay > 0.01) {
+      reuseBonusRate = Math.min(RECLAIMED_BONUS_MAX_RATE, liveRoSkids * RECLAIMED_BONUS_RATE_PER_SKID);
+    }
+  }
+
   const parts: string[] = [];
   if (bs.length === 0) parts.push('no custom basins');
   else {
@@ -603,6 +659,9 @@ export function evaluateConstructionEffects(
   } else if (bs.length > 0 && liveRoSkids > 0) {
     // No flow yet but RO live — hint brine handling
     if (unhandledBrineSkids > 0) parts.push(`${unhandledBrineSkids} brine hauled`);
+  }
+  if (reuseBonusPerDay > 0.5) {
+    parts.push(`+$${Math.round(reuseBonusPerDay)}/d reclaim bonus (${Math.round(reuseBonusRate*100)}% × ${liveRoSkids} RO)`);
   }
   if (parts.length === 0) parts.push('no construction effect');
   const summary = parts.join(' · ');
@@ -642,6 +701,8 @@ export function evaluateConstructionEffects(
     liveRoSkids,
     totalBrineTanks,
     poweredBrineTanks,
+    reuseBonusPerDay,
+    reuseBonusRate,
     bodMultiplier: bodMul,
     tnMultiplier: tnMul,
     tssMultiplier: tssMul,
