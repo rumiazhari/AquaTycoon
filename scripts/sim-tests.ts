@@ -1621,5 +1621,103 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
     'C1c. not wider than the widest previous distance (6.5 — no over-clearing)');
 }
 
+// ── CONSTRUCTION-BUILDER Phase 1: player-drawn basin domain layer ───────────────
+{
+  const mkState = () => GameManager.createInitialState(0, true); // sandbox → no cash gate
+
+  // 1. Valid draw places a basin with correct geometry & depth.
+  {
+    const s0 = mkState();
+    const r = GameManager.placeCustomBasin(s0, { x: 3, y: 4, w: 6, h: 4 });
+    assert(r.success, 'B1. a valid 6x4 basin draws successfully');
+    assert(r.newState.customBasins!.length === 1, 'B2. exactly one basin now exists');
+    const b = r.newState.customBasins![0];
+    assert(b.w === 6 && b.h === 4 && b.x === 3 && b.y === 4, 'B3. footprint stored verbatim (x,y,w,h)');
+    assert(Math.abs(b.depthM - 4.0) < 1e-6, 'B4. default depth 4.0 m applied');
+    assert(typeof b.id === 'string' && b.id.length > 0, 'B5. basin has a unique id');
+  }
+
+  // 2. Cost derives from volume + wall area, charged in campaign mode.
+  {
+    const sSand = GameManager.createInitialState(0, true);
+    const rSand = GameManager.placeCustomBasin(sSand, { x: 1, y: 1, w: 4, h: 4 });
+    assert((rSand.charged ?? 0) === 0, 'B6. sandbox build costs $0 (no cash gate)');
+
+    const sCamp = GameManager.createInitialState(0, false);
+    sCamp.financials.cash = 10_000_000; // ensure funds so we test the charge mechanic, not the budget
+    const rCamp = GameManager.placeCustomBasin(sCamp, { x: 1, y: 1, w: 4, h: 4 });
+    // 4x4 tiles = 24m x 24m x 4m = 2304 m³ * $165 + 2*(24+24)*4 = 384 m² * $55
+    const expected = Math.round(2304 * 165 + 384 * 55);
+    assert(rCamp.success && rCamp.charged === expected,
+      `B7. campaign build charges volume+wall CAPEX ($${expected})`);
+    assert(rCamp.newState.financials.cash === sCamp.financials.cash - expected,
+      'B8. cash reduced by the exact CAPEX');
+  }
+
+  // 3. Overlap detection — a basin cannot be drawn over an existing basin.
+  {
+    const s0 = mkState();
+    const r1 = GameManager.placeCustomBasin(s0, { x: 2, y: 2, w: 5, h: 5 });
+    assert(r1.success, 'B9. first basin placed');
+    const r2 = GameManager.placeCustomBasin(r1.newState, { x: 4, y: 4, w: 3, h: 3 });
+    assert(!r2.success, 'B10. overlapping basin is rejected');
+    assert(/overlap/i.test(r2.reason ?? ''), 'B11. rejection reason mentions overlap');
+    // Adjacent (non-overlapping) basin is allowed.
+    const r3 = GameManager.placeCustomBasin(r1.newState, { x: 2, y: 7, w: 3, h: 3 });
+    assert(r3.success, 'B12. adjacent (non-overlapping) basin is allowed');
+  }
+
+  // 4. Legacy unit lots block basin placement (symmetry with unit-blocking).
+  {
+    const s0 = mkState();
+    const unit = {
+      instanceId: 'u1', typeId: 'activated_sludge_cas' as const,
+      gridX: 10, gridY: 10, rotation: 0 as const,
+      customParams: {} as Record<string, number>,
+    };
+    s0.units.push(unit as any);
+    const r = GameManager.placeCustomBasin(s0, { x: 11, y: 11, w: 2, h: 2 });
+    assert(!r.success, 'B13. basin cannot be drawn over a legacy unit lot');
+  }
+
+  // 5. Boundaries: basin must stay within the map.
+  {
+    const s0 = mkState();
+    const [mw, mh] = s0.currentLevel.mapSize;
+    const r = GameManager.placeCustomBasin(s0, { x: mw - 2, y: 0, w: 6, h: 2 });
+    assert(!r.success && /boundary|out of/i.test(r.reason ?? ''), `B14. out-of-bounds basin rejected (map ${mw}x${mh})`);
+  }
+
+  // 6. Minimum size enforced.
+  {
+    const s0 = mkState();
+    const r = GameManager.placeCustomBasin(s0, { x: 1, y: 1, w: 1, h: 1 });
+    assert(!r.success, 'B15. sub-minimum (1x1) basin rejected');
+  }
+
+  // 7. Demolition removes the basin and refunds salvage (50%) in campaign.
+  {
+    const sCamp = GameManager.createInitialState(0, false);
+    sCamp.financials.cash = 10_000_000; // funds available for the build
+    const built = GameManager.placeCustomBasin(sCamp, { x: 1, y: 1, w: 4, h: 4 });
+    assert(built.success, 'B16a. campaign basin built for demolish test');
+    const id = built.newState.customBasins![0].id;
+    const demo = GameManager.demolishCustomBasin(built.newState, id);
+    assert(demo.success && demo.newState.customBasins!.length === 0,
+      'B16. demolish removes the basin');
+    const full = Math.round(2304 * 165 + 384 * 55);
+    const salvage = Math.round(full * 0.5);
+    assert(demo.refunded === salvage, `B17. campaign demolish refunds 50% salvage ($${salvage})`);
+  }
+
+  // 8. tileInCustomBasin helper — click hit-testing sanity.
+  {
+    const s0 = mkState();
+    const built = GameManager.placeCustomBasin(s0, { x: 5, y: 5, w: 3, h: 3 });
+    assert(GameManager.tileInCustomBasin(built.newState, 6, 6), 'B18. tile inside basin detected');
+    assert(!GameManager.tileInCustomBasin(built.newState, 0, 0), 'B19. tile outside basin not detected');
+  }
+}
+
 console.log(failures === 0 ? '\nALL TESTS PASSED' : `\n${failures} TEST(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);

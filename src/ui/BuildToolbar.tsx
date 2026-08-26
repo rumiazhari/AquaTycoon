@@ -158,6 +158,23 @@ export const BuildToolbar: React.FC<BuildToolbarProps> = ({
               <Trash2 size={14} />
               <span>Demolish</span>
             </button>
+
+            <button
+              onClick={() => {
+                SoundManager.playClick();
+                onSetToolMode('draw_basin');
+                onSelectUnitTypeId(null);
+              }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+                toolMode === 'draw_basin'
+                  ? 'bg-amber-500 text-slate-950 shadow-md font-bold'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+              }`}
+              title="STRUCTURES: Draw a custom basin directly on the site. Click first corner, then opposite corner. (Esc cancels.)"
+            >
+              <Droplets size={14} />
+              <span>Basin</span>
+            </button>
           </div>
 
           {/* Category Tabs — separate shrinking region, cannot cover mode buttons.

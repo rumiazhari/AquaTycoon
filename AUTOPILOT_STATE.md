@@ -1,11 +1,49 @@
 # AUTOPILOT STATE — Aquatycoon
 
 STATUS: OK
-Last run: 2026-08-27 (cron, iter 24 — MBR migration slice 4: CIP cleaning outage window + membrane end-of-life replacement economics; gates: build ✅ tsc ✅ sim ✅ ui 70+62 ✅ eng 368/368 ✅)
+Last run: 2026-08-27 (USER BUILD — Phase 1 CONSTRUCTION-BUILDER foundation: direct-manipulation basin drawing; gates: build ✅ tsc ✅ sim 19 basin tests ✅ ui 62/62 ✅ eng 368/368 ✅)
 
 Gate policy: `npm run build` + `npx tsc --noEmit` must be clean; suites:
 `npm test` (sim), `npm run test:ui` (= static ui-tests + ui-interaction-tests),
 `npm run test:eng`.
+
+## ⭐ MISSION DIRECTIVE v3 (user, 2026-08-27) — SUPREME PRIORITY — SUPERSEDES v2
+"BUILD THE PROCESS, DO NOT SELECT THE PROCESS." Full prompt parked in user message;
+authoritative summary:
+
+The player must PHYSICALLY BUILD the plant in the 3D world — basins, walls,
+baffles, pumps, diffusers, mixers, membranes, media, blowers, pipes, valves,
+electrical panels, cables, sensors, recycle loops — and the treatment process
+emerges from those components. Technology = EMERGENT CONFIGURATION, not a dropdown.
+Retire UnitDesigner as the PRIMARY design UX (keep it as Inspect/Diagnostics only).
+70–80% of effort goes to direct manipulation / 3D construction / placement /
+snapping / equipment visuals / connection tools / editing / demolition / emergent
+process visualization. Do NOT disappear into backend equation work.
+
+IMPLEMENTATION PHASES (build top-down, ONE coherent slice per iteration):
+- PHASE 1 ✅ DONE (this run): ConstructionToolbar STRUCTURES→Basin; click-drag
+  rectangular basin drawing; live ghost + dims + cost preview; valid/invalid
+  coloring; basin 3D render (floor+walls+water); selection + demolition +
+  volume-based cost; legacy units block basins & vice-versa. Tests: 19 basin
+  domain tests in sim-tests.ts.
+- PHASE 2: physical equipment placement (diffuser, mixer, pump, blower) with
+  mounting rules + 3D models + select/delete.
+- PHASE 3: utility connections (water pipe, air pipe, power cable) w/ ports.
+- PHASE 4: make components functional (volume→sim, blower+diffuser→aeration,
+  mixer state, pump flow, power on/off) via adapter to existing simulation.
+- PHASE 5: zones & baffles (compartments, zone-level equipment membership).
+- PHASE 6: membranes / media (MBR-like custom train, no predefined MBR unit).
+- PHASE 7: emergent process recognition (descriptive badges, physics follows
+  config NOT label).
+Architecture: clean component model (CustomBasin/ProcessEquipment/
+UtilityConnection) in src/design/*; adapter layer feeds existing sim; legacy
+units stay as QUICK-BUILD until custom builder is primary, then become
+PREFABS (editable placed pieces), never immutable magic units.
+
+## ⭐ MISSION DIRECTIVE v2 (user, 2026-08-26 evening) — now SUBORDINATE to v3
+User's long-term direction. v3's "fully designable units" maps onto v2-A; the
+construction-builder is the NEW primary expression of it. Continue v2-B (story/
+art/stages) and v2-C (launcher) alongside.
 
 ## ⭐ MISSION DIRECTIVE (user, 2026-08-26)
 `MISSION_REDESIGN.md` (repo root) is the authoritative roadmap: full

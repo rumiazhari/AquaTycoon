@@ -16,6 +16,12 @@ import { blueprintFromTemplate, CommissioningState } from '../design/UnitBluepri
 import { estimatePipeCAPEX, estimateSeedSludgeCAPEX } from '../design/CostEstimator';
 import { FRESH_MBR_FOULING, membraneCipCostUsd, performMembraneClean, membraneReplacementCostUsd } from '../sim/processes/MBR';
 import { pathLengthM } from '../sim/hydraulics/PipeHydraulics';
+import {
+  CustomBasin,
+  BASIN_DEFAULT_DEPTH_M,
+  estimateBasinCAPEX,
+  validateBasinPlacement,
+} from '../design/CustomBasin';
 
 export interface NextStepSuggestion {
   unitTypeId: UnitTypeId;
@@ -55,6 +61,12 @@ export interface GameState {
    * closed): template trains are verified peak-ready — see src/design/PeakFlow.ts.
    */
   diurnalInfluentStrength: number;
+  /**
+   * CONSTRUCTION-BUILDER mission (Phase 1): player-drawn rectangular basins.
+   * These coexist with legacy predefined units; both systems reject overlap
+   * against each other. Equipment/ports arrive in later builder phases.
+   */
+  customBasins: CustomBasin[];
 }
 
 export class GameManager {
@@ -170,7 +182,8 @@ export class GameManager {
       complianceStreakDays: 0,
       tutorialActive: false,
       tutorialStep: 0,
-      diurnalInfluentStrength: DIURNAL_DEFAULT_STRENGTH
+      diurnalInfluentStrength: DIURNAL_DEFAULT_STRENGTH,
+      customBasins: []
     };
   }
 
@@ -783,6 +796,15 @@ export class GameManager {
       return { newState: state, success: false, reason: 'Tile lot already occupied' };
     }
 
+    // CONSTRUCTION-BUILDER Phase 1: a player-drawn basin occupies its tiles —
+    // predefined units may not tunnel into it.
+    if ((state.customBasins ?? []).some(b =>
+      gridX < b.x + b.w && gridX + w > b.x &&
+      gridY < b.y + b.h && gridY + l > b.y
+    )) {
+      return { newState: state, success: false, reason: 'Tile lot already occupied by a constructed basin' };
+    }
+
     const newUnit: PlacedUnit = {
       instanceId: `unit_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       typeId,
@@ -830,6 +852,110 @@ export class GameManager {
       },
       success: true
     };
+  }
+
+  /**
+   * CONSTRUCTION-BUILDER Phase 1: places a player-drawn rectangular basin.
+   *
+   * The domain layer owns ALL validation (bounds, size, depth, overlap vs
+   * basins AND legacy unit lots) and the quantity-based cost, exactly like
+   * placeUnit — no UI path can bypass the rules. Sandbox skips the cash
+   * gate only. Refund on demolition = 50% civil-works salvage.
+   */
+  public static placeCustomBasin(
+    state: GameState,
+    rect: { x: number; y: number; w: number; h: number }
+  ): { newState: GameState; success: boolean; reason?: string; charged?: number } {
+    // Normalize incoming drag corners defensively (UI may pass any corner order).
+    const norm = {
+      x: Math.min(rect.x, rect.x + rect.w - 1) === rect.x ? rect.x : rect.x,
+      y: rect.y,
+      w: Math.abs(rect.w),
+      h: Math.abs(rect.h),
+    };
+    const depthM = BASIN_DEFAULT_DEPTH_M;
+
+    // Legacy units as blocking rects for the candidate footprint.
+    const unitRects = state.units.map(u => {
+      const [uw, ul] = resolveFootprint(u);
+      return { x: u.gridX, y: u.gridY, w: uw, h: ul };
+    });
+    const v = validateBasinPlacement(
+      norm, depthM,
+      state.currentLevel.mapSize,
+      state.customBasins ?? [],
+      unitRects
+    );
+    if (!v.ok) {
+      return { newState: state, success: false, reason: v.reason };
+    }
+
+    const capex = estimateBasinCAPEX({ ...norm, depthM });
+    if (state.gameMode !== 'sandbox' && state.financials.cash < capex) {
+      return {
+        newState: state, success: false,
+        reason: `Insufficient funds ($${capex.toLocaleString()} required)`
+      };
+    }
+
+    const basin: CustomBasin = {
+      id: `basin_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      x: norm.x, y: norm.y, w: norm.w, h: norm.h,
+      depthM,
+      createdAtDay: state.gameTimeDays,
+    };
+    const newCash = state.gameMode === 'sandbox'
+      ? state.financials.cash
+      : state.financials.cash - capex;
+
+    return {
+      newState: {
+        ...state,
+        financials: { ...state.financials, cash: newCash },
+        customBasins: [...(state.customBasins ?? []), basin],
+      },
+      success: true,
+      charged: state.gameMode === 'sandbox' ? 0 : capex,
+    };
+  }
+
+  /** Demolition refund rate for custom civil works (concrete is worth less than kit). */
+  public static readonly CUSTOM_BASIN_SALVAGE_RATE = 0.5;
+
+  /**
+   * CONSTRUCTION-BUILDER Phase 1: demolishes a player-drawn basin with a 50%
+   * salvage refund (campaign/sandbox aware). Basins hold no pipes/equipment
+   * yet, so removal is self-contained.
+   */
+  public static demolishCustomBasin(state: GameState, basinId: string): {
+    newState: GameState; success: boolean; refunded?: number;
+  } {
+    const basin = (state.customBasins ?? []).find(b => b.id === basinId);
+    if (!basin) return { newState: state, success: false };
+
+    const refunded = (state.gameMode !== 'sandbox' && !state.tutorialActive)
+      ? Math.round(estimateBasinCAPEX(basin) * GameManager.CUSTOM_BASIN_SALVAGE_RATE)
+      : 0;
+
+    return {
+      newState: {
+        ...state,
+        financials: {
+          ...state.financials,
+          cash: state.financials.cash + refunded,
+        },
+        customBasins: (state.customBasins ?? []).filter(b => b.id !== basinId),
+      },
+      success: true,
+      refunded,
+    };
+  }
+
+  /** True when the tile lies inside any custom basin (used by ghost validity + clicks). */
+  public static tileInCustomBasin(state: GameState, tx: number, ty: number): boolean {
+    return (state.customBasins ?? []).some(b =>
+      tx >= b.x && tx < b.x + b.w && ty >= b.y && ty < b.y + b.h
+    );
   }
 
   /**

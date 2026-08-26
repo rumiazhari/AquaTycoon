@@ -21,6 +21,7 @@ import { emptyWater } from './sim/WaterStream';
 import { SoundManager } from './audio/SoundManager';
 import { CAMPAIGN_LEVELS } from './gameplay/LevelsData';
 import { TUTORIAL_STEPS, TUTORIAL_PIPE_CHAIN } from './gameplay/TutorialSteps';
+import { BASIN_DEFAULT_DEPTH_M, validateBasinPlacement } from './design/CustomBasin';
 
 // UI Components
 import { HeaderHUD } from './ui/HeaderHUD';
@@ -118,9 +119,22 @@ export const App: React.FC = () => {
     setToolState(prev => reduceToolSelection(prev, { type: 'select_unit_type', typeId }));
   }, []);
 
+  // ── CONSTRUCTION-BUILDER Phase 1: direct-manipulation basin drawing ──────────
+  // Draw state: drag from first corner to opposite corner; footprint previewed
+  // live on the grid. All validation lives in GameManager.placeCustomBasin.
+  const drawStartTileRef = useRef<{ x: number; y: number } | null>(null);
+  const [drawPreview, setDrawPreview] = useState<{
+    x: number; y: number; w: number; h: number; valid: boolean;
+  } | null>(null);
+  const drawPreviewRef = useRef<typeof drawPreview>(null);
+  drawPreviewRef.current = drawPreview;
+
   const [currentRotation, setCurrentRotation]       = useState<0|90|180|270>(0);
   const rotationRef = useRef<0|90|180|270>(0);
   rotationRef.current = currentRotation;
+
+  // CONSTRUCTION-BUILDER Phase 1: selected player-drawn basin (inspect/demolish).
+  const [selectedBasinId, setSelectedBasinId] = useState<string | null>(null);
 
   // Placement-time seed choice (backlog #1 follow-up): ON (default) hands over
   // a contractor-seeded reactor at full def.capex; OFF starts UNSEEDED at
@@ -266,6 +280,7 @@ export const App: React.FC = () => {
     sm.cameraController.setCanvasSize(container.clientWidth, container.clientHeight);
     sm.syncUnits(initState.units);
     sm.syncPipes(initState.pipes);
+    sm.syncBasins(initState.customBasins ?? [], selectedBasinId);
 
     if (initState.suggestion) {
       sm.showNextStepGhost(initState.suggestion.unitTypeId, initState.suggestion.gridX, initState.suggestion.gridY);
@@ -360,6 +375,27 @@ export const App: React.FC = () => {
             }
           }
           sm.terrainGrid.setGhostPreview(tile.x, tile.y, fw, fl, valid, true);
+        } else if (toolModeRef.current === 'draw_basin') {
+          // Live rectangular footprint preview from the anchored first corner.
+          const start = drawStartTileRef.current;
+          if (start) {
+            const rect = {
+              x: Math.min(start.x, tile.x),
+              y: Math.min(start.y, tile.y),
+              w: Math.abs(tile.x - start.x) + 1,
+              h: Math.abs(tile.y - start.y) + 1,
+            };
+            const [mapW, mapH] = gsRef.current.currentLevel.mapSize;
+            const unitRects = gsRef.current.units.map(u => {
+              const ud = UNIT_DEFINITIONS[u.typeId];
+              const [uw, ul] = ud ? ud.footprint : [1, 1];
+              return { x: u.gridX, y: u.gridY, w: uw, h: ul };
+            });
+            const v = validateBasinPlacement(rect, BASIN_DEFAULT_DEPTH_M, [mapW, mapH], gsRef.current.customBasins ?? [], unitRects);
+            sm.terrainGrid.setGhostPreview(rect.x, rect.y, rect.w, rect.h, v.ok, true);
+          } else {
+            sm.terrainGrid.setGhostPreview(tile.x, tile.y, 1, 1, true, false);
+          }
         } else {
           sm.terrainGrid.setGhostPreview(0, 0, 1, 1, true, false);
         }
@@ -561,6 +597,11 @@ export const App: React.FC = () => {
     const tile        = sm.getGridTileFromScreen(clientX, clientY);
     const clickedUnit = sm.getUnitAtScreen(clientX, clientY, gs.units);
 
+    // CONSTRUCTION-BUILDER Phase 1: which player-drawn basin (if any) is under the cursor?
+    const clickedBasin = tile ? (gs.customBasins ?? []).find(b =>
+      tile.x >= b.x && tile.x < b.x + b.w && tile.y >= b.y && tile.y < b.y + b.h
+    ) ?? null : null;
+
     // Piping guidance: never leave a click in Pipes mode as a silent no-op
     if (mode === 'connect_pipe') {
       if (!clickedUnit && !srcId) {
@@ -576,10 +617,18 @@ export const App: React.FC = () => {
     if (mode === 'select') {
       if (clickedUnit) {
         SoundManager.playClick();
+        setSelectedBasinId(null);
         setGameState(prev => ({ ...prev, selectedUnitId: clickedUnit.instanceId }));
         const def = UNIT_DEFINITIONS[clickedUnit.typeId];
         setToast(`Inspecting: ${def?.name ?? clickedUnit.typeId}`);
+      } else if (clickedBasin) {
+        SoundManager.playClick();
+        setSelectedBasinId(clickedBasin.id);
+        const area = clickedBasin.w * clickedBasin.h;
+        const vol = area * clickedBasin.depthM;
+        setToast(`Custom Basin: ${clickedBasin.w}m × ${clickedBasin.h}m (${area}m², ${vol.toLocaleString()}m³, depth ${clickedBasin.depthM}m). Switch to Demolish to remove.`);
       } else {
+        setSelectedBasinId(null);
         setGameState(prev => ({ ...prev, selectedUnitId: null }));
       }
 
@@ -790,23 +839,79 @@ export const App: React.FC = () => {
         }
         return;
       }
-    } else if (mode === 'demolish' && clickedUnit) {
-      if (clickedUnit.typeId === 'influent_inlet' || clickedUnit.typeId === 'effluent_outfall') {
-        SoundManager.playWarning();
-        setToast('Inlet and Outfall cannot be removed.');
-      } else {
-        SoundManager.playDemolish();
-        const next = GameManager.demolishUnit(gs, clickedUnit.instanceId);
+    } else if (mode === 'draw_basin' && tile) {
+      // ── Two-click basin drawing (drag-free to avoid camera-pan conflict) ──
+      // Click 1 = first corner (anchor). Click 2 = opposite corner → construct.
+      if (!drawStartTileRef.current) {
+        drawStartTileRef.current = { x: tile.x, y: tile.y };
+        SoundManager.playClick();
+        setToast('Basin: first corner set — click the opposite corner to finish. (Esc cancels.)');
+        return;
+      }
+      const a = drawStartTileRef.current;
+      const rect = {
+        x: Math.min(a.x, tile.x),
+        y: Math.min(a.y, tile.y),
+        w: Math.abs(tile.x - a.x) + 1,
+        h: Math.abs(tile.y - a.y) + 1,
+      };
+      const result = GameManager.placeCustomBasin(gs, rect);
+      drawStartTileRef.current = null;
+      setDrawPreview(null);
+      sm.terrainGrid.setGhostPreview(0, 0, 1, 1, true, false);
+      if (result.success) {
+        SoundManager.playPlace();
         pushHistory(gs);
-        setGameState(next);
-        sm.syncUnits(next.units);
-        sm.syncPipes(next.pipes);
-        if (next.suggestion) {
-          sm.showNextStepGhost(next.suggestion.unitTypeId, next.suggestion.gridX, next.suggestion.gridY);
+        sm.syncBasins(result.newState.customBasins, selectedBasinId);
+        const b = result.newState.customBasins[result.newState.customBasins.length - 1];
+        const area = b.w * b.h;
+        const vol = area * b.depthM;
+        const cost = result.charged ?? 0;
+        setToast(
+          `Basin drawn: ${b.w} m × ${b.h} m (${area} m², ${vol.toLocaleString()} m³, depth ${b.depthM} m)` +
+          (cost > 0 ? ` — $${cost.toLocaleString()}` : ' — $0 (sandbox)')
+        );
+        setGameState(result.newState);
+      } else {
+        SoundManager.playWarning();
+        setToast(result.reason ?? 'Cannot build basin here.');
+      }
+
+    } else if (mode === 'demolish' && (clickedUnit || clickedBasin)) {
+      if (clickedUnit) {
+        if (clickedUnit.typeId === 'influent_inlet' || clickedUnit.typeId === 'effluent_outfall') {
+          SoundManager.playWarning();
+          setToast('Inlet and Outfall cannot be removed.');
+        } else {
+          SoundManager.playDemolish();
+          const next = GameManager.demolishUnit(gs, clickedUnit.instanceId);
+          pushHistory(gs);
+          setGameState(next);
+          sm.syncUnits(next.units);
+          sm.syncPipes(next.pipes);
+          if (next.suggestion) {
+            sm.showNextStepGhost(next.suggestion.unitTypeId, next.suggestion.gridX, next.suggestion.gridY);
+          }
+          setToast(gs.tutorialActive
+            ? 'Unit demolished. (No refund during tutorial — training grant units.)'
+            : 'Unit demolished — 70% refund applied.');
         }
-        setToast(gs.tutorialActive
-          ? 'Unit demolished. (No refund during tutorial — training grant units.)'
-          : 'Unit demolished — 70% refund applied.');
+      } else if (clickedBasin) {
+        // CONSTRUCTION-BUILDER Phase 1: demolish a player-drawn basin (50% salvage).
+        SoundManager.playDemolish();
+        const res = GameManager.demolishCustomBasin(gs, clickedBasin.id);
+        if (res.success) {
+          pushHistory(gs);
+          setSelectedBasinId(null);
+          setGameState(res.newState);
+          sm.syncBasins(res.newState.customBasins, selectedBasinId);
+          setToast(res.refunded && res.refunded > 0
+            ? `Basin demolished — salvage refund $${res.refunded.toLocaleString()}.`
+            : 'Basin demolished.');
+        } else {
+          SoundManager.playWarning();
+          setToast('Cannot demolish basin.');
+        }
       }
     }
   };
@@ -950,6 +1055,12 @@ export const App: React.FC = () => {
         case 'Escape':
           if (toolModeRef.current === 'connect_pipe' && pipeSourceRef.current) {
             cancelPipeSelection();
+          } else if (toolModeRef.current === 'draw_basin' && drawStartTileRef.current) {
+            // Cancel an in-progress basin draw (anchor reset, no construction).
+            drawStartTileRef.current = null;
+            setDrawPreview(null);
+            sceneRef.current?.terrainGrid.setGhostPreview(0, 0, 1, 1, true, false);
+            setToast('Basin drawing cancelled. Click BASIN again to start fresh.');
           } else {
             setToolState(prev => reduceToolSelection(prev, { type: 'cancel_placement' }));
             cancelPipeSelection(true);
@@ -1230,6 +1341,7 @@ export const App: React.FC = () => {
           if (mode === 'connect_pipe') setToast('Pipes: LEFT-CLICK a unit → click the destination. Click the SAME unit to switch its output port. RIGHT-CLICK to cancel. Ctrl+Z undo / Ctrl+Y redo.');
           if (mode === 'demolish')     setToast('Demolish Mode: Click any unit to remove for 70% cash refund.');
           if (mode === 'place_unit')   setToast('Choose a unit type below, then click on the grid to place.');
+          if (mode === 'draw_basin')   setToast('STRUCTURES → Basin: click the FIRST corner, then the opposite corner. Esc cancels. Cost is shown as you draw.');
         }}
         selectedUnitTypeId={selectedUnitTypeId}
         onSelectUnitTypeId={id => {

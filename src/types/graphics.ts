@@ -3,13 +3,14 @@ export interface TileCoord {
   y: number;
 }
 
-export type ToolMode = 
-  | 'select' 
-  | 'place_unit' 
-  | 'connect_pipe' 
-  | 'demolish' 
-  | 'inspect' 
-  | 'pave_road';
+export type ToolMode =
+  | 'select'
+  | 'place_unit'
+  | 'connect_pipe'
+  | 'demolish'
+  | 'inspect'
+  | 'pave_road'
+  | 'draw_basin';
 
 export interface VisualTheme {
   waterTurbidColor: string;

@@ -660,6 +660,102 @@ export class SceneManager {
     }
   }
 
+  // ── CONSTRUCTION-BUILDER Phase 1: player-drawn basins ──────────────────────
+  private basinGroup: THREE.Group = new THREE.Group();
+  private basinMeshMap: Map<string, THREE.Group> = new Map();
+
+  /**
+   * Renders each player-drawn CustomBasin as a real in-world structure:
+   * floor slab + four perimeter walls + a water/empty volume. The footprint
+   * is the exact drawn rectangle; depth comes from basin.depthM. Called from
+   * App after every place/demolish. Mirrors syncUnits' add/remove discipline.
+   */
+  public syncBasins(basins: { id: string; x: number; y: number; w: number; h: number; depthM: number }[], selectedId?: string | null) {
+    if (!this.basinGroup.parent) this.scene.add(this.basinGroup);
+    const activeIds = new Set(basins.map(b => b.id));
+
+    for (const [id, mesh] of this.basinMeshMap.entries()) {
+      if (!activeIds.has(id)) {
+        this.basinGroup.remove(mesh);
+        mesh.traverse(o => {
+          const mm = o as THREE.Mesh;
+          if (mm.geometry) mm.geometry.dispose();
+        });
+        this.basinMeshMap.delete(id);
+      }
+    }
+
+    for (const b of basins) {
+      let mesh = this.basinMeshMap.get(b.id);
+      if (!mesh) {
+        mesh = this.buildBasinMesh(b);
+        this.basinMeshMap.set(b.id, mesh);
+        this.basinGroup.add(mesh);
+      }
+      // Selected basin gets a subtle emerald tint + slight lift so the player
+      // always knows what they have selected.
+      const selected = b.id === selectedId;
+      mesh.traverse(o => {
+        const mm = o as THREE.Mesh;
+        if (mm.isMesh && mm.material) {
+          const mat = Array.isArray(mm.material) ? mm.material[0] : mm.material;
+          const m = mat as THREE.MeshStandardMaterial;
+          if (m && (m as any)._basinBase) {
+            m.emissive.setHex(selected ? 0x0c5a3a : 0x000000);
+            m.emissiveIntensity = selected ? 0.6 : 0;
+          }
+        }
+      });
+      // Basin footprint origin in world space (tile centers at +0.5).
+      mesh.position.set(b.x, 0, b.y);
+    }
+  }
+
+  private buildBasinMesh(b: { w: number; h: number; depthM: number }): THREE.Group {
+    const g = new THREE.Group();
+    const wallT = 0.25;                 // 25 cm concrete wall
+    const depth = Math.max(1, b.depthM);
+
+    const concrete = new THREE.MeshStandardMaterial({ color: 0xb9bcc2, roughness: 0.85, metalness: 0.05 });
+    const floorMat = new THREE.MeshStandardMaterial({ color: 0x8d9097, roughness: 0.9 });
+    const waterMat = new THREE.MeshStandardMaterial({
+      color: 0x3b7fa6, roughness: 0.25, metalness: 0.0,
+      transparent: true, opacity: 0.6,
+    });
+    // Mark structural (non-water) materials so the selection highlight can
+    // tint only the concrete shell, not the water volume.
+    (concrete as any)._basinBase = true;
+    (floorMat as any)._basinBase = true;
+
+    // Floor slab
+    const floor = new THREE.Mesh(new THREE.BoxGeometry(b.w, 0.2, b.h), floorMat);
+    floor.position.set(b.w / 2, -0.1, b.h / 2);
+    floor.receiveShadow = true;
+    g.add(floor);
+
+    // Four perimeter walls (open-top)
+    const mkWall = (w: number, l: number, px: number, pz: number) => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(w, depth, l), concrete);
+      m.position.set(px, depth / 2, pz);
+      m.castShadow = true; m.receiveShadow = true;
+      return m;
+    };
+    g.add(mkWall(b.w, wallT, b.w / 2, wallT / 2));            // north
+    g.add(mkWall(b.w, wallT, b.w / 2, b.h - wallT / 2));     // south
+    g.add(mkWall(wallT, b.h, wallT / 2, b.h / 2));            // west
+    g.add(mkWall(wallT, b.h, b.w - wallT / 2, b.h / 2));      // east
+
+    // Water / empty volume (slightly inset, sits above floor)
+    const water = new THREE.Mesh(
+      new THREE.BoxGeometry(b.w - 2 * wallT, depth * 0.85, b.h - 2 * wallT),
+      waterMat
+    );
+    water.position.set(b.w / 2, 0.2 + (depth * 0.85) / 2, b.h / 2);
+    g.add(water);
+
+    return g;
+  }
+
   public syncPipes(pipes: PipeConnection[]) {
     // Flow animation runs on SIMULATED time — pause freezes the pipe flow.
     this.pipeRenderer.updatePipes(pipes, this.visualSimElapsed);
