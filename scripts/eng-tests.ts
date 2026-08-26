@@ -1268,6 +1268,20 @@ function wq(over: Partial<WaterQuality>): WaterQuality {
     Math.abs(loadCo.sorM3M2Day * 1.8 - loadCo.peakSorM3M2Day) > 1e-6,
     `PF22. clarifier peakSOR rides the shared factor ×${PEAK_FLOW_FACTOR.toFixed(3)}, not legacy ×1.8 ` +
       `(${loadCo.peakSorM3M2Day.toFixed(1)} vs ${(loadCo.sorM3M2Day * 1.8).toFixed(1)} m/d)`);
+
+  // ── Per-contract design flow wired through placement context (iter 20) ──
+  // When the player's contract carries a design flow, the validator must size
+  // against THAT basis, not the Phase-1 shared heuristic. This retires the
+  // VALIDATOR_REFERENCE_FLOW_M3D heuristic's stated exit condition.
+  const nestedCas = mkBlueprintUnit('activated_sludge_cas');
+  nestedCas.blueprint!.controls.designFlowM3d = 8000; // oversized contract
+  const codes8000 = validateUnitDesign(nestedCas).map(i => i.code);
+  assert(codes8000.includes('blower_undersized'),
+    `PF23. per-contract design flow (8000) overrides heuristic — CAS now reports blower_undersized [${codes8000.join(',')}]`);
+  const neonested = mkBlueprintUnit('activated_sludge_cas');
+  const codesDefault = validateUnitDesign(neonested).map(i => i.code);
+  assert(!codesDefault.includes('blower_undersized'),
+    `PF23b. absent contract flow still falls back to the shared basis (clean) [${codesDefault.join(',') || 'none'}]`);
 }
 
 // ── summary ─────────────────────────────────────────────────────────────────

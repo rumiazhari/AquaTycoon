@@ -210,7 +210,7 @@ function estimateDesignFlow(_unit: PlacedUnit): number {
   // 5/6 template pins use), so a fresh template placement is judged by the
   // standard it was engineered for. Replaced by contract design flow once
   // contracts carry it through placement context.
-  return VALIDATOR_REFERENCE_FLOW_M3D;
+  return _unit.blueprint?.controls?.designFlowM3d ?? VALIDATOR_REFERENCE_FLOW_M3D;
 }
 
 // ── Equalization storage audit (§J / §AK item 10) ────────────────────────────

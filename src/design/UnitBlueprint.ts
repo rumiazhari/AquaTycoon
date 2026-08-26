@@ -53,8 +53,12 @@ export interface OperatorControls {
   /** Equalization outflow control. */
   eqOutflowTargetM3h?: number;
   /** Pump speed command 0..1 (VFD pumps only; fixed-speed ignores). */
-  pumpSpeedCommand?: number;
-}
+    pumpSpeedCommand?: number;
+    /** Per-contract design flow (m³/d). When set, the validator uses this
+     *  instead of the Phase-1 shared heuristic VALIDATOR_REFERENCE_FLOW_M3D.
+     *  Retiring the heuristic is the stated exit condition for §AK item 17. */
+    designFlowM3d?: number;
+  }
 
 // ── Layer 6: asset condition ─────────────────────────────────────────────────
 
