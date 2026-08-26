@@ -103,8 +103,12 @@ export function diurnalLoadFactor(hourOfDayValue: number): number {
   return 1 + DIURNAL_LOAD_DAMPING * (f - 1);
 }
 
-/** Default strength for new games — template trains are average-day designs. */
-export const DIURNAL_DEFAULT_STRENGTH = 0.4;
+/** Default strength for new games. Template trains were verified against the
+ *  full municipal curve in iter 15 (§AK items 5/6: CAS peak headroom ×1.79,
+ *  peak-hour SOR ≈20 of 33 m/d, EQ balancing need ≈32 of ~596 m³ usable,
+ *  pump duty ≈211 of 400 m³/h at L1 scale) — so new plants get the real
+ *  curve from day one. */
+export const DIURNAL_DEFAULT_STRENGTH = 1.0;
 
 /** Concentration fields that ride the diurnal mass-load/flow ratio. */
 const CONCENTRATION_KEYS = [
