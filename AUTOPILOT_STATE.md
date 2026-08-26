@@ -1,7 +1,7 @@
 # AUTOPILOT STATE — Aquatycoon
 
 STATUS: OK
-Last run: 2026-08-26 (cron, iter 18 — Level 1 briefing references VALIDATOR_REFERENCE_FLOW_M3D design basis; gates: build ✅ tsc ✅ sim ✅ ui ✅)
+Last run: 2026-08-26 (cron, iter 20 — wired per-contract design flow into DesignValidator placement context, retiring the VALIDATOR_REFERENCE_FLOW_M3D heuristic; gates: build ✅ tsc ✅ sim ✅ ui ✅ eng 300/300 ✅)
 
 Gate policy: `npm run build` + `npx tsc --noEmit` must be clean; suites:
 `npm test` (sim), `npm run test:ui` (= static ui-tests + ui-interaction-tests),
@@ -36,7 +36,8 @@ front-end and back-end improvements beyond the mission after Phase 1.
   Gates: build ✅ tsc ✅ sim ALL PASS ✅ ui 26/26 ✅ eng 298/298 ✅.
 - iter 18 (2026-08-26): Updated Level 1 briefing to reference VALIDATOR_REFERENCE_FLOW_M3D design basis. Gates: build ✅ tsc ✅ sim ✅ ui ✅.
 - iter 19 (2026-08-26): §AK items 16/17 CLOSED — campaign L1/L2/L3 levels updated with new objectives (obj_pump, obj_cas_sizing) and Test S revised for staged pump+UV build. Gates: build ✅ tsc ✅ sim ALL PASS ✅ ui ✅.
-- iter 19 (2026-08-26): §AK item 13 ✅ Show Calculation panel rolled out across all four engineerable unit types (CAS, clarifier, equalization basin, pump station) — each DiagnosticsTab now renders per‑process CalcBlock derivations with honest substituted equations and live numbers. §AK items 16/17 remain: updated campaign L1/L2/L3 levels with tests. New ui‑interaction-tests.tsx section added verifying every CalcBlock's equation string and EconomicsTab civil‑derivation math.
+- iter 19 (2026-08-26): §AK item 13 ✅ Show Calculation panel rolled out across all four engineerable unit types (CAS, clarifier, equalization basin, pump station) — each DiagnosticsTab now renders per‑process CalcBlock derivations with honest substituted equations and live numbers. §AK items 16/17 remain: updated campaign L1/L2/L3 levels with tests.
+- iter 20 (2026-08-26): Wired per-contract design flow through placement context into DesignValidator. Added `OperatorControls.designFlowM3d?`; `estimateDesignFlow` now returns `unit.blueprint?.controls?.designFlowM3d ?? VALIDATOR_REFERENCE_FLOW_M3D`, retiring the Phase-1 heuristic's stated exit condition (§AK item 17 follow-up). Backward-compatible: absent contract flow falls back to the shared basis. New eng tests PF23/PF23b pin the override (8000 m³/d → CAS reports `blower_undersized`) and the clean fallback. Gates: build ✅ tsc ✅ sim ALL PASS ✅ ui 70+52 ✅ eng 300/300 ✅. New ui‑interaction-tests.tsx section added verifying every CalcBlock's equation string and EconomicsTab civil‑derivation math.
 
 ## Backlog (work top-down)
 1. ✅ RESOLVED (iter 9): Fix Level-1 completion economy — SLR unit mismatch fixed; all 5 sim tests pass.
@@ -57,7 +58,7 @@ front-end and back-end improvements beyond the mission after Phase 1.
    - 15: engineering warnings ✅ phase 1+2 (+pipe velocity iter 12); membrane‑flux check lands with the MBR migration
    - 16–17: ✅ RESOLVED (iter 19): updated campaign L1/L2/L3 levels with new objectives (obj_pump, obj_cas_sizing) and revised Test S for staged pump+UV build.
 
-Next goal (iter 19): §AK items 16/17 — updated campaign L1/L2/L3 levels that exercise the engineered systems (+tests). Documented follow‑up: wire per‑contract design flow through placement context into DesignValidator, retiring the VALIDATOR_REFERENCE_FLOW_M3D heuristic (its stated exit condition).
+Next goal (iter 20): §AK item 17 follow-up DONE — per-contract design flow now flows through placement context. Next: begin MBR migration (or user freedom post-mission work) — gate by eng tests.
 
 ## Notes
 - Never delete files — move into junk/. Probes live in junk/autopilot-20260826/ (delim-scan, probe-range-events, probe-input-death, probe-input-matrix, probe-checkbox-delegation document the React‑event investigation); scratch gate‑run logs in junk/autopilot-20260827/.
