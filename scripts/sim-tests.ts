@@ -48,6 +48,7 @@ import {
   isEquipmentPowered,
   constructionStats,
 } from '../src/design/ConstructionNetwork';
+import { evaluateConstructionEffects } from '../src/design/ConstructionAdapter';
 import * as THREE from 'three';
 
 let failures = 0;
@@ -2158,6 +2159,206 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
     st = GameManager.demolishProcessEquipment(st, mixId).newState;
     assert(poweredEquipmentIds(st.processEquipment, st.utilityConnections).size === 0, 'N9. after mixer removal, pump loses cable → 0 powered (got '+poweredEquipmentIds(st.processEquipment, st.utilityConnections).size+')');
     assert(!(() => { try { poweredEquipmentIds(st.processEquipment, st.utilityConnections); return false; } catch { return true; }})(), 'N9b. no throw on powered check after cascade');
+  }
+}
+
+// ── Phase 4 slice 2: CONSTRUCTION ADAPTER — live sim effects ─────────────
+{
+  const mkState = () => {
+    let s: any = GameManager.createInitialState(0, true) as any;
+    s.financials.cash = 10_000_000;
+    return s;
+  };
+  const mkFullTrain = (base: any) => {
+    // Minimal conventional plant so there's effluent flow to measure adapter delta
+    // Use the state's actual inlet/outfall ids to avoid duplicate inlets.
+    const inletId = base.units.find((u:any)=>u.typeId==='influent_inlet').instanceId;
+    const outId = base.units.find((u:any)=>u.typeId==='effluent_outfall').instanceId;
+    const units = [
+      base.units.find((u:any)=>u.typeId==='influent_inlet'),
+      base.units.find((u:any)=>u.typeId==='effluent_outfall'),
+      mkUnit('scr', 'bar_screen', 5, 10),
+      mkUnit('grt', 'grit_chamber', 8, 10),
+      mkUnit('pri', 'primary_clarifier_circular', 11, 9),
+      mkUnit('cas', 'activated_sludge_cas', 15, 9),
+      mkUnit('clr', 'secondary_clarifier', 17, 13),
+      mkUnit('uv',  'uv_disinfection', 20, 10),
+    ];
+    const pipes = [
+      mkPipe('f1',inletId,'outlet','scr','inlet'),
+      mkPipe('f2','scr','outlet','grt','inlet'),
+      mkPipe('f3','grt','outlet','pri','inlet'),
+      mkPipe('f4','pri','outlet','cas','inlet'),
+      mkPipe('f5','cas','outlet','clr','inlet'),
+      mkPipe('f6','clr','outlet','uv','inlet'),
+      mkPipe('f7','uv','outlet',outId,'inlet'),
+      mkPipe('f8','clr','sludge_outlet','cas','ras_inlet','ras'),
+    ];
+    return { units, pipes };
+  };
+
+  // CA0. Zero construction = identity effect (no effluent change, no power draw)
+  {
+    const ce = evaluateConstructionEffects([], [], []);
+    assert(ce.bodMultiplier === 1 && ce.tnMultiplier === 1 && ce.doBoostMgL === 0,
+      'CA0. zero construction effect is identity (bod×'+ce.bodMultiplier.toFixed(2)+', do+'+ce.doBoostMgL+')');
+    assert(ce.extraPowerKw === 0 && ce.extraOpexPerDay === 0, 'CA0b. zero construction draws 0 kW/OPEX');
+    assert(ce.septicBasins === 0, 'CA0c. zero construction has 0 septic basins');
+  }
+
+  // CA1. Single aerated basin polish: BOD down, DO up vs. no construction
+  {
+    let base = mkState();
+    const train = mkFullTrain(base);
+    let noBuild: any = { ...base, units: train.units, pipes: train.pipes };
+    for (let i=0;i<25;i++) noBuild = GameManager.tick(noBuild, 0.5);
+    const bodBase = noBuild.finalEffluent.bod;
+    const doBase  = noBuild.finalEffluent.do;
+
+    // Build basin at 24,18 (fits in 40x30: 24+8=32<40, 18+8=26<30) away from train
+    let withAer: any = mkState();
+    let rB = GameManager.placeCustomBasin(withAer, { x: 24, y: 18, w: 8, h: 8 });
+    assert(rB.success, 'CA1-pre. basin placed at 24,18');
+    withAer = rB.newState;
+    let rD = GameManager.placeProcessEquipment(withAer, 'fine_bubble_diffuser', 25, 19);
+    assert(rD.success, 'CA1-pre. diffuser inside basin');
+    withAer = rD.newState;
+    let rM = GameManager.placeProcessEquipment(withAer, 'submersible_mixer', 26, 20);
+    assert(rM.success, 'CA1-pre. mixer inside basin');
+    withAer = rM.newState;
+    let rBl = GameManager.placeProcessEquipment(withAer, 'rotary_blower', 30, 2);
+    assert(rBl.success, 'CA1-pre. blower on ground');
+    withAer = rBl.newState;
+    let rPu = GameManager.placeProcessEquipment(withAer, 'process_pump', 32, 2);
+    assert(rPu.success, 'CA1-pre. pump on ground');
+    withAer = rPu.newState;
+    let rA = GameManager.placeUtilityConnection(withAer, 'air_pipe', 30, 2, 25, 19);
+    assert(rA.success, 'CA1-pre. air pipe blower→diffuser');
+    withAer = rA.newState;
+    let rP1 = GameManager.placeUtilityConnection(withAer, 'power_cable', 26, 20, 30, 2);
+    assert(rP1.success, 'CA1-pre. power mixer→blower');
+    withAer = rP1.newState;
+    let rP2 = GameManager.placeUtilityConnection(withAer, 'power_cable', 30, 2, 32, 2);
+    assert(rP2.success, 'CA1-pre. power blower→pump');
+    withAer = rP2.newState;
+    // Add the conventional train (reuse same inlet/outfall ids already in state)
+    const extraUnits = train.units.filter((u:any)=> u.typeId!=='influent_inlet' && u.typeId!=='effluent_outfall');
+    withAer.units = [...withAer.units, ...extraUnits];
+    withAer.pipes = [...withAer.pipes, ...train.pipes as any];
+    for (let i=0;i<25;i++) withAer = GameManager.tick(withAer, 0.5);
+    assert(withAer.finalEffluent.bod < bodBase * 0.98,
+      'CA1. aerated basin polishes BOD '+bodBase.toFixed(1)+' → '+withAer.finalEffluent.bod.toFixed(1)+' mg/L');
+    assert(withAer.finalEffluent.do > doBase,
+      'CA1b. aerated basin lifts DO '+doBase.toFixed(1)+' → '+withAer.finalEffluent.do.toFixed(1)+' mg/L');
+    assert(withAer.overallStats.totalPowerDemandKw > noBuild.overallStats.totalPowerDemandKw + 10,
+      'CA1c. aerated plant draws live power ('+withAer.overallStats.totalPowerDemandKw.toFixed(1)+' vs '+noBuild.overallStats.totalPowerDemandKw.toFixed(1)+' kW)');
+  }
+
+  // CA2. Unaerated = no BOD/DO benefit beyond small volume settling (blower unpowered)
+  // Healthy mixing, but blower unpowered → aerated 0, only volume credit
+  {
+    const ceUnaerated = evaluateConstructionEffects(
+      [{ x:5,y:5,w:6,h:6, depthM:4, id:'b1', createdAtDay:0 } as any],
+      [
+        { id:'d1', typeId:'fine_bubble_diffuser', x:6,y:6, createdAtDay:0 } as any,
+        { id:'bl1', typeId:'rotary_blower', x:20,y:5, createdAtDay:0 } as any,
+        { id:'mx1', typeId:'submersible_mixer', x:6,y:7, createdAtDay:0 } as any,
+        { id:'pu1', typeId:'process_pump', x:21,y:5, createdAtDay:0 } as any,
+      ],
+      [
+        { id:'a1', type:'air_pipe', ax:20,ay:5,bx:6,by:6, createdAtDay:0 } as any,
+        { id:'p1', type:'power_cable', ax:6,ay:7,bx:21,by:5, createdAtDay:0 } as any, // mixer→pump (powered), blower stays unpowered
+      ],
+    );
+    assert(ceUnaerated.aeratedDiffusers === 0, 'CA2. blower unpowered → 0 aerated diffusers');
+    assert(ceUnaerated.bodMultiplier >= 0.96 && ceUnaerated.bodMultiplier <= 1.00,
+      'CA2b. without aeration only small volume polish (bod×'+ceUnaerated.bodMultiplier.toFixed(3)+')');
+  }
+
+  // CA3. Basin without powered mixer = septic (BOD up, DO down vs mixed twin)
+  {
+    const ceHealthy = evaluateConstructionEffects(
+      [{ x:5,y:5,w:6,h:6, depthM:4, id:'b1', createdAtDay:0 } as any],
+      [{ id:'mx1', typeId:'submersible_mixer', x:6,y:6, createdAtDay:0 } as any, { id:'pu1', typeId:'process_pump', x:20,y:5, createdAtDay:0 } as any],
+      [{ id:'c1', type:'power_cable', ax:6,ay:6,bx:20,by:5, createdAtDay:0 } as any],
+    );
+    const ceSeptic = evaluateConstructionEffects(
+      [{ x:5,y:5,w:6,h:6, depthM:4, id:'b1', createdAtDay:0 } as any],
+      [{ id:'mx1', typeId:'submersible_mixer', x:6,y:6, createdAtDay:0 } as any],
+      [], // mixer unpowered
+    );
+    assert(ceSeptic.septicBasins === 1 && ceHealthy.septicBasins === 0,
+      'CA3. septic detection: septic='+ceSeptic.septicBasins+', healthy='+ceHealthy.septicBasins);
+    assert(ceSeptic.bodMultiplier > ceHealthy.bodMultiplier,
+      'CA3b. septic BOD× '+ceSeptic.bodMultiplier.toFixed(3)+' > healthy '+ceHealthy.bodMultiplier.toFixed(3));
+    assert(ceSeptic.doBoostMgL < ceHealthy.doBoostMgL,
+      'CA3c. septic DO boost '+ceSeptic.doBoostMgL.toFixed(2)+' < healthy '+ceHealthy.doBoostMgL.toFixed(2));
+  }
+
+  // CA4. Power/OPEX gates through the live-power set (unpowered mixer draws 0)
+  {
+    const ceLive = evaluateConstructionEffects(
+      [{ x:5,y:5,w:6,h:6, depthM:4, id:'b1', createdAtDay:0 } as any],
+      [{ id:'mx1', typeId:'submersible_mixer', x:6,y:6, createdAtDay:0 } as any, { id:'pu1', typeId:'process_pump', x:20,y:5, createdAtDay:0 } as any],
+      [{ id:'c1', type:'power_cable', ax:6,ay:6,bx:20,by:5, createdAtDay:0 } as any],
+    );
+    const ceDead = evaluateConstructionEffects(
+      [{ x:5,y:5,w:6,h:6, depthM:4, id:'b1', createdAtDay:0 } as any],
+      [{ id:'mx1', typeId:'submersible_mixer', x:6,y:6, createdAtDay:0 } as any],
+      [],
+    );
+    assert(ceDead.extraPowerKw === 0, 'CA4. unpowered mixer draws 0 kW (got '+ceDead.extraPowerKw+')');
+    assert(ceLive.extraPowerKw === 15, 'CA4b. powered mixer+ pump draw 15 kW (got '+ceLive.extraPowerKw+')');
+    assert(ceLive.extraOpexPerDay === 30, 'CA4c. powered mixer+ pump OPEX $30/d (got '+ceLive.extraOpexPerDay+')');
+  }
+
+  // CA5. Tick integration: GameManager.tick with septic basin adds warning & BOD penalty
+  {
+    let st: any = mkState();
+    const train = mkFullTrain(st);
+    st = { ...st, units: train.units, pipes: train.pipes };
+    // Add a basin at 24,18 with an UNPOWERED mixer → septic (24+8=32<40, 18+8=26<30)
+    let rB = GameManager.placeCustomBasin(st, { x: 24, y: 18, w: 8, h: 8 });
+    assert(rB.success, 'CA5-pre. basin for septic test');
+    st = rB.newState;
+    let rM = GameManager.placeProcessEquipment(st, 'submersible_mixer', 25, 19);
+    assert(rM.success, 'CA5-pre. mixer for septic test');
+    st = rM.newState;
+    // no power cable → septic
+    for (let i=0;i<25;i++) st = GameManager.tick(st, 0.5);
+    const hasSepticAlert = st.overallStats.activeAlerts.some((a:any)=>a.id==='construction_septic');
+    assert(hasSepticAlert, 'CA5. septic basin surfaces a construction_septic warning alert');
+    // Now power the mixer and re-tick — warning should clear
+    let rPu = GameManager.placeProcessEquipment(st, 'process_pump', 30, 2);
+    st = rPu.newState;
+    let rC = GameManager.placeUtilityConnection(st, 'power_cable', 25, 19, 30, 2);
+    assert(rC.success, 'CA5-pre. power cable to clear septic');
+    st = rC.newState;
+    for (let i=0;i<15;i++) st = GameManager.tick(st, 0.5);
+    const stillSeptic = st.overallStats.activeAlerts.some((a:any)=>a.id==='construction_septic');
+    assert(!stillSeptic, 'CA5b. powering the mixer clears the septic warning');
+  }
+
+  // CA6. Pure adapter scales modestly: 8 aerated diffusers cap benefit
+  {
+    let basins = [{ x:0,y:0,w:10,h:10, depthM:4, id:'b1', createdAtDay:0 } as any];
+    let equip: any[] = [];
+    let conns: any[] = [];
+    for (let i=0;i<8;i++) equip.push({ id:'d'+i, typeId:'fine_bubble_diffuser', x:1+i, y:1, createdAtDay:0 });
+    equip.push({ id:'bl', typeId:'rotary_blower', x:20, y:5, createdAtDay:0 });
+    equip.push({ id:'pu', typeId:'process_pump', x:22, y:5, createdAtDay:0 });
+    equip.push({ id:'mx', typeId:'submersible_mixer', x:2, y:2, createdAtDay:0 });
+    for (let i=0;i<8;i++) conns.push({ id:'a'+i, type:'air_pipe', ax:20,ay:5,bx:1+i,by:1, createdAtDay:0 });
+    conns.push({ id:'p1', type:'power_cable', ax:20,ay:5,bx:22,by:5, createdAtDay:0 });
+    conns.push({ id:'p2', type:'power_cable', ax:2,ay:2,bx:20,by:5, createdAtDay:0 });
+    const ce8 = evaluateConstructionEffects(basins, equip, conns);
+    assert(ce8.bodMultiplier >= 0.74 && ce8.bodMultiplier <= 0.96,
+      'CA6. 8 aerated diffusers bod× '+ce8.bodMultiplier.toFixed(3)+' inside capped range');
+    // 16 diffusers should not be much better than 8 (cap)
+    for (let i=8;i<16;i++) { equip.push({ id:'d'+i, typeId:'fine_bubble_diffuser', x:1+(i-8), y:3, createdAtDay:0 }); conns.push({ id:'a'+i, type:'air_pipe', ax:20,ay:5,bx:1+(i-8),by:3, createdAtDay:0 }); }
+    const ce16 = evaluateConstructionEffects(basins, equip, conns);
+    assert(Math.abs(ce16.bodMultiplier - ce8.bodMultiplier) < 0.02,
+      'CA6b. benefit capped: 16 diffusers bod× '+ce16.bodMultiplier.toFixed(3)+' ≈ 8 diffusers '+ce8.bodMultiplier.toFixed(3));
   }
 }
 

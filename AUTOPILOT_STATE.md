@@ -1,7 +1,7 @@
 # AUTOPILOT STATE — Aquatycoon
 
 STATUS: OK
-Last run: 2026-08-27 (iter 27 — CONSTRUCTION-BUILDER Phase 4 slice 1: construction network — power & aeration live status (domain + 3D visuals + HUD + inspectors; 11 N-tests; gates: build ✅ tsc ✅ sim ALL PASS ✅ ui 70/70+62/62 ✅ eng 368/368 ✅))
+Last run: 2026-08-27 (iter 28 — CONSTRUCTION-BUILDER Phase 4 slice 2: thin adapter — live simulation effects (basin volume / aeration / mixer septic / power-OPEX) via ConstructionAdapter + GameManager.tick integration; 13 new CA tests; gates: build ✅ tsc ✅ sim ALL PASS ✅ ui 70/70+62/62 ✅ eng 368/368 ✅)
 
 Gate policy: `npm run build` + `npx tsc --noEmit` must be clean; suites:
 `npm test` (sim), `npm run test:ui` (= static ui-tests + ui-interaction-tests),
@@ -37,7 +37,7 @@ IMPLEMENTATION PHASES (build top-down, ONE coherent slice per iteration):
   highlight + dashed preview) + toolbar UTILITY group (Water/Air/Power) +
   App connect_utility two-click flow (host-only endpoints, duplicate/length
   guards, cost toasts) + select/demolish/undo support. 23 new domain tests U1–U23.
-- PHASE 4 ⏳ SLICE 1 DONE (iter 27): **construction network — power & aeration live status**.
+- PHASE 4 ✅ SLICE 1 DONE (iter 27): **construction network — power & aeration live status**.
   NEW `src/design/ConstructionNetwork.ts` pure domain: `poweredEquipmentIds`
   (powerKw>0 needs incident power_cable, passive diffuser always live),
   `aeratedDiffuserIds` (air_pipe diffuser↔blower only when blower powered),
@@ -48,8 +48,20 @@ IMPLEMENTATION PHASES (build top-down, ONE coherent slice per iteration):
   aerated · utility lines) + `EquipmentInspector` (live status + power/aeration
   hint + remove) + select-mode toast shows live state + all syncEquipment
   call-sites pass powered/aerated sets + undo/level-load + Esc clearing.
-  11 new domain tests N1–N9. Remaining Phase 4 work: thin adapter that feeds
-  basin volume / aeration / mixer / pump / power into the legacy simulation.
+  11 new domain tests N1–N9.
+- PHASE 4 ✅ SLICE 2 DONE (iter 28): **thin adapter — live sim effects.**
+  NEW `src/design/ConstructionAdapter.ts` pure domain: `evaluateConstructionEffects`
+  (powered/aerated/mixer sets → bod/tn/tss/cod multipliers + DO boost + septic
+  basins + livePower/liveOpex). Each aerated diffuser ≈3% BOD, 1.5% TN/TSS;
+  basin volume adds up to 3–4% settling credit; basins without a powered mixer
+  are septic (BOD+8% / DO−0.4 per dead zone, capped). `GameManager.tick`
+  applies the adapter AFTER the legacy pipe/unit solver: effluent multiplied,
+  power/OPEX added (0.15 $/kWh + OPEX split 40/60) and permit compliance
+  re-evaluated (septic warning `construction_septic` surfaces via activeAlerts).
+  Zero construction = zero effect (100% backward compat). 13 new CA tests
+  (CA0 identity, CA1 aerated polish+BOD/DO+power, CA2 unaerated, CA3 septic vs
+  healthy, CA4 power gate, CA5 tick septic alert lifecycle, CA6 aeration cap).
+  Remaining Phase 4 work: CLOSED — adapter is Phase 4 final slice.
 - PHASE 5: zones & baffles (compartments, zone-level equipment membership).
 - PHASE 6: membranes / media (MBR-like custom train, no predefined MBR unit).
 - PHASE 7: emergent process recognition (descriptive badges, physics follows
@@ -116,9 +128,9 @@ front-end and back-end improvements beyond the mission after Phase 1.
    - 15: engineering warnings ✅ phase 1+2 (+pipe velocity iter 12); membrane‑flux check lands with the MBR migration
    - 16–17: ✅ RESOLVED (iter 19): updated campaign L1/L2/L3 levels with new objectives (obj_pump, obj_cas_sizing) and revised Test S for staged pump+UV build.
 
-Next goal (iter 28): CONSTRUCTION-BUILDER **PHASE 4 slice 2 — thin adapter into the legacy sim.**
-Blend basin volume into hydraulics, wire blower+diffuser live aeration into DO/oxygen, enforce mixer-powered check to avoid septic dead-zones, and gate pump/mixer power draw through the live-power set. Keep the construction model as source of truth; legacy sim reads it, not the reverse. Fallback: zones & baffles pre-slice or V2-B story polish if adapter blast radius balloons.
+Next goal (iter 29): CONSTRUCTION-BUILDER **PHASE 5 — zones & baffles (compartments, zone-level equipment membership).** Partition player-drawn basins into functional compartments (anoxic / aerobic / clarifier zones) with baffle walls, so equipment membership becomes zone-scoped and the next membrane/media phases can build per-zone reactors. Fallback: V2-B story/art polish if zone physics balloons.
 RO migration SLICE 1 stays PARKED as post-Phase-4 work per DIRECTIVE v3.
+- iter 28 (2026-08-27): **CONSTRUCTION-BUILDER PHASE 4 slice 2 — thin adapter into the legacy sim (live process effects).** NEW `src/design/ConstructionAdapter.ts` pure domain `evaluateConstructionEffects` (aerated diffusers → BOD 3%/TN 1.5% polish, basin volume 3–4% settling, septic penalty BOD+8%/DO−0.4 per unmixed basin, livePower/liveOpex) + `GameManager.tick` thin-adapter block (effluent×multipliers + power/OPEX added at $0.15/kWh + permit re-evaluated + septic warning `construction_septic`). Zero construction = zero effect. 13 new tests CA0–CA6 (identity, aerated BOD 5.1→4.7 & DO lift, unaerated, septic vs healthy, power gate 15 kW/$30, tick alert lifecycle, aeration cap 8→16). Gates: build ✅ tsc ✅ sim ALL PASS ✅ ui 70/70+62/62 ✅ eng 368/368 ✅.
 - iter 27 (2026-08-27): **CONSTRUCTION-BUILDER PHASE 4 slice 1 — construction network (live power & aeration).**
   NEW `src/design/ConstructionNetwork.ts` pure domain: `poweredEquipmentIds` (powerKw>0 needs incident power_cable, passive diffuser always live), `aeratedDiffuserIds` (air_pipe diffuser↔blower only when blower powered), `constructionStats` (basin volume/area, powered/aerated counts, live kW). `GameManager` wrappers + `SceneManager.syncEquipment` visual tints (red unpowered, blue aerated) + `ConstructionStatusChip` HUD (basins · powered · aerated · utilities) + `EquipmentInspector` panel (live badge + remove) + App wiring for all sync/undo/level/Esc paths + 11 N-tests. Gates: build ✅ tsc ✅ sim ALL PASS ✅ ui 70/70+62/62 ✅ eng 368/368 ✅.
 - iter 26 (2026-08-27): **CONSTRUCTION-BUILDER PHASE 3 landed — utility connections.**

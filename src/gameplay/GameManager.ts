@@ -41,6 +41,8 @@ import {
   constructionStats as _constructionStats,
   ConstructionStats,
 } from '../design/ConstructionNetwork';
+import { evaluateConstructionEffects } from '../design/ConstructionAdapter';
+import { evaluatePermitCriteria } from '../sim/PermitEngine';
 
 export interface NextStepSuggestion {
   unitTypeId: UnitTypeId;
@@ -556,6 +558,95 @@ export class GameManager {
       // Unlocked tech ids drive centralized passive bonuses (e.g. CHP +20%)
       new Set(state.techTree.filter(t => t.unlocked).map(t => t.id))
     );
+
+    // ── CONSTRUCTION-BUILDER Phase 4 slice 2: thin adapter — live construction
+    //    network (basin volume / aeration / mixer / power) into the legacy sim.
+    //    Zero construction = zero effect (100% backward compatible).
+    {
+      const ce = evaluateConstructionEffects(
+        state.customBasins ?? [],
+        state.processEquipment ?? [],
+        state.utilityConnections ?? [],
+      );
+      const hasFlow = simResult.finalEffluent.flowRate > 10;
+      let effChanged = false;
+      if (hasFlow && (ce.bodMultiplier !== 1 || ce.tnMultiplier !== 1 || ce.tssMultiplier !== 1 || ce.codMultiplier !== 1 || ce.doBoostMgL !== 0)) {
+        const eff = simResult.finalEffluent;
+        const next = { ...eff } as WaterQuality;
+        const cl = (v: number, lo = 0) => Number.isFinite(v) ? Math.max(lo, v) : lo;
+        next.bod = cl(eff.bod * ce.bodMultiplier);
+        next.cod = cl(eff.cod * ce.codMultiplier);
+        next.tss = cl(eff.tss * ce.tssMultiplier);
+        next.tn  = cl(eff.tn  * ce.tnMultiplier);
+        // NH₄ tracks with TN (nitrogen species share the load)
+        next.nh4 = cl(eff.nh4 * ce.tnMultiplier);
+        next.no3 = cl(eff.no3 * ce.tnMultiplier);
+        next.tp  = cl(eff.tp  * ce.tssMultiplier * 0.5 + eff.tp * 0.5);
+        next.turbidity = cl(eff.turbidity * ce.tssMultiplier);
+        next.do = Math.max(0, Math.min(14, cl(eff.do, 0) + ce.doBoostMgL));
+        simResult.finalEffluent = next;
+        effChanged = true;
+      }
+      // Power / OPEX: live-powered machines are summed honestly (blower/mixer/pump
+      // only count with a power_cable; passive diffuser always live).
+      if (ce.extraPowerKw !== 0 || ce.extraOpexPerDay !== 0) {
+        const powerCostPerKwh = 0.15;
+        const extraPowerCost = ce.extraPowerKw * 24 * powerCostPerKwh;
+        // DailyOpex is power + chemicals/opex. Construction OPEX is treated like
+        // unit OPEX (40% chemical, 60% other) — sum = extraPowerCost + extraOpex
+        simResult.financials.dailyPowerCost += extraPowerCost;
+        simResult.financials.dailyChemicalCost += ce.extraOpexPerDay * 0.4;
+        simResult.financials.dailyOpex += extraPowerCost + ce.extraOpexPerDay;
+        simResult.financials.netDailyProfit = simResult.financials.dailyRevenue - simResult.financials.dailyOpex - simResult.financials.dailyFines;
+        // Power demand and self-sufficiency
+        simResult.overallStats.totalPowerDemandKw += ce.extraPowerKw;
+        const gen = simResult.overallStats.totalGreenGenerationKw;
+        const dem = simResult.overallStats.totalPowerDemandKw;
+        const selfConsumed = Math.min(gen, dem);
+        simResult.overallStats.energySelfSufficiencyPercent = dem > 0 ? Math.min(100, (selfConsumed / dem) * 100) : (gen > 0 ? 100 : 0);
+        simResult.overallStats.publicApproval = Math.max(10, Math.min(100, simResult.overallStats.complianceScore + (simResult.overallStats.energySelfSufficiencyPercent > 40 ? 10 : 0)));
+      }
+      // Re-evaluate permit compliance when the effluent shifted
+      if (effChanged) {
+        const hasEffFlow = simResult.finalEffluent.flowRate > 10;
+        const criteria = evaluatePermitCriteria(simResult.finalEffluent, state.currentLevel.standards);
+        const violations: string[] = [];
+        let checked = 0;
+        if (hasEffFlow) {
+          for (const cr of criteria) { checked++; if (!cr.pass) violations.push(cr.engineMessage); }
+        } else { violations.push('No treated effluent flow reaching outfall!'); }
+        const maxPoints = Math.max(1, checked);
+        const complianceScore = hasEffFlow ? Math.max(0, Math.round(((maxPoints - violations.length) / maxPoints) * 100)) : 0;
+        simResult.overallStats.complianceScore = complianceScore;
+        simResult.overallStats.publicApproval = Math.max(10, Math.min(100, complianceScore + (simResult.overallStats.energySelfSufficiencyPercent > 40 ? 10 : 0)));
+        // Replace error alerts with fresh construction-aware ones, keep green-energy alert
+        const keepSuccess = simResult.overallStats.activeAlerts.filter(a => a.type === 'success');
+        const nextAlerts: typeof simResult.overallStats.activeAlerts = [...keepSuccess];
+        if (violations.length > 0 && hasEffFlow) {
+          nextAlerts.unshift({ id: 'viol_alert', type: 'error', message: `Regulatory Standard Exceeded: ${violations.join(', ')}`, timestamp: Date.now() });
+        }
+        // Septic warning when adapter flags dead zones
+        if (ce.septicBasins > 0 && hasEffFlow) {
+          nextAlerts.push({ id: 'construction_septic', type: 'warning' as const, message: `Septic dead zone: ${ce.septicBasins} basin${ce.septicBasins>1?'s':''} without a powered mixer — add a mixer + power cable to prevent anaerobic decay.`, timestamp: Date.now() });
+        }
+        if (simResult.overallStats.energySelfSufficiencyPercent > 50 && !nextAlerts.some(a => a.id === 'green_energy_alert')) {
+          // Preserve existing logic already pushed green alert earlier if applicable; re-add if needed
+          const hasGreen = keepSuccess.some(a => a.id === 'green_energy_alert');
+          if (!hasGreen && simResult.overallStats.energySelfSufficiencyPercent > 50) {
+            nextAlerts.push({ id: 'green_energy_alert', type: 'success', message: `High Green Energy: Plant is ${simResult.overallStats.energySelfSufficiencyPercent.toFixed(0)}% self-sufficient!`, timestamp: Date.now() });
+          }
+        }
+        simResult.overallStats.activeAlerts = nextAlerts;
+      } else if (ce.septicBasins > 0 && simResult.finalEffluent.flowRate > 10) {
+        // Even without effluent shift (no flow? septic already handled), surface the warning
+        if (!simResult.overallStats.activeAlerts.some(a => a.id === 'construction_septic')) {
+          simResult.overallStats.activeAlerts = [
+            ...simResult.overallStats.activeAlerts,
+            { id: 'construction_septic', type: 'warning' as const, message: `Septic dead zone: ${ce.septicBasins} basin${ce.septicBasins>1?'s':''} without a powered mixer — add a mixer + power cable to prevent anaerobic decay.`, timestamp: Date.now() },
+          ];
+        }
+      }
+    }
 
     // Apply financial cash flow
     const cashDelta = (simResult.financials.netDailyProfit * simDeltaDays);
