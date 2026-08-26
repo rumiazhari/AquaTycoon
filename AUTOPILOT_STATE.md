@@ -1,7 +1,7 @@
 # AUTOPILOT STATE — Aquatycoon
 
 STATUS: OK
-Last run: 2026-08-26 (cron, iter 12 — engineered pipes end-to-end, §AK items 7/8 + backlog #5 resolved)
+Last run: 2026-08-26 (cron, iter 13 — wired stepPumpStation into runtime pump_station, §AK item 9 runtime half)
 Gate policy: `npm run build` + `npx tsc --noEmit` must be clean; suites:
 `npm test` (sim), `npm run test:ui` (= static ui-tests + ui-interaction-tests),
 `npm run test:eng`.
@@ -22,7 +22,8 @@ Never regress §AL. Respect §AI performance limits. User grants freedom on
 front-end and back-end improvements beyond the mission after Phase 1.
 
 ## Iteration log
-- iter 12 (2026-08-26): Engineered pipes end-to-end (§AK items 7/8 + backlog #5).
+- iter 13 (2026-08-26): Wired stepPumpStation into runtime pump_station (§AK item 9 runtime half). pump_station units now use the real duty-point solver (intersect pump curve with static lift + downstream pipe headloss) instead of the legacy pass-through. NEW: SimulationEngine computes discharge headloss from cachedHydraulics and passes it via ctx to calculateUnitProcess; UnitProcessModels.replace legacy pump_station case with stepPumpStation call (honors VFD speedCommand, clog penalty stacks on duty-point power/opex, returns PumpRuntimeTelemetry {status, dutyFlowM3h, dutyHeadM, bepFraction, cavitating, failedUnitCount, electricalPowerKw}). ProcessResult and PlacedUnitRuntimeState extended with optional pumpRuntime. UnitDesigner DiagnosticsTab shows live pump station telemetry (status, duty flow/head, BEP%, power, cavitation/failed-unit badges). 12 new PUMP_RT eng tests added (242→255) covering normal delivery, undersized clamp, VFD scaling, clog penalty stacking, legacy save compat. All gates: build ✅ tsc ✅ sim 118/118 ✅ ui 96/96 ✅ eng 255/255 ✅.
+- iter 12 (2026-08-26): Engineered pipes end-to-end (§AK items 7/8 + backlog #5)...
   NEW `src/design/PipeSizing.ts`: STANDARD_DIAMETERS_M ladder (DN80–DN1200),
   recommendDiameterM() = smallest DN keeping MEAN velocity ≤1.2 m/s at observed
   daily volume, defaultMaterialForPipeType() per service (liquid/recycle→PVC,
@@ -161,7 +162,8 @@ front-end and back-end improvements beyond the mission after Phase 1.
 5. ✅ RESOLVED (iter 12): validatePipeVelocity wired into the PFD Pipe
    Engineering panel (live per-pipe warnings); §AK items 7/8 landed with it
    (auto-sizing ladder, materials UI, cached hydraulics, CAPEX display).
-6. §AK Phase-1 audit of remaining vertical-slice items:
+6. ✅ RESOLVED (iter 13): Wired stepPumpStation into runtime pump_station (§AK item 9 runtime half). Pump stations now use real duty-point solver (static lift + downstream headloss → system curve intersect), return PumpRuntimeTelemetry (status, duty point, power, BEP%, cavitation, failed units). VFD speedCommand honored, clog penalty stacks on duty-point power/opex. Live telemetry panel in UnitDesigner DiagnosticsTab. 12 new PUMP_RT eng tests. All gates clean.
+7. §AK Phase-1 audit of remaining vertical-slice items:
    - 1–3: design/runtime data model, custom geometry, CAS sizing (partial)
    - 5–6: blower/equipment capacity, clarifier custom sizing (templates need
      peak-flow resize before raising diurnal strength to 1.0)

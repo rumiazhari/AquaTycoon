@@ -150,6 +150,16 @@ export interface PlacedUnit {
   };
   /** Asset condition/maintenance state. */
   condition?: import('../design/UnitBlueprint').AssetCondition;
+  /** Pump station runtime telemetry (duty point, power, status) — filled by engine. */
+  pumpRuntime?: {
+    status: 'ok' | 'undersized' | 'oversized' | 'no_duty_point' | 'failed_unit';
+    dutyFlowM3h: number;
+    dutyHeadM: number;
+    bepFraction: number;
+    cavitating: boolean;
+    failedUnitCount: number;
+    electricalPowerKw: number;
+  };
 }
 
 export interface PipeConnection {

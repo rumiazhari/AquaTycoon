@@ -27,6 +27,7 @@ import { blueprintFromTemplate } from '../src/design/UnitBlueprint';
 import { casDesignPoint, stepCasRuntime } from '../src/sim/processes/ActivatedSludge';
 import { evaluateClarifierLoad } from '../src/sim/processes/Clarifier';
 import { SimulationEngine } from '../src/sim/SimulationEngine';
+import { calculateUnitProcess } from '../src/sim/UnitProcessModels';
 import { stepEqualization, initEqStorage, EQ_MIN_POOL_FRACTION } from '../src/sim/processes/Equalization';
 import {
   pathLengthM,
@@ -483,12 +484,96 @@ function wq(over: Partial<WaterQuality>): WaterQuality {
   assert(
     !hardStation.some((i) => i.code === 'pump_at_runout'),
     `PUMP. validator silent about runout on a well-matched station (${hardStation.map((i) => i.code).join(',')})`
-  );
-}
+      );
+    }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// CAPEX — quantity based
-// ═══════════════════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PUMP_RUNTIME — calculateUnitProcess wiring for pump_station (§AK item 9 runtime)
+    // ═══════════════════════════════════════════════════════════════════════════
+    {
+      const psUnit = mkBlueprintUnit('pump_station');
+      // Demand 3500 m³/d = 145.8 m³/h, well within 400 m³/h BEP
+      const demand = wq({ flowRate: 3500, tss: 120, bod: 200 });
+      const rNormal = calculateUnitProcess(psUnit, demand, undefined, undefined, { pumpDischargeHeadlossM: 2.0 });
+      assert(
+        rNormal.effluent.flowRate > 3400 && rNormal.effluent.flowRate < 3600,
+        `PUMP_RT. normal demand → full delivery (${rNormal.effluent.flowRate.toFixed(0)} ≈ 3500 m³/d)`
+      );
+      assert(
+        rNormal.powerKw > 0 && rNormal.powerKw < 15,
+        `PUMP_RT. normal power in range (${rNormal.powerKw.toFixed(1)} kW)`
+      );
+      assert(
+              rNormal.pumpRuntime && (rNormal.pumpRuntime.status === 'ok' || rNormal.pumpRuntime.status === 'oversized'),
+              `PUMP_RT. normal status ok or oversized (${rNormal.pumpRuntime?.status})`
+            );
+      assert(
+        rNormal.pumpRuntime && rNormal.pumpRuntime.bepFraction > 0.3 && rNormal.pumpRuntime.bepFraction < 0.5,
+        `PUMP_RT. normal BEP fraction ~36% (${(rNormal.pumpRuntime?.bepFraction * 100).toFixed(0)}%)`
+      );
+
+      // Undersized: demand 12000 m³/d (500 m³/h) > 400 m³/h rated single pump
+      const rUnder = calculateUnitProcess(psUnit, wq({ flowRate: 12000 }), undefined, undefined, { pumpDischargeHeadlossM: 1.0 });
+      assert(
+        rUnder.effluent.flowRate < 11000 && rUnder.effluent.flowRate > 9000,
+        `PUMP_RT. undersized → clamped delivery (${rUnder.effluent.flowRate.toFixed(0)} m³/d < demand)`
+      );
+      assert(
+        rUnder.pumpRuntime && rUnder.pumpRuntime.status === 'undersized',
+        `PUMP_RT. undersized status (${rUnder.pumpRuntime?.status})`
+      );
+
+      // VFD speed command reduces duty flow and power when demand exceeds VFD-limited capacity
+            const demandVFD = wq({ flowRate: 12000, tss: 120 }); // 500 m³/h > 0.6×400 = 240 m³/h
+            const psVFD = mkBlueprintUnit('pump_station');
+            psVFD.blueprint!.controls.pumpSpeedCommand = 0.6;
+            const rVFD = calculateUnitProcess(psVFD, demandVFD, undefined, undefined, { pumpDischargeHeadlossM: 1.0 });
+            const rVFDNormal = calculateUnitProcess(mkBlueprintUnit('pump_station'), demandVFD, undefined, undefined, { pumpDischargeHeadlossM: 1.0 });
+            assert(
+              rVFD.pumpRuntime && rVFD.pumpRuntime.dutyFlowM3h < rVFDNormal.pumpRuntime!.dutyFlowM3h,
+              `PUMP_RT. VFD 0.6× reduces duty flow (${rVFD.pumpRuntime?.dutyFlowM3h.toFixed(0)} < ${rVFDNormal.pumpRuntime!.dutyFlowM3h.toFixed(0)} m³/h)`
+            );
+            assert(
+              rVFD.powerKw < rVFDNormal.powerKw,
+              `PUMP_RT. VFD reduces power (${rVFD.powerKw.toFixed(1)} < ${rVFDNormal.powerKw.toFixed(1)} kW)`
+            );
+
+      // Clog penalty (tss > 350) stacks on duty-point power/opex
+      const rClog = calculateUnitProcess(psUnit, wq({ flowRate: 3500, tss: 420 }), undefined, undefined, { pumpDischargeHeadlossM: 2.0 });
+      assert(
+        Math.abs(rClog.powerKw / rNormal.powerKw - 1.35) < 0.01,
+        `PUMP_RT. clog multiplies power 1.35× (${(rClog.powerKw / rNormal.powerKw).toFixed(2)})`
+      );
+      assert(
+        Math.abs(rClog.opexDay / rNormal.opexDay - 2.2) < 0.01,
+        `PUMP_RT. clog multiplies opex 2.2× (${(rClog.opexDay / rNormal.opexDay).toFixed(2)})`
+      );
+      assert(
+        rClog.efficiency === 70,
+        `PUMP_RT. clog drops efficiency to 70 (${rClog.efficiency})`
+      );
+
+      // No blueprint (legacy save) → defaults still solve
+      const legacyUnit: PlacedUnit = {
+        instanceId: 'legacy_ps', typeId: 'pump_station', gridX: 0, gridY: 0, rotation: 0,
+        volume: 10, customParams: {}, active: true, efficiencyRating: 100,
+        lastInletQuality: emptyWater(), lastOutletQuality: emptyWater(),
+        lastPowerKwActual: 0, lastOpexActual: 0,
+      };
+      const rLegacy = calculateUnitProcess(legacyUnit, wq({ flowRate: 2000 }), undefined, undefined, { pumpDischargeHeadlossM: 1.5 });
+      assert(
+        rLegacy.effluent.flowRate > 1900 && rLegacy.effluent.flowRate < 2100,
+        `PUMP_RT. legacy unit delivers (${rLegacy.effluent.flowRate.toFixed(0)} m³/d)`
+      );
+      assert(
+        rLegacy.powerKw > 0,
+        `PUMP_RT. legacy power computed (${rLegacy.powerKw.toFixed(1)} kW)`
+      );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // CAPEX — quantity based
+    // ═══════════════════════════════════════════════════════════════════════════
 {
   const small = { shape: 'rect' as const, lengthM: 12, widthM: 6, waterDepthM: 4, freeboardM: 0.5, wallThicknessM: 0.3, floorThicknessM: 0.25, numberOfParallelTrains: 1 };
   const big = { shape: 'rect' as const, lengthM: 40, widthM: 20, waterDepthM: 5, freeboardM: 0.6, wallThicknessM: 0.4, floorThicknessM: 0.3, numberOfParallelTrains: 1 };

@@ -5,6 +5,7 @@ import { freshCommissioning } from '../design/UnitBlueprint';
 import { stepCasRuntime } from './processes/ActivatedSludge';
 import { evaluateClarifierLoad } from './processes/Clarifier';
 import { stepEqualization } from './processes/Equalization';
+import { stepPumpStation } from './processes/Pumping';
 
 export interface ProcessResult {
   /** Main treated liquid effluent ('outlet' port). Kept for UI compatibility. */
@@ -28,6 +29,16 @@ export interface ProcessResult {
   dissolvedOxygen?: number;
   mlss?: number;
   svi?: number;
+  /** Pump station duty-point telemetry (status, BEP%, power, cavitation). */
+  pumpRuntime?: {
+    status: 'ok' | 'undersized' | 'oversized' | 'no_duty_point' | 'failed_unit';
+    dutyFlowM3h: number;
+    dutyHeadM: number;
+    bepFraction: number;
+    cavitating: boolean;
+    failedUnitCount: number;
+    electricalPowerKw: number;
+  };
 }
 
 /**
@@ -805,7 +816,8 @@ export function calculateUnitProcess(
   unit: PlacedUnit,
   inlet: WaterQuality,
   _forwardInflow?: number,
-  env?: EnvironmentFactors
+  env?: EnvironmentFactors,
+  ctx?: { pumpDischargeHeadlossM?: number }
 ): ProcessResult {
   // Renewable generators are standalone infrastructure with no water ports —
   // they produce power regardless of hydraulic flow.
@@ -851,6 +863,7 @@ export function calculateUnitProcess(
   let dissolvedOxygen = eff.do;
   let mlss = 3000;
   let svi = 110;
+  let pumpRuntime: ProcessResult['pumpRuntime'] = undefined;
 
   switch (unit.typeId) {
     // -----------------------------------------------------
@@ -1681,16 +1694,34 @@ export function calculateUnitProcess(
     }
 
     case 'pump_station': {
-      // Pure hydraulic pass-through plus PUMP CLOGGING (piping consequence):
-      // pumps handling unscreened sewage suffer rag jamming & impeller wear —
-      // more power, more maintenance.
-      if (inlet.tss > 350) {
-        powerKw = def.powerConsumptionKw * 1.35;
-        opexDay = def.baseOpexPerDay * 2.2;
-        efficiency = 70;
-      } else {
-        efficiency = 100;
-      }
+      // Real duty-point solver: intersect pump curve with system curve
+      // (static lift + downstream pipe headloss). Delivers min(capacity, duty, demand).
+      const demandedM3d = Math.max(0, inlet.flowRate);
+      const dischargeHeadlossM = ctx?.pumpDischargeHeadlossM ?? 0;
+      const speedCommand = unit.blueprint?.controls?.pumpSpeedCommand ?? 1.0;
+
+      const ps = stepPumpStation(unit, demandedM3d, dischargeHeadlossM, speedCommand);
+
+      // Apply clogging penalty on top of duty-point result (unscreened sewage → wear)
+      const clogMult = inlet.tss > 350 ? 1.35 : 1.0;
+      const clogOpexMult = inlet.tss > 350 ? 2.2 : 1.0;
+      const clogEff = inlet.tss > 350 ? 70 : 100;
+
+      eff.flowRate = ps.deliveredFlowM3d;
+      powerKw = ps.electricalPowerKw * clogMult;
+      opexDay = def.baseOpexPerDay * clogOpexMult;
+      efficiency = clogEff;
+
+      // Expose runtime telemetry for UI / diagnostics
+      pumpRuntime = {
+        status: ps.status,
+        dutyFlowM3h: ps.dutyFlowM3h,
+        dutyHeadM: ps.dutyHeadM,
+        bepFraction: ps.bepFraction,
+        cavitating: ps.cavitating,
+        failedUnitCount: ps.failedUnitCount,
+        electricalPowerKw: ps.electricalPowerKw,
+      };
       break;
     }
 
@@ -1747,6 +1778,7 @@ export function calculateUnitProcess(
     sludgeBlanketHeight,
     dissolvedOxygen,
     mlss,
-    svi
+    svi,
+    pumpRuntime
   };
 }

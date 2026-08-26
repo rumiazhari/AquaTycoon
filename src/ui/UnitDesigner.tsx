@@ -370,6 +370,18 @@ function DiagnosticsTab({ unit, bp }: { unit: PlacedUnit; bp: PlacedUnit['bluepr
           <p className="text-[10px] text-slate-500 font-mono">Mixed storage: V′ = V + (Qin − Qout)·dt; each pollutant integrates Qin·Cin − Qout·Ctank. Bigger basin ⇒ smoother downstream load (§J).</p>
         </>
       )}
+      {bp!.processType === 'pump_station' && unit.pumpRuntime && (
+        <>
+          <Divider />
+          <Row k="Status" v={String(unit.pumpRuntime.status)} good={unit.pumpRuntime.status === 'ok'} bad={unit.pumpRuntime.status !== 'ok' && unit.pumpRuntime.status !== 'oversized'} />
+          <Row k="Duty flow" v={`${fmt(unit.pumpRuntime.dutyFlowM3h, 1)} m³/h`} />
+          <Row k="Duty head" v={`${fmt(unit.pumpRuntime.dutyHeadM, 2)} m`} />
+          <Row k="BEP fraction" v={`${fmt(unit.pumpRuntime.bepFraction * 100, 0)} %`} good={unit.pumpRuntime.bepFraction >= 0.7 && unit.pumpRuntime.bepFraction <= 1.15} bad={unit.pumpRuntime.bepFraction < 0.5 || unit.pumpRuntime.bepFraction > 1.3} />
+          <Row k="Electrical power" v={`${fmt(unit.pumpRuntime.electricalPowerKw, 1)} kW`} />
+          {unit.pumpRuntime.cavitating && <Row k="⚠ Cavitation risk" v="YES" bad />}
+          {unit.pumpRuntime.failedUnitCount > 0 && <Row k="Failed units" v={String(unit.pumpRuntime.failedUnitCount)} bad />}
+        </>
+      )}
     </div>
   );
 }

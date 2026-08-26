@@ -223,8 +223,15 @@ export class SimulationEngine {
           .filter(p => p.toPortId === 'inlet')
           .reduce((acc, p) => acc + p.flowRate, 0);
 
-        // Run unit process calculation
-        const result = calculateUnitProcess(targetUnit, mergedInlet, forwardInflow, env);
+        // Outgoing liquid-pipe headloss for pump stations (duty-point context)
+        const outgoingHeadlossM = updatedPipes
+          .filter(p => p.pipeType !== 'gas' && p.fromUnitId === unit.instanceId)
+          .reduce((acc, p) => acc + (p.cachedHydraulics?.headlossM ?? 0), 0);
+
+        // Run unit process calculation (with pump topology context)
+        const result = calculateUnitProcess(targetUnit, mergedInlet, forwardInflow, env, {
+          pumpDischargeHeadlossM: outgoingHeadlossM,
+        });
 
         // Technology passive bonuses: the digester's "+20% energy recovery"
         // tech boosts CHP electrical output (negative powerKw = generation).
@@ -302,6 +309,10 @@ export class SimulationEngine {
         targetUnit.lastPowerKwActual = Number.isFinite(result.powerKw) ? result.powerKw : 0;
         targetUnit.lastOpexActual = Number.isFinite(result.opexDay) ? result.opexDay : 0;
         targetUnit.efficiencyRating = Math.round(result.efficiency);
+        // Persist pump station runtime telemetry for live UI readout
+        if (unit.typeId === 'pump_station' && result.pumpRuntime) {
+          targetUnit.pumpRuntime = { ...result.pumpRuntime };
+        }
         // sludgeBlanketHeight is a 0..1 FRACTION in ProcessResult; the unit
         // field is named …Percent and every reader (UnitDesigner, clarifier
         // process model) divides it by 100 — so store REAL percent here.
