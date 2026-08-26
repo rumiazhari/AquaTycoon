@@ -930,37 +930,40 @@ const obj = (state: any, id: string) => state.currentLevel.objectives.find((o: a
     return u;
   };
   const scr = place('bar_screen', 10, 20)!;
-  const grt = place('grit_chamber', 13, 20)!;
-  const m1 = place('mbbr_reactor', 16, 20, { carrierFillRatioPercent: 100 })!;
-    const m2 = place('mbbr_reactor', 19, 24, { carrierFillRatioPercent: 100 })!;
-      const m3 = place('mbbr_reactor', 25, 20, { carrierFillRatioPercent: 100 })!;
-  const cl = place('secondary_clarifier', 22, 23)!;
-  const a1 = place('advanced_oxidation_aop', 26, 20, { ozoneDoseMgL: 18 })!;
-  const cp1 = place('chemical_phosphorus', 30, 20, { coagulantDoseMgL: 60 })!;
-  const cp2 = place('chemical_phosphorus', 34, 20, { coagulantDoseMgL: 60 })!;
-  const uv = place('uv_disinfection', 38, 20)!;
-  sK.pipes = [
-    mkPipe('p1', 'inlet_0', 'outlet', scr.instanceId, 'inlet'),
-    mkPipe('p2', scr.instanceId, 'outlet', grt.instanceId, 'inlet'),
-    mkPipe('p3', grt.instanceId, 'outlet', m1.instanceId, 'inlet'),
-    mkPipe('p4', m1.instanceId, 'outlet', m2.instanceId, 'inlet'),
-    mkPipe('p5', m3.instanceId, 'outlet', cl.instanceId, 'inlet'),
-    mkPipe('p6', cl.instanceId, 'outlet', a1.instanceId, 'inlet'),
-    mkPipe('p7', a1.instanceId, 'outlet', cp1.instanceId, 'inlet'),
-    mkPipe('p8', cp1.instanceId, 'outlet', cp2.instanceId, 'inlet'),
-    mkPipe('p9', cp2.instanceId, 'outlet', uv.instanceId, 'inlet'),
-    mkPipe('p10', uv.instanceId, 'outlet', 'outfall_0', 'inlet'),
-    mkPipe('p11', cl.instanceId, 'sludge_outlet', m1.instanceId, 'ras_inlet', 'ras')
-  ];
+    const grt = place('grit_chamber', 13, 20)!;
+    const eq = place('equalization_basin', 16, 20)!;
+    const m1 = place('mbbr_reactor', 19, 20, { carrierFillRatioPercent: 100 })!;
+    const m2 = place('mbbr_reactor', 22, 24, { carrierFillRatioPercent: 100 })!;
+    const m3 = place('mbbr_reactor', 28, 20, { carrierFillRatioPercent: 100 })!;
+    const cl = place('secondary_clarifier', 25, 23)!;
+    const a1 = place('advanced_oxidation_aop', 29, 20, { ozoneDoseMgL: 18 })!;
+    const cp1 = place('chemical_phosphorus', 33, 20, { coagulantDoseMgL: 60 })!;
+    const cp2 = place('chemical_phosphorus', 37, 20, { coagulantDoseMgL: 60 })!;
+    const uv = place('uv_disinfection', 41, 20)!;
+    sK.pipes = [
+      mkPipe('p1', 'inlet_0', 'outlet', scr.instanceId, 'inlet'),
+      mkPipe('p2', scr.instanceId, 'outlet', grt.instanceId, 'inlet'),
+      mkPipe('p3', grt.instanceId, 'outlet', eq.instanceId, 'inlet'),
+      mkPipe('p4', eq.instanceId, 'outlet', m1.instanceId, 'inlet'),
+      mkPipe('p5', m1.instanceId, 'outlet', m2.instanceId, 'inlet'),
+      mkPipe('p6', m2.instanceId, 'outlet', m3.instanceId, 'inlet'),
+      mkPipe('p7', m3.instanceId, 'outlet', cl.instanceId, 'inlet'),
+      mkPipe('p8', cl.instanceId, 'outlet', a1.instanceId, 'inlet'),
+      mkPipe('p9', a1.instanceId, 'outlet', cp1.instanceId, 'inlet'),
+      mkPipe('p10', cp1.instanceId, 'outlet', cp2.instanceId, 'inlet'),
+      mkPipe('p11', cp2.instanceId, 'outlet', uv.instanceId, 'inlet'),
+      mkPipe('p12', uv.instanceId, 'outlet', 'outfall_0', 'inlet'),
+      mkPipe('p13', cl.instanceId, 'sludge_outlet', m1.instanceId, 'ras_inlet', 'ras')
+    ];
   for (let i = 0; i < 250; i++) sK = GameManager.tick(sK, 1); // warm-up to steady state
   for (let i = 0; i < 5; i++) sK = GameManager.tick(sK, 300); // +25 game days of streak
   const streakBefore = sK.complianceStreakDays;
 
-  // Break the biology: bypass both MBBRs entirely (grit → clarifier directly).
-  // Without biological treatment BOD/COD/TSS/NH4 all explode and the
-  // compliance streak must reset to zero.
-  sK.pipes = sK.pipes.filter((p: PipeConnection) => !['p3', 'p4', 'p4b', 'p5', 'p11'].includes(p.id));
-  sK.pipes.push(mkPipe('pBypass', grt.instanceId, 'outlet', cl.instanceId, 'inlet'));
+    // Break the biology: bypass MBBRs + EQ (grit → clarifier directly).
+    // Without biological treatment BOD/COD/TSS/NH4 all explode and the
+    // compliance streak must reset to zero.
+    sK.pipes = sK.pipes.filter((p: PipeConnection) => !['p3', 'p4', 'p5', 'p6', 'p7', 'p13'].includes(p.id));
+    sK.pipes.push(mkPipe('pBypass', grt.instanceId, 'outlet', cl.instanceId, 'inlet'));
   for (let i = 0; i < 5; i++) sK = GameManager.tick(sK, 300);
   const streakAfter = sK.complianceStreakDays;
 

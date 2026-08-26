@@ -1179,30 +1179,39 @@ export function calculateUnitProcess(
     }
 
     // -----------------------------------------------------
-    case 'mbbr_reactor': {
-      const fillRatio = (p.carrierFillRatioPercent || 50) / 100;
-      // MBBR is highly resilient to toxic shocks
-      const toxicResilience = Math.max(0.65, 1 - (inlet.toxicIndex / 100) * 0.35);
-      const bodRemoval = Math.min(0.95, 0.88 * (fillRatio / 0.5) * toxicResilience);
+                case 'mbbr_reactor': {
+                  const fillRatio = (p.carrierFillRatioPercent || 50) / 100;
+                  // MBBR is highly resilient to toxic shocks
+                  const toxicResilience = Math.max(0.65, 1 - (inlet.toxicIndex / 100) * 0.35);
+                  const bodRemoval = Math.min(0.95, 0.88 * (fillRatio / 0.5) * toxicResilience);
 
-      eff.bod *= (1 - bodRemoval);
-      eff.cod *= (1 - bodRemoval * 0.85);
+                  // --- AEROBIC TREATMENT (BOD removal + nitrification) ---
+                  eff.bod *= (1 - bodRemoval);
+                  eff.cod *= (1 - bodRemoval * 0.85);
 
-      // NITRIFICATION BOOKKEEPING: compute NH4 after first, then derive the
-      // nitrified amount as before−after; NO3 gains exactly that nitrogen.
-      // (Previously NO3 was derived from the ALREADY-reduced NH4.)
-      const nh4After = eff.nh4 * 0.35; // biofilm nitrification leaves 35%
-      const nitrified = Math.max(0, eff.nh4 - nh4After);
-      eff.nh4 = nh4After;
-      eff.no3 += nitrified;
-      // Component-derived TN (organic N passes mostly unconverted through MBBR)
-      const orgNPass = Math.max(1.0, (inlet.tn - inlet.nh4 - inlet.no3) * 0.8);
-      eff.tn = eff.nh4 + eff.no3 + orgNPass;
+                  // NITRIFICATION: biofilm nitrification leaves 35% NH4
+                  const nh4After = eff.nh4 * 0.35;
+                  const nitrified = Math.max(0, eff.nh4 - nh4After);
+                  eff.nh4 = nh4After;
+                  eff.no3 += nitrified;
 
-      eff.do = 3.0;
-      efficiency = 95;
-      break;
-    }
+                  // --- SIMULTANEOUS NITRIFICATION-DENITRIFICATION (SND) ---
+                  // In real MBBR carriers, anoxic biofilm interior denitrifies a fraction
+                  // of the TOTAL nitrate present (upstream + newly nitrified), using
+                  // biodegradable COD diffusing from bulk. SND efficiency increases with
+                  // fill ratio (more carrier = more anoxic volume).
+                  // Typical SND: 30-50% of total NO3 denitrified at high fill ratios.
+                  const sndFraction = 0.45 * (fillRatio / 0.5); // up to 90% at fillRatio=1.0
+                  const denitrified = Math.min(eff.no3, eff.no3 * sndFraction);
+                  eff.no3 -= denitrified;
+                  // TN = NH4 + NO3 + organic N (80% passes through)
+                  const orgNPass = Math.max(1.0, (inlet.tn - inlet.nh4 - inlet.no3) * 0.8);
+                  eff.tn = eff.nh4 + eff.no3 + orgNPass;
+
+                  eff.do = 3.0;
+                  efficiency = 95;
+                  break;
+                }
 
     // -----------------------------------------------------
     case 'mbr_membrane': {
