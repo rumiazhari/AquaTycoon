@@ -1,0 +1,10 @@
+import { GameManager } from '../../src/gameplay/GameManager';
+const gs = GameManager.createInitialState(2, false);
+let s: any = { ...gs };
+const r1 = GameManager.placeUnit(s, 'mbbr_reactor', 16, 20);
+console.log('m1 ok?', r1.success);
+s = r1.newState;
+const r2 = GameManager.placeUnit(s, 'secondary_clarifier', 22, 23);
+console.log('clarifier ok?', r2.success, JSON.stringify(r2).slice(0, 200));
+s = r2.newState;
+console.log(s.units.map((u: any) => u.typeId + '@' + u.gridX + ',' + u.gridY).join(' | '));
