@@ -56,6 +56,21 @@ import {
 } from '../design/BasinZone';
 import { evaluatePermitCriteria } from '../sim/PermitEngine';
 
+/**
+ * Municipal overdraft financing — tycoon polish iter 39.
+ * When campaign cash goes negative the city charges overdraft interest.
+ * 18% APR municipal bridge financing: 0.18/365 ≈ 0.000493 per day.
+ * $10k debt ≈ $4.9/day, $25k ≈ $12.3/day, max $50k debt ≈ $24.7/day.
+ * Pure domain: overdraftFinancingCostPerDay(cash) is testable headlessly.
+ * Sandbox never charges (cash fixed at $9,999,999).
+ */
+export const OVERDRAFT_ANNUAL_RATE = 0.18;
+export const OVERDRAFT_DAILY_RATE = OVERDRAFT_ANNUAL_RATE / 365;
+export function overdraftFinancingCostPerDay(cash: number, dailyRate: number = OVERDRAFT_DAILY_RATE): number {
+  if (!Number.isFinite(cash) || cash >= 0) return 0;
+  return -cash * dailyRate;
+}
+
 export interface NextStepSuggestion {
   unitTypeId: UnitTypeId;
   name: string;
@@ -192,6 +207,7 @@ export class GameManager {
       dailySludgeDisposalCost: 0,
       dailyBiogasRevenue: 0,
       dailyFines: 0,
+      dailyFinancingCost: 0,
       totalTreatedM3: 0,
       netDailyProfit: 0
     };
@@ -686,6 +702,28 @@ export class GameManager {
           ];
         }
       }
+    }
+
+    // ── Tycoon polish iter 39: municipal overdraft financing cost ──────────
+    // When campaign cash is negative the city charges 18% APR overdraft
+    // interest — a few dollars per day on a small dip, ~$25/day at the
+    // -$50k floor. Sandbox never charges; cost is added to dailyFinancingCost
+    // and subtracted from net profit (not hidden in OPEX). An alert surfaces
+    // the bleed so the player notices before snowballing.
+    if (state.gameMode !== 'sandbox' && state.financials.cash < 0) {
+      const financingPerDay = overdraftFinancingCostPerDay(state.financials.cash);
+      simResult.financials.dailyFinancingCost = (simResult.financials.dailyFinancingCost ?? 0) + financingPerDay;
+      simResult.financials.netDailyProfit -= financingPerDay;
+      if (financingPerDay > 0.01 && !simResult.overallStats.activeAlerts.some(a => a.id === 'overdraft_financing')) {
+        simResult.overallStats.activeAlerts.push({
+          id: 'overdraft_financing',
+          type: 'warning' as const,
+          message: `Overdraft financing: $${financingPerDay.toFixed(1)}/day interest on $${Math.round(-state.financials.cash).toLocaleString()} debt (18% APR) — restore positive cash to stop charges.`,
+          timestamp: Date.now(),
+        });
+      }
+    } else {
+      simResult.financials.dailyFinancingCost = simResult.financials.dailyFinancingCost ?? 0;
     }
 
     // Apply financial cash flow

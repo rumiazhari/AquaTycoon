@@ -1,5 +1,5 @@
 /* Headless smoke tests for the fixed simulation core (run via `npm test` → tsx) */
-import { GameManager } from '../src/gameplay/GameManager';
+import { GameManager, overdraftFinancingCostPerDay, OVERDRAFT_DAILY_RATE, OVERDRAFT_ANNUAL_RATE } from '../src/gameplay/GameManager';
 import { SimulationEngine } from '../src/sim/SimulationEngine';
 import {
   UNIT_DEFINITIONS,
@@ -349,7 +349,7 @@ function solve(units: PlacedUnit[], pipes: PipeConnection[], flow = 10000) {
     },
     {
       cash: 0, dailyRevenue: 0, dailyOpex: 0, dailyPowerCost: 0, dailyChemicalCost: 0,
-      dailySludgeDisposalCost: 0, dailyBiogasRevenue: 0, dailyFines: 0,
+      dailySludgeDisposalCost: 0, dailyBiogasRevenue: 0, dailyFines: 0, dailyFinancingCost: 0,
       totalTreatedM3: 0, netDailyProfit: 0
     },
     1, 0.15, 45, { daylight: 1, wind: 1 }
@@ -3862,6 +3862,123 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
     assert(gs.financials.dailyChemicalCost < 1000, 'RE08b. no-flow tick chemical cost stays bounded '+gs.financials.dailyChemicalCost.toFixed(1));
   }
 }
+
+// ═════════════════════════════════════════════════════════════
+// TYCOON POLISH iter 39: Overdraft financing cost — municipal bridge loan
+// 18% APR municipal overdraft: ~4.93/d per 10k debt, ~24.66/d at 50k floor.
+// Pure domain: overdraftFinancingCostPerDay(cash); GameManager.tick layers it
+// onto dailyFinancingCost + netDailyProfit + an alert when campaign is overdrawn.
+// ═════════════════════════════════════════════════════════════
+{
+  // OV01: pure helper — zero or positive cash costs nothing
+  {
+    const a1 = overdraftFinancingCostPerDay(0) === 0;
+    const a2 = overdraftFinancingCostPerDay(1000) === 0;
+    const a3 = overdraftFinancingCostPerDay(50000) === 0;
+    const a4 = overdraftFinancingCostPerDay(Infinity) === 0;
+    const a5 = overdraftFinancingCostPerDay(NaN) === 0;
+    assert(a1, 'OV01. 0 cash -> 0 financing');
+    assert(a2, 'OV01b. positive cash -> 0');
+    assert(a3, 'OV01c. +50k -> 0');
+    assert(a4, 'OV01d. Infinity -> 0 guard');
+    assert(a5, 'OV01e. NaN -> 0 guard');
+  }
+  // OV02: linear scale at 18% APR (0.18/365 ~ 0.00049315 per 1/day)
+  {
+    const r = OVERDRAFT_DAILY_RATE;
+    assert(Math.abs(r - 0.18/365) < 1e-12, 'OV02. daily rate = 0.18/365 ~ 0.000493 ('+r.toExponential(4)+')');
+    assert(OVERDRAFT_ANNUAL_RATE === 0.18, 'OV02b. annual rate 18%');
+    const c10k = overdraftFinancingCostPerDay(-10000);
+    assert(Math.abs(c10k - 10000*r) < 0.01, 'OV02c. -10k debt cost '+c10k.toFixed(2)+' ~ '+(10000*r).toFixed(2));
+    assert(Math.abs(c10k - 4.93) < 0.05, 'OV02d. -10k -> 4.93/d got '+c10k.toFixed(2));
+    const c25k = overdraftFinancingCostPerDay(-25000);
+    assert(Math.abs(c25k - 12.33) < 0.05, 'OV02e. -25k -> 12.33/d got '+c25k.toFixed(2));
+    const c50k = overdraftFinancingCostPerDay(-50000);
+    assert(Math.abs(c50k - 24.66) < 0.05, 'OV02f. -50k floor -> 24.66/d got '+c50k.toFixed(2));
+    assert(Math.abs(c50k - c10k*5) < 0.01, 'OV02g. linear: -50k = 5x -10k ('+c50k.toFixed(2)+' vs '+(c10k*5).toFixed(2)+')');
+  }
+  // OV03: campaign tick with zero/positive cash -> no financing line, no alert
+  {
+    let gs = GameManager.createInitialState(0, false);
+    gs.financials.cash = 350000;
+    gs = GameManager.tick(gs, 0.5);
+    assert(gs.financials.dailyFinancingCost === 0, 'OV03. positive cash -> financing 0 (got '+gs.financials.dailyFinancingCost+')');
+    assert(!gs.overallStats.activeAlerts.some((a)=>a.id==='overdraft_financing'), 'OV03b. no overdraft alert when cash positive');
+    let gs0 = GameManager.createInitialState(0, false);
+    gs0.financials.cash = 0;
+    gs0 = GameManager.tick(gs0, 0.5);
+    assert(gs0.financials.dailyFinancingCost === 0, 'OV03c. zero cash -> financing 0 (got '+gs0.financials.dailyFinancingCost+')');
+  }
+  // OV04: campaign overdrawn small — financing deducted from profit + alert surfaces
+  {
+    let gs = GameManager.createInitialState(0, false);
+    gs.financials.cash = -10000;
+    const beforeCash = gs.financials.cash;
+    const expect = overdraftFinancingCostPerDay(beforeCash);
+    gs = GameManager.tick(gs, 0.5);
+    assert(Math.abs(gs.financials.dailyFinancingCost - expect) < 0.01, 'OV04. -10k overdraft financing '+gs.financials.dailyFinancingCost.toFixed(2)+' ~ '+expect.toFixed(2));
+    assert(gs.financials.dailyFinancingCost > 4 && gs.financials.dailyFinancingCost < 6, 'OV04b. overdraft cost in 4.5-6 range got '+gs.financials.dailyFinancingCost.toFixed(2));
+    assert(gs.overallStats.activeAlerts.some((a)=>a.id==='overdraft_financing'), 'OV04c. overdraft alert present when overdrawn');
+    const alert = gs.overallStats.activeAlerts.find((a)=>a.id==='overdraft_financing');
+    assert(alert && alert.message.includes('18%'), 'OV04d. alert mentions 18% APR: '+(alert? alert.message.slice(0,80):'none'));
+    let gsClean = GameManager.createInitialState(0, false);
+    gsClean.financials.cash = 10000;
+    gsClean = GameManager.tick(gsClean, 0.5);
+    const diff = gsClean.financials.netDailyProfit - gs.financials.netDailyProfit;
+    assert(Math.abs(diff - expect) < 1.5, 'OV04e. financing depresses profit by ~'+expect.toFixed(2)+' (diff '+diff.toFixed(2)+')');
+  }
+  // OV05: max overdraft -50000 -> max interest ~24.66/d
+  {
+    let gs = GameManager.createInitialState(0, false);
+    gs.financials.cash = -50000;
+    gs = GameManager.tick(gs, 0.5);
+    const expect = overdraftFinancingCostPerDay(-50000);
+    assert(Math.abs(gs.financials.dailyFinancingCost - expect) < 0.01, 'OV05. -50k floor financing '+gs.financials.dailyFinancingCost.toFixed(2)+' ~ '+expect.toFixed(2));
+    assert(gs.financials.dailyFinancingCost > 24 && gs.financials.dailyFinancingCost < 26, 'OV05b. max financing 24-26 got '+gs.financials.dailyFinancingCost.toFixed(2));
+    assert(gs.overallStats.activeAlerts.some((a)=>a.id==='overdraft_financing'), 'OV05c. max-debt alert present');
+  }
+  // OV06: sandbox never charges even when forced negative (free-money mode)
+  {
+    let gs = GameManager.createInitialState(0, true);
+    gs.financials.cash = -50000;
+    gs = GameManager.tick(gs, 0.5);
+    assert(gs.financials.dailyFinancingCost === 0, 'OV06. sandbox forced -50k still 0 financing (got '+gs.financials.dailyFinancingCost+')');
+    assert(!gs.overallStats.activeAlerts.some((a)=>a.id==='overdraft_financing'), 'OV06b. sandbox no overdraft alert even when forced');
+    assert(gs.financials.cash === 9999999, 'OV06c. sandbox cash stays clamped at 9999999 even after tick');
+  }
+  // OV07: financing interacts with flowing plant economics — net profit gap equals financing
+  {
+    let gs = GameManager.createInitialState(0, false);
+    const scr = { instanceId:'scrOV', typeId:'bar_screen', gridX:10, gridY:10, rotation:0, volume:200, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:0, lastOpexActual:0 };
+    gs.units.push(scr);
+    gs.pipes.push(
+      { id:'pOV1', fromUnitId:'inlet_0', fromPortId:'outlet', toUnitId:'scrOV', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'},
+      { id:'pOV2', fromUnitId:'scrOV', fromPortId:'outlet', toUnitId:'outfall_0', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'}
+    );
+    for(let i=0;i<10;i++) gs = GameManager.tick(gs, 0.5);
+    const baseFinancing = gs.financials.dailyFinancingCost;
+    const baseProfit = gs.financials.netDailyProfit;
+    let gsDebt = { ...gs, financials: { ...gs.financials, cash: -20000 }, overallStats: { ...gs.overallStats, activeAlerts: [...gs.overallStats.activeAlerts] } };
+    const expectDebt = overdraftFinancingCostPerDay(-20000);
+    gsDebt = GameManager.tick(gsDebt, 0.5);
+    assert(Math.abs(gsDebt.financials.dailyFinancingCost - expectDebt) < 0.1, 'OV07. flowing plant -20k financing '+gsDebt.financials.dailyFinancingCost.toFixed(2)+' ~ '+expectDebt.toFixed(2));
+    assert(gsDebt.financials.netDailyProfit < baseProfit, 'OV07b. overdraft reduces profit (base '+baseProfit.toFixed(0)+' -> debt '+gsDebt.financials.netDailyProfit.toFixed(0)+')');
+    assert(gsDebt.overallStats.activeAlerts.some((a)=>a.id==='overdraft_financing'), 'OV07c. financing alert on flowing overdrawn plant');
+    assert(baseFinancing === 0, 'OV07d. solvent baseline had zero financing (got '+baseFinancing+')');
+  }
+  // OV08: restoring positive cash stops charges next tick
+  {
+    let gs = GameManager.createInitialState(0, false);
+    gs.financials.cash = -15000;
+    gs = GameManager.tick(gs, 0.5);
+    assert(gs.financials.dailyFinancingCost > 0, 'OV08. overdrawn tick charges financing (got '+gs.financials.dailyFinancingCost.toFixed(2)+')');
+    gs.financials.cash = 5000;
+    gs = GameManager.tick(gs, 0.5);
+    assert(gs.financials.dailyFinancingCost === 0, 'OV08b. after repayment financing drops to 0 (got '+gs.financials.dailyFinancingCost+')');
+    assert(!gs.overallStats.activeAlerts.some((a)=>a.id==='overdraft_financing'), 'OV08c. alert cleared after solvency restored');
+  }
+}
+
 
 console.log(failures === 0 ? "\nALL TESTS PASSED" : `\n${failures} TEST(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);

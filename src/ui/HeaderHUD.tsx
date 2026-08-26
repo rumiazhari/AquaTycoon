@@ -80,13 +80,26 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({
             <div className="text-[9px] text-slate-400 font-mono">{currentLevel.code} • {currentLevel.title}</div>
           </div>
 
-          <div className="flex items-center gap-2 px-2.5 py-1 rounded-lg bg-slate-900/80 border border-slate-700/80">
-            <DollarSign size={14} className="text-emerald-400 shrink-0" />
+          <div
+            className={`flex items-center gap-2 px-2.5 py-1 rounded-lg border ${financials.cash < 0 ? 'bg-rose-950/40 border-rose-500/50 animate-pulse' : 'bg-slate-900/80 border-slate-700/80'}`}
+            title={
+              financials.cash < 0
+                ? `Overdraft $${Math.round(-financials.cash).toLocaleString()} debt — $${(financials.dailyFinancingCost ?? 0).toFixed(1)}/day interest at 18% APR. Restore positive cash to stop charges. Net $${Math.round(financials.netDailyProfit).toLocaleString()}/day.`
+                : `Cash on hand — net $${Math.round(financials.netDailyProfit).toLocaleString()}/day (Revenue $${Math.round(financials.dailyRevenue).toLocaleString()} – OPEX $${Math.round(financials.dailyOpex).toLocaleString()}${(financials.dailyFinancingCost ?? 0) > 0 ? ` – Financing $${Math.round(financials.dailyFinancingCost).toLocaleString()}` : ''})`
+            }
+          >
+            <DollarSign size={14} className={financials.cash < 0 ? 'text-rose-400 shrink-0' : 'text-emerald-400 shrink-0'} />
             <div className="leading-none">
-              <div className="text-xs font-bold font-mono text-emerald-400">${Math.round(financials.cash).toLocaleString()}</div>
-              <div className={`text-[9px] font-mono ${financials.netDailyProfit >= 0 ? 'text-emerald-300' : 'text-rose-400'}`}>
-                {financials.netDailyProfit >= 0 ? '+' : ''}${Math.round(financials.netDailyProfit).toLocaleString()}/day
-              </div>
+              <div className={`text-xs font-bold font-mono ${financials.cash < 0 ? 'text-rose-300' : 'text-emerald-400'}`}>${Math.round(financials.cash).toLocaleString()}</div>
+              {(financials.dailyFinancingCost ?? 0) > 0.5 ? (
+                <div className="text-[9px] font-mono text-amber-400">
+                  −${Math.round(financials.dailyFinancingCost).toLocaleString()}/d financing
+                </div>
+              ) : (
+                <div className={`text-[9px] font-mono ${financials.netDailyProfit >= 0 ? 'text-emerald-300' : 'text-rose-400'}`}>
+                  {financials.netDailyProfit >= 0 ? '+' : ''}${Math.round(financials.netDailyProfit).toLocaleString()}/day
+                </div>
+              )}
             </div>
           </div>
 

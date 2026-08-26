@@ -450,7 +450,10 @@ export class SimulationEngine {
 
     const totalDailyOpex = dailyPowerCost + dailyChemicalCost + dailySludgeCost + totalUnitOpex * 0.6;
     const totalDailyRevenue = dailyTariffRevenue + dailyBiogasElectricityRevenue;
-    const netDailyProfit = totalDailyRevenue - totalDailyOpex - dailyFines;
+    // municipal finance: base financing cost is zero here — GameManager layers
+    // overdraft interest on top based on negative cash balance (tycoon iter 39).
+    const dailyFinancingCost = 0;
+    const netDailyProfit = totalDailyRevenue - totalDailyOpex - dailyFines - dailyFinancingCost;
 
     const activeAlerts: PlantOverallStats['activeAlerts'] = [];
     if (violations.length > 0 && hasFlow) {
@@ -494,6 +497,7 @@ export class SimulationEngine {
       dailySludgeDisposalCost: dailySludgeCost,
       dailyBiogasRevenue: dailyBiogasElectricityRevenue,
       dailyFines,
+      dailyFinancingCost,
       totalTreatedM3: currentFinancials.totalTreatedM3, // accumulated by GameManager per simulated day
       netDailyProfit
     };

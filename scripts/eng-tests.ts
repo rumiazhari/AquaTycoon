@@ -242,7 +242,7 @@ function wq(over: Partial<WaterQuality>): WaterQuality {
   const std = GameManager.createInitialState(0, true).currentLevel.standards;
   const fin: GameFinancials = {
     cash: 1e6, dailyRevenue: 0, dailyOpex: 0, dailyPowerCost: 0, dailyChemicalCost: 0,
-    dailySludgeDisposalCost: 0, dailyBiogasRevenue: 0, dailyFines: 0,
+    dailySludgeDisposalCost: 0, dailyBiogasRevenue: 0, dailyFines: 0, dailyFinancingCost: 0,
     totalTreatedM3: 0, netDailyProfit: 0,
   };
   // Deliberate contrast (areas are PER-TRAIN — planAreaM2 semantics shared

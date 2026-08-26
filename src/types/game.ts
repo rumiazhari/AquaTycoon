@@ -67,6 +67,8 @@ export interface GameFinancials {
   dailySludgeDisposalCost: number;
   dailyBiogasRevenue: number;
   dailyFines: number;
+  /** Municipal overdraft financing cost when cash is negative (USD/day) — tycoon polish iter 39. */
+  dailyFinancingCost: number;
   totalTreatedM3: number;
   netDailyProfit: number;
 }
