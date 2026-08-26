@@ -56,6 +56,10 @@ import {
   pointNearBaffle,
 } from '../design/BasinZone';
 import { evaluatePermitCriteria } from '../sim/PermitEngine';
+import {
+  seasonalBonusPerDay,
+  seasonalLabel,
+} from '../design/SeasonalProfile';
 
 /**
  * Municipal overdraft financing — tycoon polish iter 39.
@@ -246,6 +250,7 @@ export class GameManager {
       dailyFinancingCost: 0,
       dailyReclaimBonus: 0,
       dailyTrustBonus: 0,
+      dailySeasonalBonus: 0,
       totalTreatedM3: 0,
       netDailyProfit: 0
     };
@@ -861,6 +866,63 @@ export class GameManager {
         if (simResult.overallStats.activeAlerts.some(a => a.id === 'trust_bonus')) {
           simResult.overallStats.activeAlerts = simResult.overallStats.activeAlerts.filter(a => a.id !== 'trust_bonus');
         }
+      }
+    }
+
+    // ── TYCOON SEASONAL iter 45 — annual tariff cycle (drought premium) ─────
+    // Summer drought scarcity lifts the municipal tariff up to +12%; winter
+    // surplus discounts to −12%. Deterministic sinusoid over 365 days,
+    // flow-gated (>10 m³/d) and tariff-gated, no construction gate.
+    // Stacks with reclaim + trust (all three can be live simultaneously).
+    // Negative winter discount reduces revenue/profit and shows as amber
+    // seasonal adjustment rather than a failure.
+    {
+      const flowS = simResult.finalEffluent.flowRate;
+      const tariffS = state.currentLevel.tariffPerM3;
+      const seasonalBonus = seasonalBonusPerDay(flowS, tariffS, newDays);
+      // Always store the raw bonus (positive = summer premium, negative = winter discount)
+      simResult.financials.dailySeasonalBonus = seasonalBonus;
+      if (flowS > 10 && tariffS > 0) {
+        simResult.financials.dailyRevenue += seasonalBonus;
+        simResult.financials.netDailyProfit += seasonalBonus;
+      }
+      const hasMeaningful = Math.abs(seasonalBonus) > 0.5 && flowS > 10 && tariffS > 0;
+      if (hasMeaningful) {
+        const lbl = seasonalLabel(newDays);
+        const isPremium = seasonalBonus > 0;
+        const alertId = 'seasonal_bonus';
+        const existing = simResult.overallStats.activeAlerts.find(a => a.id === alertId);
+        if (!existing) {
+          simResult.overallStats.activeAlerts.push({
+            id: alertId,
+            type: isPremium ? 'success' : 'info',
+            message: isPremium
+              ? `Summer drought premium: ${lbl.pct} tariff (${lbl.season} — scarcity lifts price to $${seasonalBonus.toFixed(0)}/d at ${flowS.toFixed(0)} m³/d)`
+              : `Winter tariff discount: ${lbl.pct} tariff (${lbl.season} — surplus lowers price $${seasonalBonus.toFixed(0)}/d)`,
+            timestamp: Date.now(),
+          });
+        } else {
+          // Refresh message if season/pct shifted meaningfully across ticks
+          const wantPremium = seasonalBonus > 0;
+          const wantType = wantPremium ? 'success' : 'info';
+          if (existing.type !== wantType || !existing.message.includes(lbl.pct)) {
+            simResult.overallStats.activeAlerts = simResult.overallStats.activeAlerts.map(a =>
+              a.id === alertId ? {
+                ...a,
+                type: wantType as any,
+                message: wantPremium
+                  ? `Summer drought premium: ${lbl.pct} tariff (${lbl.season} — scarcity lifts price to $${seasonalBonus.toFixed(0)}/d at ${flowS.toFixed(0)} m³/d)`
+                  : `Winter tariff discount: ${lbl.pct} tariff (${lbl.season} — surplus lowers price $${seasonalBonus.toFixed(0)}/d)`,
+              } : a
+            );
+          }
+        }
+      } else {
+        if (simResult.overallStats.activeAlerts.some(a => a.id === 'seasonal_bonus')) {
+          simResult.overallStats.activeAlerts = simResult.overallStats.activeAlerts.filter(a => a.id !== 'seasonal_bonus');
+        }
+        // Ensure stored bonus is zeroed when no flow (so HUD doesn't show ghost pill)
+        if (flowS <= 10) simResult.financials.dailySeasonalBonus = 0;
       }
     }
 

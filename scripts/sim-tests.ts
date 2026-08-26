@@ -50,6 +50,7 @@ import {
   constructionSummaryLine,
 } from '../src/design/ConstructionNetwork';
 import { evaluateConstructionEffects, filtrationLiveSets, chemicalReagentOpexPerDay, CHEMICAL_REAGENT_COST_PER_M3_PER_PUMP, brineDisposalOpexPerDay, RO_BRINE_DISPOSAL_COST_PER_M3_HANDLED, RO_BRINE_DISPOSAL_COST_PER_M3_UNHANDLED, reclaimedWaterBonusPerDay, RECLAIMED_BONUS_RATE_PER_SKID, RECLAIMED_BONUS_MAX_RATE, RECLAIMED_BONUS_TSS_THRESHOLD, RECLAIMED_BONUS_PATHOGEN_THRESHOLD } from '../src/design/ConstructionAdapter';
+import { seasonalTariffMultiplier, seasonalBonusPerDay, seasonalLabel, SEASONAL_TARIFF_AMPLITUDE } from '../src/design/SeasonalProfile';
 import {
   estimateBaffleCAPEX,
   validateBafflePlacement,
@@ -4843,6 +4844,159 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
     assert(trust > 0 && reclaim > 0, 'TR08. both trust and reclaim live');
     assert(gs.financials.dailyRevenue >= trust + reclaim, 'TR08b. revenue stacked');
     assert(gs.overallStats.activeAlerts.some((a)=>a.id==='trust_bonus') && gs.overallStats.activeAlerts.some((a)=>a.id==='reclaim_bonus'), 'TR08c. both alerts');
+  }
+}
+
+// ═════════════════════════════════════════════════════════════
+// SEASONAL TYCOON — annual tariff cycle (drought premium iter 45)
+// ═════════════════════════════════════════════════════════════
+{
+  // SE01: pure seasonalTariffMultiplier — amplitude 12%, range 0.88..1.12
+  {
+    const peak = seasonalTariffMultiplier(171);
+    assert(Math.abs(peak - 1.12) < 0.005, 'SE01. peak summer mul ~1.12 at day 171 (got '+peak.toFixed(4)+')');
+    const trough = seasonalTariffMultiplier(353.5);
+    assert(Math.abs(trough - 0.88) < 0.005, 'SE01b. winter trough ~0.88 at day 353.5 (got '+trough.toFixed(4)+')');
+    const equinox = seasonalTariffMultiplier(80);
+    assert(Math.abs(equinox - 1.0) < 0.005, 'SE01c. equinox ~1.00 at day 80 (got '+equinox.toFixed(4)+')');
+    const equinox2 = seasonalTariffMultiplier(262.5);
+    assert(Math.abs(equinox2 - 1.0) < 0.005, 'SE01d. opposite equinox ~1.00 at day 262.5 (got '+equinox2.toFixed(4)+')');
+    assert(SEASONAL_TARIFF_AMPLITUDE === 0.12, 'SE01e. amplitude constant 0.12');
+  }
+  // SE02: seasonalBonusPerDay pure helper — linear in flow*tariff, sign follows season
+  {
+    const peakBonus = seasonalBonusPerDay(3500, 0.45, 171);
+    assert(Math.abs(peakBonus - 189) < 1, 'SE02. L1 peak seasonal +$189/d (got '+peakBonus.toFixed(1)+')');
+    const troughBonus = seasonalBonusPerDay(3500, 0.45, 353.5);
+    assert(Math.abs(troughBonus + 189) < 1, 'SE02b. L1 trough -$189/d (got '+troughBonus.toFixed(1)+')');
+    const l4Peak = seasonalBonusPerDay(12000, 0.95, 171);
+    assert(Math.abs(l4Peak - 1368) < 2, 'SE02c. L4 peak seasonal +$1368/d (got '+l4Peak.toFixed(0)+')');
+    const l5Peak = seasonalBonusPerDay(15000, 0.90, 171);
+    assert(Math.abs(l5Peak - 1620) < 2, 'SE02d. L5 peak seasonal +$1620/d (got '+l5Peak.toFixed(0)+')');
+    const neutral = seasonalBonusPerDay(3500, 0.45, 80);
+    assert(Math.abs(neutral) < 1, 'SE02e. equinox ~$0 (got '+neutral.toFixed(2)+')');
+  }
+  // SE03: pure guards — non-finite, zero flow/tariff
+  {
+    assert(seasonalBonusPerDay(0, 0.45, 171) === 0, 'SE03. 0 flow -> $0 seasonal');
+    assert(seasonalBonusPerDay(3500, 0, 171) === 0, 'SE03b. 0 tariff -> $0');
+    assert(seasonalBonusPerDay(NaN, 0.45, 171) === 0, 'SE03c. NaN flow -> $0');
+    assert(seasonalBonusPerDay(3500, 0.45, NaN) === 0, 'SE03d. NaN days -> $0');
+    assert(seasonalTariffMultiplier(NaN) === 1, 'SE03e. NaN days mul -> 1.0 (neutral)');
+    assert(seasonalTariffMultiplier(Infinity) === 1, 'SE03f. Inf days mul -> 1.0');
+  }
+  // SE04: label helper — pct + season strings
+  {
+    const peakLbl = seasonalLabel(171);
+    assert(peakLbl.pct === '+12%', 'SE04. peak label +12% (got '+peakLbl.pct+')');
+    assert(peakLbl.isPremium === true && peakLbl.season === 'Summer drought', 'SE04b. peak season Summer drought (got '+peakLbl.season+')');
+    const troughLbl = seasonalLabel(353.5);
+    assert(troughLbl.pct === '-12%', 'SE04c. trough -12% (got '+troughLbl.pct+')');
+    assert(troughLbl.isPremium === false, 'SE04d. trough not premium');
+    const eqLbl = seasonalLabel(80);
+    assert(eqLbl.pct === '+0%' || eqLbl.pct === '0%', 'SE04e. equinox ~0% (got '+eqLbl.pct+')');
+  }
+  // SE05: no-flow -> seasonal 0 and no alert (even at peak day)
+  {
+    let gs:any = GameManager.createInitialState(0, true);
+    gs.gameTimeDays = 171;
+    let r = GameManager.placeCustomBasin(gs, { x:5, y:5, w:4, h:4 }); gs=r.newState;
+    gs = GameManager.tick(gs, 0.5);
+    assert((gs.financials.dailySeasonalBonus ?? 0) === 0, 'SE05. no flow -> seasonal $0 even at peak summer (got '+gs.financials.dailySeasonalBonus+')');
+    assert(!gs.overallStats.activeAlerts.some((a:any)=>a.id==='seasonal_bonus'), 'SE05b. no seasonal alert when no flow');
+  }
+  // SE06: tick lifecycle — peak summer premium positive, winter negative, profit delta equals seasonal
+  {
+    const mkPlant = (day:number) => {
+      let gs:any = GameManager.createInitialState(0, true);
+      gs.gameTimeDays = day;
+      let rr = GameManager.placeCustomBasin(gs, { x:5,y:5,w:4,h:4 }); gs=rr.newState;
+      rr = GameManager.placeProcessEquipment(gs, 'submersible_mixer', 6,6); gs=rr.newState;
+      rr = GameManager.placeUtilityConnection(gs,'power_cable',6,6,22,5); gs=rr.newState;
+      const scr = { instanceId:'scrSe', typeId:'bar_screen', gridX:10, gridY:10, rotation:0, volume:200, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:0, lastOpexActual:0 } as any;
+      gs.units.push(scr);
+      gs.pipes.push(
+        { id:'se1', fromUnitId:'inlet_0', fromPortId:'outlet', toUnitId:'scrSe', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'} as any,
+        { id:'se2', fromUnitId:'scrSe', fromPortId:'outlet', toUnitId:'outfall_0', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'} as any
+      );
+      for(let i=0;i<10;i++) gs = GameManager.tick(gs, 0.5);
+      return gs;
+    };
+    const gsSummer:any = mkPlant(171);
+    assert(gsSummer.finalEffluent.flowRate > 10, 'SE06. summer flow established '+gsSummer.finalEffluent.flowRate.toFixed(0));
+    const summerBonus = gsSummer.financials.dailySeasonalBonus ?? 0;
+    const flowS = gsSummer.finalEffluent.flowRate;
+    const tariffS = gsSummer.currentLevel.tariffPerM3;
+    const expectSummer = seasonalBonusPerDay(flowS, tariffS, gsSummer.gameTimeDays);
+    assert(summerBonus > 50, 'SE06b. summer seasonal positive >$50 (got '+summerBonus.toFixed(1)+' flow '+flowS.toFixed(0)+')');
+    assert(Math.abs(summerBonus - expectSummer) < 2, 'SE06c. seasonal matches pure func '+summerBonus.toFixed(1)+' ~ '+expectSummer.toFixed(1));
+    assert(gsSummer.financials.dailyRevenue >= summerBonus, 'SE06d. revenue includes seasonal');
+    assert(gsSummer.overallStats.activeAlerts.some((a:any)=>a.id==='seasonal_bonus'), 'SE06e. summer seasonal alert present');
+    assert(gsSummer.overallStats.activeAlerts.find((a:any)=>a.id==='seasonal_bonus').type==='success', 'SE06f. summer alert type success');
+    const gsWinter:any = mkPlant(353.5);
+    const winterBonus = gsWinter.financials.dailySeasonalBonus ?? 0;
+    assert(winterBonus < -50, 'SE06g. winter seasonal negative <-$50 (got '+winterBonus.toFixed(1)+')');
+    assert(gsWinter.overallStats.activeAlerts.some((a:any)=>a.id==='seasonal_bonus'), 'SE06h. winter seasonal alert present even negative');
+    assert(gsWinter.overallStats.activeAlerts.find((a:any)=>a.id==='seasonal_bonus').type==='info', 'SE06i. winter alert type info');
+    assert(gsSummer.financials.netDailyProfit > gsWinter.financials.netDailyProfit, 'SE06j. summer profit '+gsSummer.financials.netDailyProfit.toFixed(0)+' > winter '+gsWinter.financials.netDailyProfit.toFixed(0));
+  }
+  // SE07: stacking — seasonal + trust + reclaim can all be live simultaneously
+  {
+    let gs:any = GameManager.createInitialState(0, true);
+    gs.gameTimeDays = 171;
+    const train = ['bar_screen','grit_chamber','primary_clarifier_circular','activated_sludge_cas','secondary_clarifier','uv_disinfection'] as any;
+    let x=6;
+    for(const tid of train){
+      const u={ instanceId:'seTr_'+tid, typeId:tid, gridX:x, gridY:10, rotation:0, volume:200, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:0, lastOpexActual:0 } as any;
+      gs.units.push(u); x+=5;
+    }
+    let prev='inlet_0';
+    let pid=0;
+    const chain=['seTr_bar_screen','seTr_grit_chamber','seTr_primary_clarifier_circular','seTr_activated_sludge_cas','seTr_secondary_clarifier','seTr_uv_disinfection','outfall_0'];
+    for(const nid of chain){
+      gs.pipes.push({ id:'seTr_p'+String(pid++), fromUnitId:prev, fromPortId:'outlet', toUnitId:nid, toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'} as any);
+      if(nid!=='outfall_0') prev=nid;
+    }
+    gs.pipes.push({ id:'seTr_ras', fromUnitId:'seTr_secondary_clarifier', fromPortId:'sludge_outlet', toUnitId:'seTr_activated_sludge_cas', toPortId:'ras_inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'ras'} as any);
+    let rr = GameManager.placeCustomBasin(gs, { x:5,y:5,w:4,h:4 }); gs=rr.newState;
+    rr = GameManager.placeProcessEquipment(gs,'submersible_mixer',6,6); gs=rr.newState;
+    rr = GameManager.placeProcessEquipment(gs,'ro_skid',22,5); gs=rr.newState;
+    rr = GameManager.placeProcessEquipment(gs,'ro_skid',23,5); gs=rr.newState;
+    gs.utilityConnections.push({ id:'seTr_mx', type:'power_cable', ax:6, ay:6, bx:22, by:5, createdAtDay:0 } as any);
+    gs.utilityConnections.push({ id:'seTr_ro1', type:'power_cable', ax:22, ay:5, bx:22, by:5, createdAtDay:0 } as any);
+    gs.utilityConnections.push({ id:'seTr_ro2', type:'power_cable', ax:23, ay:5, bx:23, by:5, createdAtDay:0 } as any);
+    for(let i=0;i<14;i++) gs = GameManager.tick(gs, 0.5);
+    gs.complianceStreakDays = 8;
+    gs.gameTimeDays = 171;
+    gs = GameManager.tick(gs, 0.5);
+    const seasonal = gs.financials.dailySeasonalBonus ?? 0;
+    const trust = gs.financials.dailyTrustBonus ?? 0;
+    assert(seasonal > 50, 'SE07. seasonal live in stacked plant (got '+seasonal.toFixed(0)+')');
+    assert(trust > 0, 'SE07b. trust live with 8d streak (got '+trust.toFixed(0)+')');
+    assert(gs.financials.dailyRevenue >= seasonal + trust, 'SE07c. revenue stacks seasonal+trust');
+    assert(gs.overallStats.activeAlerts.some((a:any)=>a.id==='seasonal_bonus'), 'SE07d. seasonal alert in stacked plant');
+    if(trust>0) assert(gs.overallStats.activeAlerts.some((a:any)=>a.id==='trust_bonus'), 'SE07e. trust alert also present when stacked');
+  }
+  // SE08: sandbox / overdraft interactions — seasonal still applies
+  {
+    let gs:any = GameManager.createInitialState(0, false);
+    gs.gameTimeDays = 171;
+    let rr = GameManager.placeCustomBasin(gs, { x:5,y:5,w:4,h:4 }); gs=rr.newState;
+    rr = GameManager.placeProcessEquipment(gs,'submersible_mixer',6,6); gs=rr.newState;
+    rr = GameManager.placeUtilityConnection(gs,'power_cable',6,6,22,5); gs=rr.newState;
+    const scr={ instanceId:'scrSe8', typeId:'bar_screen', gridX:10, gridY:10, rotation:0, volume:200, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:0, lastOpexActual:0 } as any;
+    gs.units.push(scr);
+    gs.pipes.push(
+      { id:'se81', fromUnitId:'inlet_0', fromPortId:'outlet', toUnitId:'scrSe8', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'} as any,
+      { id:'se82', fromUnitId:'scrSe8', fromPortId:'outlet', toUnitId:'outfall_0', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'} as any
+    );
+    gs.financials.cash = -20000;
+    for(let i=0;i<10;i++) gs = GameManager.tick(gs, 0.5);
+    const seas = gs.financials.dailySeasonalBonus ?? 0;
+    const fin = gs.financials.dailyFinancingCost ?? 0;
+    assert(seas > 0, 'SE08. seasonal premium still live while overdrawn (got '+seas.toFixed(0)+')');
+    assert(fin > 0, 'SE08b. financing still live while overdrawn (got '+fin.toFixed(1)+')');
+    assert(Math.abs(gs.financials.netDailyProfit - (gs.financials.dailyRevenue - gs.financials.dailyOpex - gs.financials.dailyFines - (gs.financials.dailyFinancingCost ?? 0))) < 0.5, 'SE08c. seasonal already folded into Revenue/Profit (got net '+gs.financials.netDailyProfit.toFixed(0)+' rev '+gs.financials.dailyRevenue.toFixed(0)+')');
   }
 }
 

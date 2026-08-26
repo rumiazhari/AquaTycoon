@@ -73,6 +73,8 @@ export interface GameFinancials {
   dailyReclaimBonus?: number;
   /** Municipal trust dividend for sustained permit compliance (USD/day) — tycoon iter 44. Optional for legacy saves. */
   dailyTrustBonus?: number;
+  /** Seasonal tariff premium/discount for annual drought cycle (USD/day, can be negative) — tycoon iter 45. */
+  dailySeasonalBonus?: number;
   totalTreatedM3: number;
   netDailyProfit: number;
 }
