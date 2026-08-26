@@ -4145,6 +4145,167 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
   }
 }
 
+// ═════════════════════════════════════════════════════════════
+// RO SLICE 2: tertiary RO live physics — powered skids polish to potable
+// ═════════════════════════════════════════════════════════════
+{
+  const mkBasinRop = (x=5,y=5,w=8,h=6,id='bRop1') => ({ x, y, w, h, depthM:4, id, createdAtDay:0 });
+  const basinRop = mkBasinRop();
+  const mkRoRop = (id,x,y) => ({ id, typeId:'ro_skid', x, y, createdAtDay:0 });
+  const mkBrineRop = (id,x,y) => ({ id, typeId:'brine_tank', x, y, createdAtDay:0 });
+  const mkMixerRop = (id,x,y) => ({ id, typeId:'submersible_mixer', x, y, createdAtDay:0 });
+  const cableRop = (ax,ay,bx,by) => ({ id:'cr_'+ax+'_'+ay+'_'+bx+'_'+by, type:'power_cable', ax, ay, bx, by, createdAtDay:0 });
+  const healthyBasin = mkBasinRop();
+  const mixer = mkMixerRop('mxRop',6,6);
+  const ro1 = mkRoRop('roRop1',22,5);
+  const ro2 = mkRoRop('roRop2',23,5);
+  const ro3 = mkRoRop('roRop3',24,5);
+  const brine1 = mkBrineRop('brRop1',25,5);
+  const withHealthy = (extraEq=[], extraCables=[]) => {
+    const eq = [mixer, ...extraEq];
+    const uc = [cableRop(6,6,22,5), ...extraCables];
+    return { eq, uc };
+  };
+  // ROP01: identity — no RO kit = 1.0x on all RO multipliers
+  {
+    const {eq, uc} = withHealthy();
+    const ce = evaluateConstructionEffects([healthyBasin], eq, uc);
+    assert(ce.totalRoSkids===0 && ce.poweredRoSkids===0 && ce.liveRoSkids===0, 'ROP01. no RO kit counts 0 (got '+ce.totalRoSkids+'/'+ce.poweredRoSkids+'/'+ce.liveRoSkids+')');
+    assert(ce.tssMultiplier < 1.35 && ce.tssMultiplier > 0.7, 'ROP01b. no RO but septic? actually healthy so ~1 (got '+ce.tssMultiplier.toFixed(3)+')');
+    assert(ce.toxicMultiplier===1 && ce.pathogensMultiplier===1, 'ROP01c. no RO -> toxic/pathogens 1 (got '+ce.toxicMultiplier+'/'+ce.pathogensMultiplier+')');
+    assert(ce.bodMultiplier < 1.1 && ce.tpMultiplier <=1, 'ROP01d. bod/tp neutral without RO bod='+ce.bodMultiplier.toFixed(3)+' tp='+ce.tpMultiplier.toFixed(3));
+  }
+  // ROP02: single powered RO skid cuts TSS to 0.18x (tertiary clarity) when healthy
+  {
+    const {eq: baseEq, uc: baseUc} = withHealthy([ro1], [cableRop(22,5,22,5)]);
+    const ce = evaluateConstructionEffects([healthyBasin], baseEq, baseUc);
+    assert(ce.poweredRoSkids===1 && ce.liveRoSkids===1, 'ROP02. 1 powered RO (got '+ce.liveRoSkids+' live)');
+    assert(Math.abs(ce.tssMultiplier - 0.18) < 0.015, 'ROP02b. TSS 0.18x with one RO (got '+ce.tssMultiplier.toFixed(4)+')');
+    assert(Math.abs(ce.bodMultiplier - 0.72) < 0.03, 'ROP02c. BOD 0.72x with one RO (got '+ce.bodMultiplier.toFixed(4)+')');
+    assert(Math.abs(ce.tpMultiplier - 0.32) < 0.03, 'ROP02d. TP 0.32x with one RO (got '+ce.tpMultiplier.toFixed(4)+')');
+  }
+  // ROP03: single RO toxics 0.35x and pathogens 0.08x
+  {
+    const {eq, uc} = withHealthy([ro1], [cableRop(22,5,22,5)]);
+    const ce = evaluateConstructionEffects([healthyBasin], eq, uc);
+    assert(Math.abs(ce.toxicMultiplier - 0.35) < 0.02, 'ROP03. toxic 0.35x (got '+ce.toxicMultiplier.toFixed(4)+')');
+    assert(Math.abs(ce.pathogensMultiplier - 0.08) < 0.01, 'ROP03b. pathogens 0.08x (got '+ce.pathogensMultiplier.toFixed(4)+')');
+    assert(Math.abs(ce.codMultiplier - 0.75) < 0.02, 'ROP03c. COD 0.75x (got '+ce.codMultiplier.toFixed(4)+')');
+    assert(Math.abs(ce.tnMultiplier - 0.82) < 0.02, 'ROP03d. TN 0.82x (got '+ce.tnMultiplier.toFixed(4)+')');
+  }
+  // ROP04: two powered RO skids stack — squares of single (≈0.032 TSS) and floors respected
+  {
+    const eq = [mixer, ro1, ro2];
+    const uc = [cableRop(6,6,22,5), cableRop(22,5,22,5), cableRop(23,5,22,5)];
+    const ce = evaluateConstructionEffects([healthyBasin], eq, uc);
+    assert(ce.liveRoSkids===2, 'ROP04. 2 live RO (got '+ce.liveRoSkids+')');
+    assert(Math.abs(ce.tssMultiplier - 0.0324) < 0.005, 'ROP04b. TSS 0.0324x two skids (got '+ce.tssMultiplier.toFixed(4)+')');
+    assert(Math.abs(ce.tpMultiplier - 0.1024) < 0.01, 'ROP04c. TP 0.1024x two skids (got '+ce.tpMultiplier.toFixed(4)+')');
+    assert(Math.abs(ce.pathogensMultiplier - 0.0064) < 0.001, 'ROP04d. pathogens 0.0064x two skids (got '+ce.pathogensMultiplier.toFixed(5)+')');
+  }
+  // ROP05: three skids reaches floors (TSS floor 0.01, TP floor 0.08, pathogens floor 0.003)
+  {
+    const eq = [mixer, ro1, ro2, ro3];
+    const uc = [cableRop(6,6,22,5), cableRop(22,5,22,5), cableRop(23,5,22,5), cableRop(24,5,22,5)];
+    const ce = evaluateConstructionEffects([healthyBasin], eq, uc);
+    assert(ce.liveRoSkids===3, 'ROP05. 3 live RO (got '+ce.liveRoSkids+')');
+    assert(ce.tssMultiplier >= 0.009 && ce.tssMultiplier < 0.012, 'ROP05b. TSS near floor 0.01 with volume bonus (got '+ce.tssMultiplier.toFixed(5)+')');
+    assert(ce.tpMultiplier >= 0.08 && ce.tpMultiplier < 0.09, 'ROP05c. TP floored at 0.08 (got '+ce.tpMultiplier.toFixed(4)+')');
+    assert(ce.pathogensMultiplier >= 0.003 && ce.pathogensMultiplier < 0.004, 'ROP05d. pathogens nearing floor 0.003 (got '+ce.pathogensMultiplier.toFixed(5)+')');
+    assert(ce.bodMultiplier >= 0.42 && ce.bodMultiplier < 0.47, 'ROP05e. BOD floored near 0.45 with volume bonus (got '+ce.bodMultiplier.toFixed(4)+')');
+  }
+  // ROP06: unpowered RO skid = identity (no effect)
+  {
+    const eq = [mixer, ro1];
+    const uc = [cableRop(6,6,20,5)];
+    const ce = evaluateConstructionEffects([healthyBasin], eq, uc);
+    assert(ce.poweredRoSkids===0 && ce.liveRoSkids===0, 'ROP06. unpowered RO 0 live (got '+ce.liveRoSkids+')');
+    assert(ce.toxicMultiplier===1 && ce.pathogensMultiplier===1 && ce.tpMultiplier===1, 'ROP06b. unpowered identity tp='+ce.tpMultiplier+' toxic='+ce.toxicMultiplier+' path='+ce.pathogensMultiplier);
+    assert(ce.tssMultiplier < 1 && ce.tssMultiplier > 0.9, 'ROP06c. volume settling still applies without RO (got '+ce.tssMultiplier.toFixed(3)+')');
+  }
+  // ROP07: no basins -> identity even with powered RO (backward compat for empty world)
+  {
+    const ce = evaluateConstructionEffects([], [ro1], [cableRop(22,5,22,5)]);
+    assert(ce.liveRoSkids===1 && ce.poweredRoSkids===1, 'ROP07. no basin but RO powered counts live (got '+ce.liveRoSkids+')');
+    assert(ce.tssMultiplier===1 && ce.tpMultiplier===1 && ce.toxicMultiplier===1 && ce.pathogensMultiplier===1, 'ROP07b. no basin -> no RO polish (got tss '+ce.tssMultiplier+' tp '+ce.tpMultiplier+')');
+  }
+  // ROP08: brine-agnostic this slice — powered brine tank present or not does not change polish
+  {
+    const eqA = [mixer, ro1];
+    const ucA = [cableRop(6,6,22,5), cableRop(22,5,22,5)];
+    const ceA = evaluateConstructionEffects([healthyBasin], eqA, ucA);
+    const eqB = [mixer, ro1, brine1];
+    const ucB = [cableRop(6,6,22,5), cableRop(22,5,22,5), cableRop(25,5,22,5)];
+    const ceB = evaluateConstructionEffects([healthyBasin], eqB, ucB);
+    assert(ceA.tssMultiplier===ceB.tssMultiplier && ceA.tpMultiplier===ceB.tpMultiplier, 'ROP08. brine presence does not gate TSS/TP this slice (a '+ceA.tssMultiplier.toFixed(3)+' b '+ceB.tssMultiplier.toFixed(3)+')');
+    assert(ceB.poweredBrineTanks===1 && ceB.totalBrineTanks===1, 'ROP08b. brine counted 1/1 powered (got '+ceB.poweredBrineTanks+'/'+ceB.totalBrineTanks+')');
+    assert(ceB.summary.includes('RO') || ceB.liveRoSkids===1, 'ROP08c. summary or live tracks RO with brine (summary: '+ceB.summary+')');
+  }
+  // ROP09: tick lifecycle — powered RO actually cuts TSS/TP/toxics/pathogens of final effluent
+  {
+    let gs = GameManager.createInitialState(0, true);
+    const br = GameManager.placeCustomBasin(gs, { x:5, y:5, w:8, h:6 }); gs=br.newState;
+    let r = GameManager.placeProcessEquipment(gs, 'submersible_mixer', 6, 6); gs=r.newState;
+    gs.utilityConnections.push({ id:'cr_mx', type:'power_cable', ax:6, ay:6, bx:22, by:5, createdAtDay:0 } as any);
+    r = GameManager.placeProcessEquipment(gs, 'ro_skid', 22, 5); gs=r.newState;
+    gs.utilityConnections.push({ id:'cr_ro', type:'power_cable', ax:22, ay:5, bx:22, by:5, createdAtDay:0 } as any);
+    const scr = { instanceId:'scrRop', typeId:'bar_screen', gridX:10, gridY:10, rotation:0, volume:200, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:0, lastOpexActual:0 } as any;
+    gs.units.push(scr);
+    gs.pipes.push(
+      { id:'pRop1', fromUnitId:'inlet_0', fromPortId:'outlet', toUnitId:'scrRop', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'} as any,
+      { id:'pRop2', fromUnitId:'scrRop', fromPortId:'outlet', toUnitId:'outfall_0', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'} as any
+    );
+    let gsBaseline = GameManager.createInitialState(0, true);
+    const brB = GameManager.placeCustomBasin(gsBaseline, { x:5, y:5, w:8, h:6 }); gsBaseline=brB.newState;
+    let rB = GameManager.placeProcessEquipment(gsBaseline, 'submersible_mixer', 6, 6); gsBaseline=rB.newState;
+    gsBaseline.utilityConnections.push({ id:'cr_mx_b', type:'power_cable', ax:6, ay:6, bx:22, by:5, createdAtDay:0 } as any);
+    gsBaseline.units.push({ ...scr, instanceId:'scrRopB' });
+    gsBaseline.pipes.push(
+      { id:'pRop1B', fromUnitId:'inlet_0', fromPortId:'outlet', toUnitId:'scrRopB', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'} as any,
+      { id:'pRop2B', fromUnitId:'scrRopB', fromPortId:'outlet', toUnitId:'outfall_0', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'} as any
+    );
+    for(let i=0;i<5;i++){ gs=GameManager.tick(gs,0.5); gsBaseline=GameManager.tick(gsBaseline,0.5); }
+    assert(gs.finalEffluent.tss < gsBaseline.finalEffluent.tss * 0.25, 'ROP09. RO tick cuts TSS '+gsBaseline.finalEffluent.tss.toFixed(1)+' -> '+gs.finalEffluent.tss.toFixed(1)+' (~0.18x)');
+    assert(gs.finalEffluent.tp < gsBaseline.finalEffluent.tp * 0.45, 'ROP09b. RO tick cuts TP '+gsBaseline.finalEffluent.tp.toFixed(2)+' -> '+gs.finalEffluent.tp.toFixed(2)+' (~0.32x)');
+    if (gsBaseline.finalEffluent.toxicIndex > 0.1) {
+      assert(gs.finalEffluent.toxicIndex < gsBaseline.finalEffluent.toxicIndex * 0.5, 'ROP09c. RO tick cuts toxics '+gsBaseline.finalEffluent.toxicIndex.toFixed(1)+' -> '+gs.finalEffluent.toxicIndex.toFixed(1));
+    } else {
+      assert(gs.finalEffluent.toxicIndex <= 0.5, 'ROP09c. RO tick toxics stays near 0 when influent clean (got '+gs.finalEffluent.toxicIndex.toFixed(2)+')');
+    }
+    assert(gs.finalEffluent.pathogens < gsBaseline.finalEffluent.pathogens * 0.15, 'ROP09d. RO tick cuts pathogens '+gsBaseline.finalEffluent.pathogens.toFixed(0)+' -> '+gs.finalEffluent.pathogens.toFixed(0)+' (~0.08x)');
+    assert(gs.finalEffluent.turbidity < gsBaseline.finalEffluent.turbidity, 'ROP09e. RO tick cuts turbidity '+gsBaseline.finalEffluent.turbidity.toFixed(2)+' -> '+gs.finalEffluent.turbidity.toFixed(2));
+  }
+  // ROP10: stacked chemical + RO TP is stronger than either alone (independent floors)
+  {
+    const chemPump = { id:'dpRop', typeId:'chemical_dosing_pump', x:7, y:6, createdAtDay:0 };
+    const chemStore = { id:'stRop', typeId:'chemical_storage_tank', x:25, y:5, createdAtDay:0 };
+    const eqChem = [mixer, chemPump, chemStore, ro1];
+    const ucChem = [cableRop(6,6,22,5), cableRop(7,6,22,5), cableRop(25,5,22,5), cableRop(22,5,22,5)];
+    const ceChemRo = evaluateConstructionEffects([healthyBasin], eqChem, ucChem);
+    const ceChemOnly = evaluateConstructionEffects([healthyBasin], [mixer, chemPump, chemStore], [cableRop(6,6,22,5), cableRop(7,6,22,5), cableRop(25,5,22,5)]);
+    const ceRoOnly = evaluateConstructionEffects([healthyBasin], [mixer, ro1], [cableRop(6,6,22,5), cableRop(22,5,22,5)]);
+    assert(ceChemRo.tpMultiplier < ceChemOnly.tpMultiplier && ceChemRo.tpMultiplier < ceRoOnly.tpMultiplier, 'ROP10. chem+RO TP '+ceChemRo.tpMultiplier.toFixed(4)+' < chem '+ceChemOnly.tpMultiplier.toFixed(4)+' and RO '+ceRoOnly.tpMultiplier.toFixed(4));
+    assert(ceChemRo.toxicMultiplier===ceRoOnly.toxicMultiplier, 'ROP10b. chemical does not affect toxic (chemRo '+ceChemRo.toxicMultiplier+' vs roOnly '+ceRoOnly.toxicMultiplier+')');
+  }
+  // ROP11: summary includes RO polishing chip when live
+  {
+    const ce = evaluateConstructionEffects([healthyBasin], [mixer, ro1], [cableRop(6,6,22,5), cableRop(22,5,22,5)]);
+    assert(ce.summary.includes('RO'), 'ROP11. summary includes RO polishing: '+ce.summary);
+    const ceNone = evaluateConstructionEffects([], [ro1], [cableRop(22,5,22,5)]);
+    assert(ceNone.summary.includes('no custom basins'), 'ROP11b. no-basin summary shows no basins (got '+ceNone.summary+')');
+    assert(ceNone.tssMultiplier===1 && ceNone.tpMultiplier===1, 'ROP11b2. no-basin no RO polish multipliers (tss '+ceNone.tssMultiplier+' tp '+ceNone.tpMultiplier+')');
+  }
+  // ROP12: counts — total/powered/liveBrine tracked
+  {
+    const ce = evaluateConstructionEffects([healthyBasin], [mixer, ro1, brine1], [cableRop(6,6,22,5), cableRop(22,5,22,5)]);
+    assert(ce.totalRoSkids===1 && ce.poweredRoSkids===1 && ce.liveRoSkids===1, 'ROP12. RO skid counts 1/1/1 (got '+ce.totalRoSkids+'/'+ce.poweredRoSkids+'/'+ce.liveRoSkids+')');
+    assert(ce.totalBrineTanks===1 && ce.poweredBrineTanks===0, 'ROP12b. brine unpowered so 0 powered (got '+ce.poweredBrineTanks+'/'+ce.totalBrineTanks+')');
+    const ceBoth = evaluateConstructionEffects([healthyBasin], [mixer, ro1, brine1], [cableRop(6,6,22,5), cableRop(22,5,22,5), cableRop(25,5,22,5)]);
+    assert(ceBoth.poweredBrineTanks===1, 'ROP12c. brine powered 1 (got '+ceBoth.poweredBrineTanks+')');
+  }
+}
+
+
 
 console.log(failures === 0 ? "\nALL TESTS PASSED" : `\n${failures} TEST(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);

@@ -615,7 +615,7 @@ export class GameManager {
       );
       const hasFlow = simResult.finalEffluent.flowRate > 10;
       let effChanged = false;
-      if (hasFlow && (ce.bodMultiplier !== 1 || ce.tnMultiplier !== 1 || ce.tssMultiplier !== 1 || ce.codMultiplier !== 1 || ce.tpMultiplier !== 1 || ce.doBoostMgL !== 0)) {
+      if (hasFlow && (ce.bodMultiplier !== 1 || ce.tnMultiplier !== 1 || ce.tssMultiplier !== 1 || ce.codMultiplier !== 1 || ce.tpMultiplier !== 1 || (ce as any).toxicMultiplier !== 1 || (ce as any).pathogensMultiplier !== 1 || ce.doBoostMgL !== 0)) {
         const eff = simResult.finalEffluent;
         const next = { ...eff } as WaterQuality;
         const cl = (v: number, lo = 0) => Number.isFinite(v) ? Math.max(lo, v) : lo;
@@ -631,6 +631,11 @@ export class GameManager {
         next.tp  = cl(eff.tp  * (ce.tssMultiplier * 0.5 + 0.5) * ce.tpMultiplier);
         next.turbidity = cl(eff.turbidity * ce.tssMultiplier);
         next.do = Math.max(0, Math.min(14, cl(eff.do, 0) + ce.doBoostMgL));
+        // RO SLICE 2 tertiary polishing — dissolved salts / micropollutants / pathogens
+        const toxicMul = (ce as any).toxicMultiplier ?? 1;
+        const pathMul  = (ce as any).pathogensMultiplier ?? 1;
+        if (toxicMul !== 1) next.toxicIndex = cl(eff.toxicIndex * toxicMul, 0);
+        if (pathMul  !== 1) next.pathogens  = cl(eff.pathogens  * pathMul, 0);
         simResult.finalEffluent = next;
         effChanged = true;
       }

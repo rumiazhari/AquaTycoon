@@ -103,12 +103,20 @@ export interface ConstructionTickEffect {
   activeDosingPumps: number;
   /** Phase 7 slice 4: flow-scaled reagent consumable cost (USD/day, 100% chemical). */
   reagentOpexPerDay: number;
+  /** RO SLICE 2 tertiary RO kit — live polishing counts. */
+  totalRoSkids: number;
+  poweredRoSkids: number;
+  liveRoSkids: number;
+  totalBrineTanks: number;
+  poweredBrineTanks: number;
   /** Effluent multipliers (<1 = improvement, >1 = penalty). */
   bodMultiplier: number;
   tnMultiplier: number;
   tssMultiplier: number;
   codMultiplier: number;
   tpMultiplier: number;
+  toxicMultiplier: number;
+  pathogensMultiplier: number;
   /** Dissolved-oxygen delta added to the final effluent (mg/L, may be negative). */
   doBoostMgL: number;
   /** Quick human summary for diagnostics. */
@@ -170,6 +178,9 @@ export function evaluateConstructionEffects(
   let tnMul = 1;
   let tssMul = 1;
   let codMul = 1;
+  let tpMul = 1;
+  let toxicMul = 1;
+  let pathogensMul = 1;
   let doBoost = 0;
 
   if (bs.length > 0 && aerated > 0) {
@@ -356,7 +367,6 @@ export function evaluateConstructionEffects(
   let poweredChemicalUnits = 0;
   let poweredStorageTanks = 0;
   let poweredDosingPumps = 0;
-  let tpMul = 1;
   if (totalChemicalUnits > 0) {
     const poweredSetChem = poweredEquipmentIds(eq as any, uc as any);
     poweredChemicalUnits = eq.filter(e => (e.typeId === 'chemical_storage_tank' || e.typeId === 'chemical_dosing_pump') && poweredSetChem.has(e.id)).length;
@@ -418,6 +428,59 @@ export function evaluateConstructionEffects(
     totalChemicalUnits = 0;
     totalStorageTanks = 0;
     totalDosingPumps = 0;
+  }
+
+  // ── RO SLICE 2: tertiary reverse-osmosis — powered skids polish to potable ──
+  // Each powered RO skid on open ground (needs a power_cable, like all ground kit)
+  // is a high-pressure multi-barrier tertiary stage that rejects dissolved
+  // salts, organics, nutrients, toxics and pathogens. Strong TSS/TP/toxics/
+  // pathogen polishing; moderate BOD/COD/TN polishing. Stacking is capped with
+  // floors — one skid already achieves ~80% TSS cut (0.18×), two reach ~97%,
+  // three reach potable-grade. No basin = no custom treatment (identity) so
+  // legacy saves stay exact. Brine tanks are tracked for badge/stats but do
+  // not gate physics this slice (future: brine-handling capacity vs recovery).
+  let totalRoSkids = eq.filter(e => e.typeId === 'ro_skid').length;
+  let totalBrineTanks = eq.filter(e => e.typeId === 'brine_tank').length;
+  let poweredRoSkids = 0;
+  let liveRoSkids = 0;
+  let poweredBrineTanks = 0;
+  if (totalRoSkids > 0 || totalBrineTanks > 0) {
+    const poweredSetRo = poweredEquipmentIds(eq as any, uc as any);
+    poweredRoSkids = eq.filter(e => e.typeId === 'ro_skid' && poweredSetRo.has(e.id)).length;
+    poweredBrineTanks = eq.filter(e => e.typeId === 'brine_tank' && poweredSetRo.has(e.id)).length;
+    // Brine handling is badge-only this slice: every powered skid is considered live
+    // (player already learns to pair brine tanks via the Tertiary RO badge detail).
+    liveRoSkids = poweredRoSkids;
+    if (bs.length > 0 && poweredRoSkids > 0) {
+      let roBod = 1, roCod = 1, roTss = 1, roTn = 1, roTp = 1, roToxic = 1, roPath = 1;
+      for (let i = 0; i < liveRoSkids; i++) {
+        roBod   *= 0.72;   // 28% BOD cut per skid
+        roCod   *= 0.75;   // 25% COD cut
+        roTss   *= 0.18;   // 82% TSS / turbidity cut — tertiary clarity
+        roTn    *= 0.82;   // 18% TN cut
+        roTp    *= 0.32;   // 68% TP cut — orthophosphate rejection
+        roToxic *= 0.35;   // 65% toxics cut — salts/metals rejection
+        roPath  *= 0.08;   // 92% pathogens cut (~1.1 log per skid)
+      }
+      bodMul *= Math.max(0.45, roBod);
+      codMul *= Math.max(0.50, roCod);
+      tssMul *= Math.max(0.01, roTss);
+      tnMul  *= Math.max(0.60, roTn);
+      // tpMul stacks with chemical TP polishing (outer cap 0.08 keeps RO as ultimate TP barrier)
+      tpMul  *= Math.max(0.08, roTp);
+      // cap final tp with the existing chemical floor already applied, but allow RO to push lower
+      tpMul = Math.max(0.08, Math.min(tpMul, 1));
+      // keep overall tp floor at 0.08 (92% total TP cut max via RO; chemical+RO cannot exceed this alone — septic can still lift it)
+      // No extra min beyond stacking floors above.
+      toxicMul *= Math.max(0.08, roToxic);
+      pathogensMul *= Math.max(0.003, roPath);
+    }
+  } else {
+    totalRoSkids = 0;
+    totalBrineTanks = 0;
+    poweredRoSkids = 0;
+    liveRoSkids = 0;
+    poweredBrineTanks = 0;
   }
 
   // ── Apply septic penalty (zone-aware when baffles exist) ─────────────────
@@ -490,6 +553,8 @@ export function evaluateConstructionEffects(
       : `${poweredStorageTanks} tank${poweredStorageTanks>1?'s':''} live`;
     parts.push(chemDetail);
   }
+  if (bs.length > 0 && liveRoSkids > 0) parts.push(`${liveRoSkids} RO skid${liveRoSkids>1?'s':''} polishing`);
+  else if (bs.length > 0 && poweredRoSkids > 0) parts.push(`${poweredRoSkids} RO skid${poweredRoSkids>1?'s':''} dormant`);
   if (extraPowerKw > 0) parts.push(`${extraPowerKw} kW live`);
   if (reagentOpexPerDay > 0) parts.push(`$${Math.round(reagentOpexPerDay)}/d reagent`);
   if (parts.length === 0) parts.push('no construction effect');
@@ -522,11 +587,18 @@ export function evaluateConstructionEffects(
     poweredDosingPumps,
     activeDosingPumps,
     reagentOpexPerDay,
+    totalRoSkids,
+    poweredRoSkids,
+    liveRoSkids,
+    totalBrineTanks,
+    poweredBrineTanks,
     bodMultiplier: bodMul,
     tnMultiplier: tnMul,
     tssMultiplier: tssMul,
     codMultiplier: codMul,
     tpMultiplier: tpMul,
+    toxicMultiplier: toxicMul,
+    pathogensMultiplier: pathogensMul,
     doBoostMgL: doBoost,
     summary,
   };
