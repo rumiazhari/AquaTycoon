@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, Wind, Trash2, Droplets, Fan, Cog, Waves, AlertTriangle, CheckCircle2, Columns3 } from 'lucide-react';
+import { X, Wind, Trash2, Droplets, Fan, Cog, Waves, AlertTriangle, CheckCircle2, Columns3, ShieldCheck, Hexagon } from 'lucide-react';
 import { EQUIPMENT_TYPES } from '../design/ProcessEquipment';
 import type { ProcessEquipmentItem } from '../design/ProcessEquipment';
 import type { BasinZone } from '../design/BasinZone';
@@ -10,6 +10,8 @@ const ICONS: Record<string, React.ComponentType<{ size?: number; className?: str
   submersible_mixer: Fan,
   process_pump: Cog,
   rotary_blower: Wind,
+  membrane_cassette: ShieldCheck,
+  mbbr_carrier: Hexagon,
 };
 
 interface EquipmentInspectorProps {
@@ -90,6 +92,23 @@ export const EquipmentInspector: React.FC<EquipmentInspectorProps> = ({ item, po
                   <span className="text-[11px] text-slate-400">Connect an Air pipe (blower → this diffuser) and power the blower with a Power cable.</span>
                 </>
               )
+            ) : item.typeId === 'membrane_cassette' ? (
+              powered ? (
+                <>
+                  <span className="text-xs font-bold text-emerald-300">Powered — filtration live</span>
+                  <span className="text-[11px] text-slate-400">Membrane is filtering. Keep its zone mixed & aerated to prevent fouling.</span>
+                </>
+              ) : (
+                <>
+                  <span className="text-xs font-bold text-amber-300">Unpowered — needs a Power cable on this tile</span>
+                  <span className="text-[11px] text-slate-400">Run a Power cable here to energize the permeate pump.</span>
+                </>
+              )
+            ) : item.typeId === 'mbbr_carrier' ? (
+              <>
+                <span className="text-xs font-bold text-sky-300">Passive media — fluidized by mixing</span>
+                <span className="text-[11px] text-slate-400">Carriers carry biofilm while suspended. Place a powered mixer in this zone to keep them circulating.</span>
+              </>
             ) : needsPower ? (
               powered ? (
                 <>

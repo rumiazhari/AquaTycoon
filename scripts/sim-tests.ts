@@ -2692,5 +2692,136 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
   }
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// CONSTRUCTION-BUILDER Phase 6: membrane & carrier media (filtration stage)
+// ═════════════════════════════════════════════════════════════════════════════
+{
+  const mkState = () => GameManager.createInitialState(0, true);
+  const withBasin = () => {
+    const s = mkState();
+    const r = GameManager.placeCustomBasin(s, { x: 5, y: 5, w: 8, h: 6 });
+    assert(r.success, 'FM0a. fixture basin for Phase 6');
+    return r.newState;
+  };
+  // FM1-2: in_basin mounting — membrane & carrier both require a basin
+  {
+    const s = withBasin();
+    const rM = GameManager.placeProcessEquipment(s, 'membrane_cassette', 6, 6);
+    assert(rM.success && rM.charged===0, 'FM1. membrane_cassette installs inside basin (sandbox $0)');
+    const rC = GameManager.placeProcessEquipment(rM.newState, 'mbbr_carrier', 7, 7);
+    assert(rC.success, 'FM2. mbbr_carrier installs inside basin');
+    assert(rC.newState.processEquipment!.length===2, 'FM2b. both filtration machines tracked');
+  }
+  // FM3-4: ground rejection — both in_basin types refuse open ground
+  {
+    const s = withBasin();
+    const r1 = GameManager.placeProcessEquipment(s, 'membrane_cassette', 20, 20);
+    assert(!r1.success && /inside a constructed basin/i.test(r1.reason??''), 'FM3. membrane on bare ground rejected — must mount inside basin');
+    const r2 = GameManager.placeProcessEquipment(s, 'mbbr_carrier', 22, 2);
+    assert(!r2.success && /inside a constructed basin/i.test(r2.reason??''), 'FM4. carrier on open ground rejected — must mount inside basin');
+  }
+  // FM5: tile exclusivity
+  {
+    const s = withBasin();
+    const r1 = GameManager.placeProcessEquipment(s, 'membrane_cassette', 6, 6);
+    assert(r1.success, 'FM5a. first membrane placed');
+    const r2 = GameManager.placeProcessEquipment(r1.newState, 'mbbr_carrier', 6, 6);
+    assert(!r2.success && /already holds equipment/i.test(r2.reason??''), 'FM5. second filtration machine refused on same tile');
+  }
+  // FM6-7: campaign economics — exact catalog CAPEX charged
+  {
+    const sCamp = withBasin();
+    sCamp.gameMode = 'campaign';
+    sCamp.financials.cash = 10_000_000;
+    const rM = GameManager.placeProcessEquipment(sCamp, 'membrane_cassette', 6, 6);
+    assert(rM.success && rM.charged===18500, `FM6. campaign membrane charges 18500 (got ${rM.charged})`);
+    const rC = GameManager.placeProcessEquipment(rM.newState, 'mbbr_carrier', 7, 6);
+    assert(rC.success && rC.charged===6800, `FM7. campaign carrier charges 6800 (got ${rC.charged})`);
+    assert(rC.newState.financials.cash === 10_000_000 - 18500 - 6800, 'FM7b. cash reduced by exact filtration CAPEX');
+  }
+  // FM8: unaffordable membrane rejected
+  {
+    const sPoor = withBasin();
+    sPoor.gameMode = 'campaign';
+    sPoor.financials.cash = 100;
+    const r = GameManager.placeProcessEquipment(sPoor, 'membrane_cassette', 6, 6);
+    assert(!r.success && /insufficient funds/i.test(r.reason??''), 'FM8. unaffordable membrane rejected');
+  }
+  // FM9-11: powered status — membrane needs power_cable, carrier passive always live
+  {
+    const s = withBasin();
+    const rM = GameManager.placeProcessEquipment(s, 'membrane_cassette', 6, 6);
+    const rC = GameManager.placeProcessEquipment(rM.newState, 'mbbr_carrier', 7, 6);
+    const st = rC.newState;
+    const mem = st.processEquipment.find((e:any)=>e.typeId==='membrane_cassette')!;
+    const car = st.processEquipment.find((e:any)=>e.typeId==='mbbr_carrier')!;
+    assert(!isEquipmentPowered(mem, st.utilityConnections), 'FM9. membrane unpowered without cable');
+    assert(isEquipmentPowered(car, st.utilityConnections), 'FM9b. carrier passive — always powered without cable');
+    // power the membrane via a cable to an empty basin tile (avoids counting extra pump power)
+    let st2:any = st;
+    const rCable = GameManager.placeUtilityConnection(st2, 'power_cable', 6, 6, 8, 6);
+    assert(rCable.success, 'FM9c. power cable membrane -> empty basin tile');
+    st2 = rCable.newState;
+    const mem2 = st2.processEquipment.find((e:any)=>e.typeId==='membrane_cassette')!;
+    assert(isEquipmentPowered(mem2, st2.utilityConnections), 'FM10. membrane powered after cable');
+    const stats = constructionStats(st2.customBasins as any, st2.processEquipment, st2.utilityConnections);
+    assert(stats.totalMembranes===1 && stats.poweredMembranes===1, `FM11. stats 1/1 membranes powered (got ${stats.poweredMembranes}/${stats.totalMembranes})`);
+    assert(stats.totalCarriers===1, `FM11b. stats 1 carrier (got ${stats.totalCarriers})`);
+    assert(stats.livePowerKw === 5, `FM11c. livePower includes membrane 5 kW (got ${stats.livePowerKw})`);
+  }
+  // FM12: zone membership — membrane & carrier on opposite sides of baffle
+  {
+    let s:any = GameManager.createInitialState(0, true);
+    let rB = GameManager.placeCustomBasin(s, { x:5,y:5,w:8,h:6 });
+    s = rB.newState;
+    const basinId = s.customBasins[0].id;
+    let rBf = GameManager.placeBaffle(s, basinId, 'vertical', 4);
+    s = rBf.newState;
+    let rM = GameManager.placeProcessEquipment(s, 'membrane_cassette', 6, 6);
+    s = rM.newState;
+    let rC = GameManager.placeProcessEquipment(s, 'mbbr_carrier', 10, 6);
+    s = rC.newState;
+    const mem = s.processEquipment.find((e:any)=>e.typeId==='membrane_cassette')!;
+    const car = s.processEquipment.find((e:any)=>e.typeId==='mbbr_carrier')!;
+    const zMem = GameManager.zoneForEquipmentItem(s, mem.id);
+    const zCar = GameManager.zoneForEquipmentItem(s, car.id);
+    assert(zMem !== null && zCar !== null && zMem.id !== zCar.id, 'FM12. membrane & carrier map to distinct zones across baffle');
+    assert(zMem.gridI===0 && zCar.gridI===1, `FM12b. membrane gridI 0 vs carrier 1 (got ${zMem.gridI}/${zCar.gridI})`);
+  }
+  // FM13: demolish salvage (campaign 70%)
+  {
+    let s:any = withBasin();
+    s.gameMode='campaign'; s.tutorialActive=false; s.financials.cash=10_000_000;
+    const built = GameManager.placeProcessEquipment(s, 'membrane_cassette', 6, 6);
+    const id = built.newState.processEquipment![0].id;
+    const demo = GameManager.demolishProcessEquipment(built.newState, id);
+    const salvage = Math.round(18500*0.7);
+    assert(demo.success && demo.refunded===salvage, `FM13. demolish membrane refunds 70% ($${salvage})`);
+    let s2:any = withBasin();
+    s2.gameMode='campaign'; s2.tutorialActive=false; s2.financials.cash=10_000_000;
+    const built2 = GameManager.placeProcessEquipment(s2, 'mbbr_carrier', 6, 6);
+    const id2 = built2.newState.processEquipment.find((e:any)=>e.typeId==='mbbr_carrier')!.id;
+    const demo2 = GameManager.demolishProcessEquipment(built2.newState, id2);
+    const salvage2 = Math.round(6800*0.7);
+    assert(demo2.refunded===salvage2, `FM13b. demolish carrier refunds 70% ($${salvage2})`);
+  }
+  // FM14: basin mounting integrity — basin with filtration kit cannot be demolished
+  {
+    const s = withBasin();
+    const rM = GameManager.placeProcessEquipment(s, 'membrane_cassette', 6, 6);
+    const basinId = rM.newState.customBasins[0].id;
+    const demo = GameManager.demolishCustomBasin(rM.newState, basinId);
+    assert(!demo.success && /equipment/i.test(demo.reason??''), 'FM14. basin demolition refused while membrane remains mounted');
+    const cleared = GameManager.demolishProcessEquipment(rM.newState, rM.newState.processEquipment.find((e:any)=>e.typeId==='membrane_cassette')!.id);
+    const demo2 = GameManager.demolishCustomBasin(cleared.newState, basinId);
+    assert(demo2.success, 'FM14b. basin demolishes once filtration kit removed');
+  }
+  // FM15: unknown type still rejected
+  {
+    const s = withBasin();
+    assert(!GameManager.placeProcessEquipment(s, 'flux_capacitor', 6, 6).success, 'FM15. unknown type still rejected after catalog expansion');
+  }
+}
+
 console.log(failures === 0 ? "\nALL TESTS PASSED" : `\n${failures} TEST(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);

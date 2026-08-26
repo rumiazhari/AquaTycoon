@@ -122,6 +122,11 @@ export interface ConstructionStats {
   totalDiffusers: number;
   aeratedDiffusers: number;
   unaeratedDiffusers: number;
+  /** Phase 6 filtration stage: membrane cassettes (powered). */
+  totalMembranes: number;
+  poweredMembranes: number;
+  /** Phase 6 filtration stage: MBBR carrier media (passive, needs mixing). */
+  totalCarriers: number;
   /** Nameplate power of *powered* machines only (kW) — what the grid actually feeds. */
   livePowerKw: number;
   /** Nameplate power of all installed machines (kW). */
@@ -170,6 +175,9 @@ export function constructionStats(
     totalDiffusers: diffusers.length,
     aeratedDiffusers: aerated.size,
     unaeratedDiffusers: diffusers.length - aerated.size,
+    totalMembranes: equipment.filter(e => e.typeId === 'membrane_cassette').length,
+    poweredMembranes: equipment.filter(e => e.typeId === 'membrane_cassette' && powered.has(e.id)).length,
+    totalCarriers: equipment.filter(e => e.typeId === 'mbbr_carrier').length,
     livePowerKw,
     installedPowerKw,
     liveOpexPerDay,
@@ -185,6 +193,8 @@ export function constructionSummaryLine(s: ConstructionStats): string {
   if (s.totalBasins > 0) parts.push(`${s.totalBasins} basin${s.totalBasins > 1 ? 's' : ''} · ${s.totalBasinVolumeM3.toLocaleString()} m³`);
   if (s.totalEquipment > 0) parts.push(`${s.poweredEquipment}/${s.totalEquipment} powered`);
   if (s.totalDiffusers > 0) parts.push(`${s.aeratedDiffusers}/${s.totalDiffusers} diffusers aerated`);
+  if (s.totalMembranes > 0) parts.push(`${s.poweredMembranes}/${s.totalMembranes} membranes live`);
+  if (s.totalCarriers > 0) parts.push(`${s.totalCarriers} carrier tile${s.totalCarriers>1?'s':''}`);
   if (s.totalUtilityConnections > 0) parts.push(`${s.totalUtilityConnections} utility line${s.totalUtilityConnections > 1 ? 's' : ''}`);
   if (parts.length === 0) return 'No custom construction yet — draw a basin to start.';
   return parts.join(' · ');

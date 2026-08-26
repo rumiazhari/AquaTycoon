@@ -1,7 +1,7 @@
 import React from 'react';
 import { ConstructionStats } from '../design/ConstructionNetwork';
 import { BasinZoneStats } from '../design/BasinZone';
-import { Zap, Waves, Droplets, Cable, Columns3 } from 'lucide-react';
+import { Zap, Waves, Droplets, Cable, Columns3, ShieldCheck, Hexagon } from 'lucide-react';
 
 interface Props {
   stats: ConstructionStats;
@@ -39,6 +39,13 @@ export const ConstructionStatusChip: React.FC<Props> = ({ stats, zoneStats }) =>
         <span className={`pointer-events-auto inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-mono shadow-lg ${aerTone}`}>
           <Waves size={12} />
           <span className="font-bold">{stats.aeratedDiffusers}/{stats.totalDiffusers} aerated</span>
+        </span>
+      )}
+      {(stats.totalMembranes > 0 || stats.totalCarriers > 0) && (
+        <span className="pointer-events-auto inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-900 border border-cyan-500/30 text-cyan-200 text-[11px] font-mono shadow-lg">
+          {stats.totalMembranes > 0 && <><ShieldCheck size={12} className="text-cyan-400" /><span className="font-bold">{stats.poweredMembranes}/{stats.totalMembranes} membranes</span></>}
+          {stats.totalMembranes > 0 && stats.totalCarriers > 0 && <span className="opacity-50">·</span>}
+          {stats.totalCarriers > 0 && <><Hexagon size={12} className={stats.totalMembranes>0?"text-sky-300":"text-cyan-400"} /><span className="font-bold">{stats.totalCarriers} carrier{stats.totalCarriers!==1?'s':''}</span></>}
         </span>
       )}
       {stats.totalUtilityConnections > 0 && (

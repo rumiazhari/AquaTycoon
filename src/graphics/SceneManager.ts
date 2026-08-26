@@ -905,6 +905,83 @@ export class SceneManager {
         inlet.position.set(0, 1.05, 1.15);
         break;
       }
+      // ── PHASE 6: filtration stage ─────────────────────────────────────
+      case 'membrane_cassette': {
+        // Vertical cassette frame with hollow-fiber bundles: the standout
+        // visual for the first custom MBR lane — a tall rectangular white
+        // housing with visible vertical fibers inside.
+        const frameMat = new THREE.MeshStandardMaterial({ color: 0xe8edf5, roughness: 0.35, metalness: 0.1 });
+        const fiberMat = new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.5 });
+        (frameMat as any)._equipBase = true;
+        (fiberMat as any)._equipBase = true;
+        const depth = Math.max(2.5, basinDepthM);
+        const h = Math.max(1.2, Math.min(depth * 0.85, 3.2));
+        // Outer housing — tall box, white
+        const housing = add(new THREE.Mesh(new THREE.BoxGeometry(1.6, h, 0.9), frameMat));
+        housing.position.set(0, h / 2 + 0.15, 0);
+        // Vertical fiber bundles (thin cylinders inside the housing)
+        for (let i = 0; i < 5; i++) {
+          const fib = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, h * 0.82, 8), fiberMat);
+          fib.position.set(-0.6 + i * 0.30, h / 2 + 0.15, 0);
+          fib.castShadow = true;
+          g.add(fib);
+        }
+        // Top manifold header
+        const header = add(new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.18, 1.0), dark));
+        header.position.set(0, h + 0.18, 0);
+        // Permeate outlet stub
+        const stub = add(new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.5, 10), steel));
+        stub.rotation.z = Math.PI / 2;
+        stub.position.set(1.05, h * 0.65, 0);
+        break;
+      }
+      case 'mbbr_carrier': {
+        // Carrier cluster: a loose heap of biofilm carriers bobbing at mid-depth.
+        // Each carrier is a small spoked wheel; together they read as \"media\".
+        const carrierMat = new THREE.MeshStandardMaterial({ color: 0x38bdf8, roughness: 0.55, transparent: true, opacity: 0.92 });
+        const rimMat = new THREE.MeshStandardMaterial({ color: 0x0ea5e9, roughness: 0.45 });
+        (carrierMat as any)._equipBase = true;
+        (rimMat as any)._equipBase = true;
+        const depth = Math.max(1, basinDepthM);
+        const baseY = 0.35 + depth * 0.28; // mid-water heap
+        // Seeded layout so all tiles look identical (no flicker on re-render)
+        const offsets: [number, number, number, number][] = [
+          [0, 0, 0, 0], [0.42, 0.11, -0.18, 0.8], [-0.38, -0.05, 0.22, 1.2],
+          [0.21, 0.07, 0.35, 0.4], [-0.25, -0.08, -0.31, 1.9], [0.48, 0.05, 0.08, 0.6],
+          [-0.12, 0.14, -0.08, 2.1],
+        ];
+        for (const [dx, dy, dz, rot] of offsets) {
+          const grp = new THREE.Group();
+          const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.08, 14), carrierMat);
+          // lay flat
+          wheel.rotation.x = Math.PI / 2;
+          grp.add(wheel);
+          const inner = new THREE.Mesh(new THREE.RingGeometry(0.08, 0.18, 10), rimMat as any);
+          inner.rotation.x = Math.PI / 2;
+          inner.position.y = 0.015;
+          grp.add(inner);
+          // spoked detail — 3 internal walls
+          for (let s = 0; s < 3; s++) {
+            const spoke = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.04, 0.03), rimMat);
+            spoke.position.set(0, 0.02, 0);
+            spoke.rotation.y = (s / 3) * Math.PI;
+            grp.add(spoke);
+          }
+          grp.position.set(dx, baseY + dy, dz);
+          grp.rotation.y = rot;
+          grp.rotation.z = 0.12;
+          grp.traverse(o => { const mm = o as THREE.Mesh; if (mm.isMesh) mm.castShadow = true; });
+          g.add(grp);
+        }
+        // Thin retaining mesh hint — faint wireframe box around carriers
+        const cage = new THREE.Mesh(
+          new THREE.BoxGeometry(1.5, 0.55, 1.3),
+          new THREE.MeshStandardMaterial({ color: 0xb9d7ff, wireframe: true, transparent: true, opacity: 0.18 })
+        );
+        cage.position.set(0, baseY, 0);
+        g.add(cage);
+        break;
+      }
       default: {
         // Unknown type → plain marker cube so it is never invisible.
         const marker = add(new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), dark));

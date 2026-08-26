@@ -70,6 +70,25 @@ export const EQUIPMENT_TYPES: Record<string, EquipmentTypeDef> = {
     powerKw: 22,
     blurb: 'Positive-displacement air skid. Feeds diffuser grids through air piping (Phase 3+).',
   },
+  // ── PHASE 6: filtration stage — membrane & carrier media (both in_basin) ───
+  membrane_cassette: {
+    id: 'membrane_cassette',
+    name: 'Hollow-Fiber Membrane Cassette',
+    mounting: 'in_basin',
+    capexUsd: 18_500,
+    opexUsdPerDay: 14,
+    powerKw: 5, // suction/fouling control — needs a powered feed to stay effective
+    blurb: 'Submerged hollow-fiber cassette. Absolute barrier filtration — near-zero TSS; needs periodic air scour from a blower.',
+  },
+  mbbr_carrier: {
+    id: 'mbbr_carrier',
+    name: 'MBBR Bio-Carrier Media',
+    mounting: 'in_basin',
+    capexUsd: 6_800,
+    opexUsdPerDay: 5,
+    powerKw: 0, // passive carriers; rely on zone mixing (Phase 5) to stay fluidized
+    blurb: 'Floating plastic carrier media. Biofilm grows on each carrier — boosts BOD removal when mixed & aerated.',
+  },
 };
 
 /** One installed machine. Occupies exactly ONE grid tile. */
