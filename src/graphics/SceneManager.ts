@@ -756,6 +756,141 @@ export class SceneManager {
     return g;
   }
 
+  // ── CONSTRUCTION-BUILDER Phase 2: installed process equipment ──────────────
+  private equipGroup: THREE.Group = new THREE.Group();
+  private equipMeshMap: Map<string, THREE.Group> = new Map();
+
+  /**
+   * Renders each installed machine as a real in-world object: wet-installed
+   * types sit on their basin's floor, ground types stand on open terrain.
+   * Called from App after every install/demolish/load. Mirrors syncBasins'
+   * add/remove/dispose discipline. Selection = amber emissive.
+   */
+  public syncEquipment(
+    items: { id: string; typeId: string; x: number; y: number }[],
+    basins: { x: number; y: number; w: number; h: number; depthM: number }[],
+    selectedId?: string | null
+  ) {
+    if (!this.equipGroup.parent) this.scene.add(this.equipGroup);
+    const activeIds = new Set(items.map(i => i.id));
+
+    for (const [id, mesh] of this.equipMeshMap.entries()) {
+      if (!activeIds.has(id)) {
+        this.equipGroup.remove(mesh);
+        mesh.traverse(o => {
+          const mm = o as THREE.Mesh;
+          if (mm.geometry) mm.geometry.dispose();
+        });
+        this.equipMeshMap.delete(id);
+      }
+    }
+
+    for (const it of items) {
+      let mesh = this.equipMeshMap.get(it.id);
+      if (!mesh) {
+        const host = basins.find(b =>
+          it.x >= b.x && it.x < b.x + b.w && it.y >= b.y && it.y < b.y + b.h
+        );
+        mesh = this.buildEquipmentMesh(it.typeId, host ? host.depthM : 0);
+        // Tile centers sit at (+0.5, +0.5) in world tile space.
+        mesh.position.set(it.x + 0.5, 0, it.y + 0.5);
+        this.equipMeshMap.set(it.id, mesh);
+        this.equipGroup.add(mesh);
+      }
+      const selected = it.id === selectedId;
+      mesh.traverse(o => {
+        const mm = o as THREE.Mesh;
+        if (mm.isMesh && mm.material) {
+          const mat = Array.isArray(mm.material) ? mm.material[0] : mm.material;
+          const m = mat as THREE.MeshStandardMaterial;
+          if (m && (m as any)._equipBase) {
+            m.emissive.setHex(selected ? 0x8a5200 : 0x000000);
+            m.emissiveIntensity = selected ? 0.65 : 0;
+          }
+        }
+      });
+    }
+  }
+
+  private buildEquipmentMesh(typeId: string, basinDepthM: number): THREE.Group {
+    const g = new THREE.Group();
+    const steel = new THREE.MeshStandardMaterial({ color: 0x9aa0a8, roughness: 0.45, metalness: 0.65 });
+    const dark = new THREE.MeshStandardMaterial({ color: 0x2f3640, roughness: 0.6, metalness: 0.3 });
+    const accent = new THREE.MeshStandardMaterial({ color: 0xd97706, roughness: 0.5, metalness: 0.2 });
+    const plinth = new THREE.MeshStandardMaterial({ color: 0xa8abb1, roughness: 0.9 });
+    (steel as any)._equipBase = true;
+    (dark as any)._equipBase = true;
+
+    const add = (mesh: THREE.Mesh) => { mesh.castShadow = true; g.add(mesh); return mesh; };
+
+    switch (typeId) {
+      case 'fine_bubble_diffuser': {
+        // Flat grid panel hovering just above the basin floor.
+        const panel = add(new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.5, 0.12, 24), dark));
+        panel.position.set(0, 0.32, 0);
+        for (let i = 0; i < 4; i++) {
+          const dome = add(new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.22, 12), steel));
+          const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+          dome.position.set(Math.cos(a) * 0.85, 0.48, Math.sin(a) * 0.85);
+        }
+        break;
+      }
+      case 'submersible_mixer': {
+        const depth = Math.max(1, basinDepthM);
+        const base = add(new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.18, 0.9), dark));
+        base.position.set(0, 0.09, 0);
+        const shaftLen = Math.max(1.2, depth * 0.62);
+        const shaft = add(new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, shaftLen, 10), steel));
+        shaft.position.set(0, shaftLen / 2 + 0.15, 0);
+        const motor = add(new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.32, 0.55, 14), dark));
+        motor.position.set(0, 0.45, 0);
+        const hub = add(new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 0.2, 10), accent));
+        hub.position.set(0, shaftLen - 0.25, 0);
+        for (const rot of [Math.PI / 2, 0]) {
+          const blade = add(new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.06, 0.28), steel));
+          blade.position.set(0, shaftLen - 0.25, 0);
+          blade.rotation.z = rot;
+        }
+        break;
+      }
+      case 'process_pump': {
+        const pad = add(new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.35, 2.4), plinth));
+        pad.position.set(0, 0.175, 0);
+        const body = add(new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.55, 1.1, 16), accent));
+        body.rotation.z = Math.PI / 2;
+        body.position.set(-0.8, 0.95, 0);
+        const motorBody = add(new THREE.Mesh(new THREE.CylinderGeometry(0.48, 0.48, 1.5, 16), dark));
+        motorBody.rotation.z = Math.PI / 2;
+        motorBody.position.set(0.85, 0.95, 0);
+        const flange = add(new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.34, 0.5, 12), steel));
+        flange.position.set(-1.5, 0.95, 0);
+        break;
+      }
+      case 'rotary_blower': {
+        const skid = add(new THREE.Mesh(new THREE.BoxGeometry(3.6, 0.3, 2.2), plinth));
+        skid.position.set(0, 0.15, 0);
+        for (const dx of [-0.9, 0.9]) {
+          const tank = add(new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.62, 1.35, 18), accent));
+          tank.position.set(dx, 0.98, 0);
+          const head = add(new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.35, 0.9), steel));
+          head.position.set(dx, 1.83, 0);
+        }
+        const inlet = add(new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.4, 0.6), dark));
+        inlet.position.set(0, 1.05, 1.15);
+        break;
+      }
+      default: {
+        // Unknown type → plain marker cube so it is never invisible.
+        const marker = add(new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), dark));
+        marker.position.set(0, 0.5, 0);
+      }
+    }
+
+    // Wet-installed machines render submerged on the basin floor; ground
+    // machines stand at terrain level. y=0 serves both (basin floors sit at 0).
+    return g;
+  }
+
   public syncPipes(pipes: PipeConnection[]) {
     // Flow animation runs on SIMULATED time — pause freezes the pipe flow.
     this.pipeRenderer.updatePipes(pipes, this.visualSimElapsed);

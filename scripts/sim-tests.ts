@@ -1719,5 +1719,157 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
   }
 }
 
+// ── CONSTRUCTION-BUILDER Phase 2: physical equipment placement ──────────────
+{
+  const mkState = () => GameManager.createInitialState(0, true); // sandbox → no cash gate
+  const withBasin = () => {
+    const s = mkState();
+    const r = GameManager.placeCustomBasin(s, { x: 5, y: 5, w: 4, h: 4 });
+    assert(r.success, 'E0a. fixture basin drawn');
+    return r.newState;
+  };
+
+  // 1. Wet-installed types mount INSIDE a drawn basin.
+  {
+    const s = withBasin();
+    const rd = GameManager.placeProcessEquipment(s, 'fine_bubble_diffuser', 6, 6);
+    assert(rd.success && rd.charged === 0, 'E1. diffuser installs inside a basin (sandbox $0)');
+    const rm = GameManager.placeProcessEquipment(rd.newState, 'submersible_mixer', 8, 7);
+    assert(rm.success, 'E2. mixer installs inside a basin');
+    assert(rm.newState.processEquipment!.length === 2, 'E2b. both machines tracked');
+  }
+
+  // 2. Mounting rules: in_basin refuses open ground; ground refuses basins.
+  {
+    const s = withBasin();
+    const r1 = GameManager.placeProcessEquipment(s, 'fine_bubble_diffuser', 20, 20);
+    assert(!r1.success && /inside a constructed basin/i.test(r1.reason ?? ''),
+      'E3. diffuser on bare ground rejected — must mount inside a basin');
+    const r2 = GameManager.placeProcessEquipment(s, 'rotary_blower', 6, 6);
+    assert(!r2.success && /dry-installed|open ground/i.test(r2.reason ?? ''),
+      'E4. blower inside a basin rejected — dry-installed only');
+    const r3 = GameManager.placeProcessEquipment(s, 'process_pump', 21, 21);
+    assert(r3.success, 'E5. pump installs on open ground');
+  }
+
+  // 3. Unknown type + boundaries.
+  {
+    const s = withBasin();
+    assert(!GameManager.placeProcessEquipment(s, 'flux_capacitor', 6, 6).success,
+      'E6. unknown equipment type rejected');
+    const [mw] = s.currentLevel.mapSize;
+    const rOut = GameManager.placeProcessEquipment(s, 'process_pump', mw + 5, 2);
+    assert(!rOut.success && /boundary|out of/i.test(rOut.reason ?? ''),
+      'E7. out-of-bounds equipment rejected');
+  }
+
+  // 4. One machine per tile; legacy lots block ground machines.
+  {
+    const s = withBasin();
+    const r1 = GameManager.placeProcessEquipment(s, 'process_pump', 15, 15);
+    assert(r1.success, 'E8. first pump placed on open tile');
+    const r2 = GameManager.placeProcessEquipment(r1.newState, 'rotary_blower', 15, 15);
+    assert(!r2.success && /already holds equipment/i.test(r2.reason ?? ''),
+      'E9. second machine refused on the same tile');
+    const unit = {
+      instanceId: 'u9', typeId: 'activated_sludge_cas' as const,
+      gridX: 18, gridY: 18, rotation: 0 as const,
+      customParams: {} as Record<string, number>,
+    };
+    s.units.push(unit as any);
+    const r3 = GameManager.placeProcessEquipment(s, 'process_pump', 19, 19);
+    assert(!r3.success && /unit lot/i.test(r3.reason ?? ''),
+      'E10. pump cannot sit on a legacy unit lot');
+  }
+
+  // 5. Campaign economics: exact catalog CAPEX charged; cash gate enforced.
+  {
+    const sCamp = withBasin();
+    sCamp.gameMode = 'campaign';
+    sCamp.financials.cash = 10_000_000;
+    const r = GameManager.placeProcessEquipment(sCamp, 'submersible_mixer', 6, 6);
+    const expected = 9_800;
+    assert(r.success && r.charged === expected,
+      `E11. campaign install charges catalog CAPEX ($${expected})`);
+    assert(r.newState.financials.cash === sCamp.financials.cash - expected,
+      'E12. cash reduced by the exact CAPEX');
+
+    const sPoor = withBasin();
+    sPoor.gameMode = 'campaign';
+    sPoor.financials.cash = 100; // below any catalog price
+    const rp = GameManager.placeProcessEquipment(sPoor, 'fine_bubble_diffuser', 6, 6);
+    assert(!rp.success && /insufficient funds/i.test(rp.reason ?? ''),
+      'E13. unaffordable install rejected with a funds message');
+  }
+
+  // 6. Demolition refunds 70% salvage (campaign), $0 in sandbox/tutorial.
+  {
+    const sCamp = withBasin();
+    sCamp.gameMode = 'campaign';
+    sCamp.tutorialActive = false;
+    sCamp.financials.cash = 10_000_000;
+    const built = GameManager.placeProcessEquipment(sCamp, 'rotary_blower', 20, 20);
+    assert(built.success, 'E14a. blower installed for demolish test');
+    const id = built.newState.processEquipment![0].id;
+    const demo = GameManager.demolishProcessEquipment(built.newState, id);
+    assert(demo.success && demo.newState.processEquipment!.length === 0,
+      'E14. demolish removes the machine');
+    const salvage = Math.round(32_000 * 0.7);
+    assert(demo.refunded === salvage, `E15. demolish refunds 70% salvage ($${salvage})`);
+
+    const sSandbox = withBasin();
+    const b2 = GameManager.placeProcessEquipment(sSandbox, 'rotary_blower', 20, 20);
+    const d2 = GameManager.demolishProcessEquipment(b2.newState, b2.newState.processEquipment![0].id);
+    assert(d2.refunded === 0, 'E16. sandbox demolish refunds $0');
+
+    const sTut = withBasin();
+    sTut.gameMode = 'campaign';
+    sTut.tutorialActive = true;
+    sTut.financials.cash = 10_000_000;
+    const b3 = GameManager.placeProcessEquipment(sTut, 'rotary_blower', 20, 20);
+    const d3 = GameManager.demolishProcessEquipment(b3.newState, b3.newState.processEquipment![0].id);
+    assert(d3.refunded === 0, 'E17. tutorial demolish refunds $0 (grant units)');
+  }
+
+  // 7. Symmetric blocking: concrete and legacy units may not bury equipment.
+  {
+    const s = withBasin();
+    const pump = GameManager.placeProcessEquipment(s, 'process_pump', 15, 15);
+    assert(pump.success, 'E18a. ground pump placed');
+    const overPump = GameManager.placeCustomBasin(pump.newState, { x: 14, y: 14, w: 3, h: 3 });
+    assert(!overPump.success, 'E18. a basin cannot be drawn over a ground machine');
+
+    // EQ basin is 3×3 → its lot covers the pump's tile at (15,15).
+    const legacyOver = GameManager.placeUnit(pump.newState, 'equalization_basin', 14, 14, 0, {});
+    assert(!legacyOver.success && /installed equipment/i.test(legacyOver.reason ?? ''),
+      'E19. legacy unit lot blocked by ground equipment');
+  }
+
+  // 8. Mounting integrity: a basin holding equipment cannot be demolished.
+  {
+    const s = withBasin();
+    const inst = GameManager.placeProcessEquipment(s, 'fine_bubble_diffuser', 6, 6);
+    assert(inst.success, 'E20a. diffuser installed in fixture basin');
+    const basinId = inst.newState.customBasins![0].id;
+    const demo = GameManager.demolishCustomBasin(inst.newState, basinId);
+    assert(!demo.success && /equipment/i.test(demo.reason ?? ''),
+      'E20. basin demolition refused while equipment remains mounted');
+    // After removing the machine the basin can go.
+    const cleared = GameManager.demolishProcessEquipment(inst.newState, inst.newState.processEquipment![0].id);
+    const demo2 = GameManager.demolishCustomBasin(cleared.newState, basinId);
+    assert(demo2.success, 'E21. basin demolishes once its equipment is removed');
+  }
+
+  // 9. Hit-testing helper.
+  {
+    const s = withBasin();
+    const inst = GameManager.placeProcessEquipment(s, 'submersible_mixer', 7, 8);
+    assert(GameManager.equipmentAtTile(inst.newState, 7, 8)?.typeId === 'submersible_mixer',
+      'E22. equipmentAtTile finds the mixer');
+    assert(GameManager.equipmentAtTile(inst.newState, 0, 0) === null,
+      'E23. equipmentAtTile returns null on an empty tile');
+  }
+}
+
 console.log(failures === 0 ? '\nALL TESTS PASSED' : `\n${failures} TEST(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);

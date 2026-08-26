@@ -10,7 +10,8 @@ export type ToolMode =
   | 'demolish'
   | 'inspect'
   | 'pave_road'
-  | 'draw_basin';
+  | 'draw_basin'
+  | 'place_equipment';
 
 export interface VisualTheme {
   waterTurbidColor: string;

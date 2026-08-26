@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import {
   MousePointer, Cable, Trash2, RotateCw, Filter,
   Layers, Activity, Sparkles, Recycle, ArrowRightLeft,
-  Info, Star, Zap, Lock, Droplets
+  Info, Star, Zap, Lock, Droplets, Fan, Wind, Cog, Waves
 } from 'lucide-react';
 import { UnitCategory, UnitDefinition, UnitTypeId } from '../types/simulation';
 import { ToolMode } from '../types/graphics';
@@ -12,12 +12,24 @@ import { TechNode } from '../types/game';
 import { estimateSeedSludgeCAPEX } from '../design/CostEstimator';
 import { blueprintFromTemplate } from '../design/UnitBlueprint';
 import { workingVolumeM3 } from '../design/Geometry';
+import { EQUIPMENT_TYPES, EquipmentTypeDef } from '../design/ProcessEquipment';
+
+/** Toolbar icon per equipment type (Phase 2 catalog). */
+const EQUIP_ICONS: Record<string, React.ComponentType<{ size?: number }>> = {
+  fine_bubble_diffuser: Waves,
+  submersible_mixer: Fan,
+  process_pump: Cog,
+  rotary_blower: Wind,
+};
 
 interface BuildToolbarProps {
   toolMode: ToolMode;
   onSetToolMode: (mode: ToolMode) => void;
   selectedUnitTypeId: UnitTypeId | null;
   onSelectUnitTypeId: (typeId: UnitTypeId | null) => void;
+  /** CONSTRUCTION-BUILDER Phase 2: armed machine for place_equipment mode. */
+  selectedEquipmentTypeId?: string | null;
+  onSelectEquipmentTypeId?: (typeId: string | null) => void;
   currentRotation: 0 | 90 | 180 | 270;
   onRotate: () => void;
   techTree: TechNode[];
@@ -50,6 +62,8 @@ export const BuildToolbar: React.FC<BuildToolbarProps> = ({
   onSetToolMode,
   selectedUnitTypeId,
   onSelectUnitTypeId,
+  selectedEquipmentTypeId,
+  onSelectEquipmentTypeId,
   currentRotation,
   onRotate,
   techTree,
@@ -164,6 +178,7 @@ export const BuildToolbar: React.FC<BuildToolbarProps> = ({
                 SoundManager.playClick();
                 onSetToolMode('draw_basin');
                 onSelectUnitTypeId(null);
+                onSelectEquipmentTypeId?.(null);
               }}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
                 toolMode === 'draw_basin'
@@ -175,6 +190,34 @@ export const BuildToolbar: React.FC<BuildToolbarProps> = ({
               <Droplets size={14} />
               <span>Basin</span>
             </button>
+
+            {/* CONSTRUCTION-BUILDER Phase 2: physical equipment placement.
+                One button per machine — clicking arms place_equipment mode
+                with that type; click a tile in the world to install it. */}
+            {Object.values(EQUIPMENT_TYPES).map((eq: EquipmentTypeDef) => {
+              const active = toolMode === 'place_equipment' && selectedEquipmentTypeId === eq.id;
+              const Icon = EQUIP_ICONS[eq.id] ?? Cog;
+              return (
+                <button
+                  key={eq.id}
+                  onClick={() => {
+                    SoundManager.playClick();
+                    onSelectUnitTypeId(null);
+                    onSelectEquipmentTypeId?.(eq.id);
+                    onSetToolMode('place_equipment');
+                  }}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+                    active
+                      ? 'bg-orange-400 text-slate-950 shadow-md font-bold'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+                  }`}
+                  title={`EQUIPMENT: ${eq.name} — $${eq.capexUsd.toLocaleString()} · ${eq.mounting === 'in_basin' ? 'mounts INSIDE a drawn basin' : 'dry-installed on open ground'} · ${eq.blurb}`}
+                >
+                  <Icon size={14} />
+                  <span>{eq.name.replace(' (Dry-Pit)', '').replace(' Skid', '').replace(' Grid', '')}</span>
+                </button>
+              );
+            })}
           </div>
 
           {/* Category Tabs — separate shrinking region, cannot cover mode buttons.

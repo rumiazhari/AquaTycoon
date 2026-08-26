@@ -22,6 +22,7 @@ import { SoundManager } from './audio/SoundManager';
 import { CAMPAIGN_LEVELS } from './gameplay/LevelsData';
 import { TUTORIAL_STEPS, TUTORIAL_PIPE_CHAIN } from './gameplay/TutorialSteps';
 import { BASIN_DEFAULT_DEPTH_M, validateBasinPlacement } from './design/CustomBasin';
+import { EQUIPMENT_TYPES, validateEquipmentPlacement } from './design/ProcessEquipment';
 
 // UI Components
 import { HeaderHUD } from './ui/HeaderHUD';
@@ -135,6 +136,15 @@ export const App: React.FC = () => {
 
   // CONSTRUCTION-BUILDER Phase 1: selected player-drawn basin (inspect/demolish).
   const [selectedBasinId, setSelectedBasinId] = useState<string | null>(null);
+
+  // ── CONSTRUCTION-BUILDER Phase 2: physical equipment placement ──────────────
+  // Armed machine type (toolbar) + selected installed machine (inspect).
+  const [selectedEquipmentTypeId, setSelectedEquipmentTypeId] = useState<string | null>(null);
+  const selEquipTypeRef = useRef<string | null>(null);
+  selEquipTypeRef.current = selectedEquipmentTypeId;
+  const [selectedEquipmentId, setSelectedEquipmentId] = useState<string | null>(null);
+  const selectedEquipmentIdRef = useRef<string | null>(null);
+  selectedEquipmentIdRef.current = selectedEquipmentId;
 
   // Placement-time seed choice (backlog #1 follow-up): ON (default) hands over
   // a contractor-seeded reactor at full def.capex; OFF starts UNSEEDED at
@@ -281,6 +291,7 @@ export const App: React.FC = () => {
     sm.syncUnits(initState.units);
     sm.syncPipes(initState.pipes);
     sm.syncBasins(initState.customBasins ?? [], selectedBasinId);
+    sm.syncEquipment(initState.processEquipment ?? [], initState.customBasins ?? [], null);
 
     if (initState.suggestion) {
       sm.showNextStepGhost(initState.suggestion.unitTypeId, initState.suggestion.gridX, initState.suggestion.gridY);
@@ -396,6 +407,22 @@ export const App: React.FC = () => {
           } else {
             sm.terrainGrid.setGhostPreview(tile.x, tile.y, 1, 1, true, false);
           }
+        } else if (toolModeRef.current === 'place_equipment' && selEquipTypeRef.current) {
+          // Phase 2: single-tile ghost colored by mounting-rule validity.
+          const [mapW, mapH] = gsRef.current.currentLevel.mapSize;
+          const unitRects = gsRef.current.units.map(u => {
+            const ud = UNIT_DEFINITIONS[u.typeId];
+            const [uw, ul] = ud ? ud.footprint : [1, 1];
+            return { x: u.gridX, y: u.gridY, w: uw, h: ul };
+          });
+          const v = validateEquipmentPlacement(
+            selEquipTypeRef.current, tile.x, tile.y,
+            [mapW, mapH],
+            gsRef.current.customBasins ?? [],
+            gsRef.current.processEquipment ?? [],
+            unitRects
+          );
+          sm.terrainGrid.setGhostPreview(tile.x, tile.y, 1, 1, v.ok, true);
         } else {
           sm.terrainGrid.setGhostPreview(0, 0, 1, 1, true, false);
         }
@@ -602,6 +629,9 @@ export const App: React.FC = () => {
       tile.x >= b.x && tile.x < b.x + b.w && tile.y >= b.y && tile.y < b.y + b.h
     ) ?? null : null;
 
+    // Phase 2: which installed machine (if any) stands on this tile?
+    const clickedEquipment = tile ? GameManager.equipmentAtTile(gs, tile.x, tile.y) : null;
+
     // Piping guidance: never leave a click in Pipes mode as a silent no-op
     if (mode === 'connect_pipe') {
       if (!clickedUnit && !srcId) {
@@ -618,17 +648,31 @@ export const App: React.FC = () => {
       if (clickedUnit) {
         SoundManager.playClick();
         setSelectedBasinId(null);
+        setSelectedEquipmentId(null);
         setGameState(prev => ({ ...prev, selectedUnitId: clickedUnit.instanceId }));
         const def = UNIT_DEFINITIONS[clickedUnit.typeId];
         setToast(`Inspecting: ${def?.name ?? clickedUnit.typeId}`);
+      } else if (clickedEquipment) {
+        // Phase 2: installed machines are inspectable too.
+        SoundManager.playClick();
+        setSelectedBasinId(null);
+        setSelectedEquipmentId(clickedEquipment.id);
+        const eq = EQUIPMENT_TYPES[clickedEquipment.typeId];
+        if (eq) {
+          setToast(`${eq.name} — $${eq.capexUsd.toLocaleString()} · ${eq.powerKw} kW · ${eq.blurb} Switch to Demolish to remove.`);
+        } else {
+          setToast('Installed equipment. Switch to Demolish to remove.');
+        }
       } else if (clickedBasin) {
         SoundManager.playClick();
+        setSelectedEquipmentId(null);
         setSelectedBasinId(clickedBasin.id);
         const area = clickedBasin.w * clickedBasin.h;
         const vol = area * clickedBasin.depthM;
         setToast(`Custom Basin: ${clickedBasin.w}m × ${clickedBasin.h}m (${area}m², ${vol.toLocaleString()}m³, depth ${clickedBasin.depthM}m). Switch to Demolish to remove.`);
       } else {
         setSelectedBasinId(null);
+        setSelectedEquipmentId(null);
         setGameState(prev => ({ ...prev, selectedUnitId: null }));
       }
 
@@ -877,7 +921,26 @@ export const App: React.FC = () => {
         setToast(result.reason ?? 'Cannot build basin here.');
       }
 
-    } else if (mode === 'demolish' && (clickedUnit || clickedBasin)) {
+    } else if (mode === 'place_equipment' && tile && selEquipTypeRef.current) {
+      // ── CONSTRUCTION-BUILDER Phase 2: install one machine ──
+      const result = GameManager.placeProcessEquipment(gs, selEquipTypeRef.current, tile.x, tile.y);
+      if (result.success) {
+        SoundManager.playPlace();
+        pushHistory(gs);
+        setGameState(result.newState);
+        sm.syncEquipment(result.newState.processEquipment ?? [], result.newState.customBasins ?? [], selectedEquipmentIdRef.current);
+        const eq = EQUIPMENT_TYPES[selEquipTypeRef.current];
+        const cost = result.charged ?? 0;
+        setToast(
+          `${eq.name} installed${eq.mounting === 'in_basin' ? ' in basin' : ' on open ground'}` +
+          (cost > 0 ? ` — $${cost.toLocaleString()}` : ' — $0 (sandbox)')
+        );
+      } else {
+        SoundManager.playWarning();
+        setToast(result.reason ?? 'Cannot install equipment here.');
+      }
+
+    } else if (mode === 'demolish' && (clickedUnit || clickedBasin || clickedEquipment)) {
       if (clickedUnit) {
         if (clickedUnit.typeId === 'influent_inlet' || clickedUnit.typeId === 'effluent_outfall') {
           SoundManager.playWarning();
@@ -910,7 +973,23 @@ export const App: React.FC = () => {
             : 'Basin demolished.');
         } else {
           SoundManager.playWarning();
-          setToast('Cannot demolish basin.');
+          setToast(res.reason ?? 'Cannot demolish basin.');
+        }
+      } else if (clickedEquipment) {
+        // Phase 2: un-bolt and remove an installed machine (70% kit salvage).
+        SoundManager.playDemolish();
+        const res = GameManager.demolishProcessEquipment(gs, clickedEquipment.id);
+        if (res.success) {
+          pushHistory(gs);
+          setSelectedEquipmentId(null);
+          setGameState(res.newState);
+          sm.syncEquipment(res.newState.processEquipment ?? [], res.newState.customBasins ?? [], null);
+          setToast(res.refunded && res.refunded > 0
+            ? `${EQUIPMENT_TYPES[clickedEquipment.typeId]?.name ?? 'Equipment'} removed — salvage refund $${res.refunded.toLocaleString()}.`
+            : `${EQUIPMENT_TYPES[clickedEquipment.typeId]?.name ?? 'Equipment'} removed.`);
+        } else {
+          SoundManager.playWarning();
+          setToast('Cannot remove equipment.');
         }
       }
     }
@@ -1342,8 +1421,19 @@ export const App: React.FC = () => {
           if (mode === 'demolish')     setToast('Demolish Mode: Click any unit to remove for 70% cash refund.');
           if (mode === 'place_unit')   setToast('Choose a unit type below, then click on the grid to place.');
           if (mode === 'draw_basin')   setToast('STRUCTURES → Basin: click the FIRST corner, then the opposite corner. Esc cancels. Cost is shown as you draw.');
+          if (mode === 'place_equipment') setToast('EQUIPMENT: pick a machine in the toolbar, then click a valid tile — diffusers/mixers mount INSIDE drawn basins, pumps/blowers on open ground. Esc cancels.');
+          if (mode !== 'place_equipment') setSelectedEquipmentTypeId(null);
         }}
         selectedUnitTypeId={selectedUnitTypeId}
+        selectedEquipmentTypeId={selectedEquipmentTypeId}
+        onSelectEquipmentTypeId={id => {
+          setSelectedEquipmentTypeId(id);
+          setSelectedEquipmentId(null);
+          if (id) {
+            const eq = EQUIPMENT_TYPES[id];
+            setToast(`${eq.name} ($${eq.capexUsd.toLocaleString()}) — ${eq.mounting === 'in_basin' ? 'click INSIDE a drawn basin to install.' : 'click open ground to install.'}`);
+          }
+        }}
         onSelectUnitTypeId={id => {
           // ATOMIC: a non-null id enters place_unit WITH that unit; null merely
           // clears placement and NEVER forces place_unit (the old handler

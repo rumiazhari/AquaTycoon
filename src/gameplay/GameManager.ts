@@ -22,6 +22,12 @@ import {
   estimateBasinCAPEX,
   validateBasinPlacement,
 } from '../design/CustomBasin';
+import {
+  ProcessEquipmentItem,
+  EQUIPMENT_TYPES,
+  estimateEquipmentCAPEX,
+  validateEquipmentPlacement,
+} from '../design/ProcessEquipment';
 
 export interface NextStepSuggestion {
   unitTypeId: UnitTypeId;
@@ -67,6 +73,13 @@ export interface GameState {
    * against each other. Equipment/ports arrive in later builder phases.
    */
   customBasins: CustomBasin[];
+  /**
+   * CONSTRUCTION-BUILDER Phase 2: physical machines the player installs
+   * (diffusers/mixers inside drawn basins, pumps/blowers on open ground).
+   * Each occupies exactly one tile; ground machines block legacy units and
+   * basin drawing symmetrically.
+   */
+  processEquipment: ProcessEquipmentItem[];
 }
 
 export class GameManager {
@@ -183,7 +196,8 @@ export class GameManager {
       tutorialActive: false,
       tutorialStep: 0,
       diurnalInfluentStrength: DIURNAL_DEFAULT_STRENGTH,
-      customBasins: []
+      customBasins: [],
+      processEquipment: []
     };
   }
 
@@ -805,6 +819,18 @@ export class GameManager {
       return { newState: state, success: false, reason: 'Tile lot already occupied by a constructed basin' };
     }
 
+    // Phase 2: ground-installed equipment claims its tile — legacy units may
+    // not drop a lot on top of a pump or blower skid.
+    const groundEquipBlocked = (state.processEquipment ?? []).some(e => {
+      const def = EQUIPMENT_TYPES[e.typeId];
+      return def?.mounting === 'ground' &&
+        gridX < e.x + 1 && gridX + w > e.x &&
+        gridY < e.y + 1 && gridY + l > e.y;
+    });
+    if (groundEquipBlocked) {
+      return { newState: state, success: false, reason: 'Tile lot already occupied by installed equipment' };
+    }
+
     const newUnit: PlacedUnit = {
       instanceId: `unit_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       typeId,
@@ -875,11 +901,17 @@ export class GameManager {
     };
     const depthM = BASIN_DEFAULT_DEPTH_M;
 
-    // Legacy units as blocking rects for the candidate footprint.
+    // Legacy units AND ground-installed equipment as blocking rects for the
+    // candidate footprint (you cannot pour concrete over an installed skid).
     const unitRects = state.units.map(u => {
       const [uw, ul] = resolveFootprint(u);
       return { x: u.gridX, y: u.gridY, w: uw, h: ul };
     });
+    for (const e of state.processEquipment ?? []) {
+      if (EQUIPMENT_TYPES[e.typeId]?.mounting === 'ground') {
+        unitRects.push({ x: e.x, y: e.y, w: 1, h: 1 });
+      }
+    }
     const v = validateBasinPlacement(
       norm, depthM,
       state.currentLevel.mapSize,
@@ -924,14 +956,26 @@ export class GameManager {
 
   /**
    * CONSTRUCTION-BUILDER Phase 1: demolishes a player-drawn basin with a 50%
-   * salvage refund (campaign/sandbox aware). Basins hold no pipes/equipment
-   * yet, so removal is self-contained.
+   * salvage refund (campaign/sandbox aware). Mounting integrity: a basin that
+   * still holds installed equipment cannot be demolished — un-bolt the
+   * machines first.
    */
   public static demolishCustomBasin(state: GameState, basinId: string): {
-    newState: GameState; success: boolean; refunded?: number;
+    newState: GameState; success: boolean; refunded?: number; reason?: string;
   } {
     const basin = (state.customBasins ?? []).find(b => b.id === basinId);
     if (!basin) return { newState: state, success: false };
+
+    const occupied = (state.processEquipment ?? []).some(e =>
+      e.x >= basin.x && e.x < basin.x + basin.w &&
+      e.y >= basin.y && e.y < basin.y + basin.h
+    );
+    if (occupied) {
+      return {
+        newState: state, success: false,
+        reason: 'Remove the installed equipment inside this basin first',
+      };
+    }
 
     const refunded = (state.gameMode !== 'sandbox' && !state.tutorialActive)
       ? Math.round(estimateBasinCAPEX(basin) * GameManager.CUSTOM_BASIN_SALVAGE_RATE)
@@ -949,6 +993,100 @@ export class GameManager {
       success: true,
       refunded,
     };
+  }
+
+  /** Demolition refund rate for kit equipment (mirrors legacy units' 70%). */
+  public static readonly EQUIPMENT_SALVAGE_RATE = 0.7;
+
+  /**
+   * CONSTRUCTION-BUILDER Phase 2: installs one machine at a tile.
+   * The domain layer owns ALL mounting rules via validateEquipmentPlacement
+   * (in_basin types must sit inside a drawn basin; ground types must sit on
+   * free open ground). Cash-gated like every other build action — sandbox
+   * skips only the cash gate. Catalog price is flat per machine.
+   */
+  public static placeProcessEquipment(
+    state: GameState,
+    typeId: string,
+    tileX: number,
+    tileY: number
+  ): { newState: GameState; success: boolean; reason?: string; charged?: number } {
+    const def = EQUIPMENT_TYPES[typeId];
+    if (!def) return { newState: state, success: false, reason: 'Unknown equipment type' };
+
+    const unitRects = state.units.map(u => {
+      const [uw, ul] = resolveFootprint(u);
+      return { x: u.gridX, y: u.gridY, w: uw, h: ul };
+    });
+    const v = validateEquipmentPlacement(
+      typeId, tileX, tileY,
+      state.currentLevel.mapSize,
+      state.customBasins ?? [],
+      state.processEquipment ?? [],
+      unitRects
+    );
+    if (!v.ok) {
+      return { newState: state, success: false, reason: v.reason };
+    }
+
+    const capex = estimateEquipmentCAPEX(typeId);
+    if (state.gameMode !== 'sandbox' && state.financials.cash < capex) {
+      return {
+        newState: state, success: false,
+        reason: `Insufficient funds ($${capex.toLocaleString()} required)`,
+      };
+    }
+
+    const item: ProcessEquipmentItem = {
+      id: `equip_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      typeId,
+      x: tileX,
+      y: tileY,
+      createdAtDay: state.gameTimeDays,
+    };
+    const newCash = state.gameMode === 'sandbox'
+      ? state.financials.cash
+      : state.financials.cash - capex;
+
+    return {
+      newState: {
+        ...state,
+        financials: { ...state.financials, cash: newCash },
+        processEquipment: [...(state.processEquipment ?? []), item],
+      },
+      success: true,
+      charged: state.gameMode === 'sandbox' ? 0 : capex,
+    };
+  }
+
+  /** Removes one installed machine and refunds its salvage (70% of CAPEX). */
+  public static demolishProcessEquipment(state: GameState, itemId: string): {
+    newState: GameState; success: boolean; refunded?: number;
+  } {
+    const item = (state.processEquipment ?? []).find(e => e.id === itemId);
+    if (!item) return { newState: state, success: false };
+
+    const refunded = (state.gameMode !== 'sandbox' && !state.tutorialActive)
+      ? Math.round(estimateEquipmentCAPEX(item.typeId) * GameManager.EQUIPMENT_SALVAGE_RATE)
+      : 0;
+
+    return {
+      newState: {
+        ...state,
+        financials: {
+          ...state.financials,
+          cash: state.financials.cash + refunded,
+        },
+        processEquipment: (state.processEquipment ?? []).filter(e => e.id !== itemId),
+      },
+      success: true,
+      refunded,
+    };
+  }
+
+  /** The machine standing on a tile, if any (click hit-testing). */
+  public static equipmentAtTile(state: GameState, tx: number, ty: number): ProcessEquipmentItem | null {
+    return (state.processEquipment ?? []).find(e => e.x === tx && e.y === ty) ?? null;
   }
 
   /** True when the tile lies inside any custom basin (used by ghost validity + clicks). */
