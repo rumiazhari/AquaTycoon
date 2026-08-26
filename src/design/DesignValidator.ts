@@ -15,6 +15,9 @@ import {
 } from '../sim/hydraulics/PipeHydraulics';
 import { PUMP_MODELS, REDUNDANCY_CONFIGS, type PumpModel } from './catalogs/Equipment';
 import type { PumpingDesign } from './UnitBlueprint';
+import type { CASDesignPoint } from '../sim/processes/ActivatedSludge';
+import { EQ_MIN_POOL_FRACTION } from '../sim/processes/Equalization';
+import { PEAK_FLOW_FACTOR, peakLoadFactorForStrength, requiredBalancingVolumeM3 } from './PeakFlow';
 
 export type DesignIssueSeverity = 'info' | 'warning' | 'critical';
 
@@ -24,6 +27,65 @@ export interface DesignIssue {
   message: string;
   /** Live engineering numbers backing the warning. */
   detail?: string;
+}
+
+// ── Peak-flow design basis (MISSION §AK items 5/6) ───────────────────────────
+// With the municipal influent running at full strength, validators judge
+// designs against the loads they will actually see, not just the average day.
+// Each check is exported pure so eng-tests can pin it deterministically.
+
+/**
+ * Warning when aeration capacity holds on the AVERAGE day but the damped
+ * mass-load peak (≈×1.25) outruns installed transfer. Returns null when the
+ * design is already critically undersized on the average day (that critical
+ * owns the messaging) or when peak headroom exists.
+ */
+export function casPeakHeadroomIssue(dp: CASDesignPoint): DesignIssue | null {
+  if (dp.fieldTransferCapacityKgDay < dp.netDemandKgDay) return null; // blower_undersized owns it
+  const peakDemandKgDay = dp.netDemandKgDay * peakLoadFactorForStrength(1);
+  if (dp.fieldTransferCapacityKgDay >= peakDemandKgDay) return null;
+  return {
+    severity: 'warning',
+    code: 'blower_no_peak_headroom',
+    message: `Aeration holds on an average day (~${Math.round(dp.netDemandKgDay)} kg O₂/d), but the morning load peak (~${Math.round(peakDemandKgDay)} kg O₂/d) outruns installed transfer.`,
+    detail: `Field capacity ${Math.round(dp.fieldTransferCapacityKgDay)} kg O₂/d vs peak demand — expect DO sag and nitrification slip around the diurnal maximum.`,
+  };
+}
+
+/**
+ * Warning when SOR clears the average-day limit yet the full-strength peak
+ * hour (≈×1.45 flow) crosses the 33 m/d solids-carryover threshold.
+ */
+export function clarifierPeakExposureIssues(sorAtDesignFlowM3M2Day: number): DesignIssue[] {
+  if (sorAtDesignFlowM3M2Day > 24) return []; // sor_excessive owns it
+  const sorPeak = sorAtDesignFlowM3M2Day * PEAK_FLOW_FACTOR;
+  if (sorPeak <= 33) return [];
+  return [{
+    severity: 'warning',
+    code: 'sor_peak_exposure',
+    message: `SOR ${sorAtDesignFlowM3M2Day.toFixed(1)} m/d clears the average-day limit, but the ~${sorPeak.toFixed(1)} m/d peak hour crosses the 33 m/d solids-carryover threshold.`,
+    detail: 'Hydraulic peaks, not the daily average, set clarifier size — add diameter/trains or upstream equalization.',
+  }];
+}
+
+/**
+ * Warning when live storage above the dead pool cannot shave the observed
+ * inflow's diurnal peak down to the configured constant pump-out target.
+ */
+export function eqDiurnalSizingIssue(
+  capacityM3: number,
+  avgInM3h: number,
+  outflowTargetM3h: number
+): DesignIssue | null {
+  const requiredM3 = requiredBalancingVolumeM3(avgInM3h, outflowTargetM3h, 1);
+  const usableM3 = capacityM3 * (1 - EQ_MIN_POOL_FRACTION);
+  if (requiredM3 <= usableM3) return null;
+  return {
+    severity: 'warning',
+    code: 'eq_undersized_for_diurnal',
+    message: `Shaving this inflow's diurnal peak down to ${outflowTargetM3h.toFixed(0)} m³/h needs ~${requiredM3.toFixed(0)} m³ of live storage; the basin offers ~${usableM3.toFixed(0)} m³ above its dead pool.`,
+    detail: 'Enlarge the basin or raise the pump-out target — otherwise the strongest unbuffered peaks spill.',
+  };
 }
 
 export function validateUnitDesign(unit: PlacedUnit): DesignIssue[] {
@@ -77,6 +139,8 @@ export function validateUnitDesign(unit: PlacedUnit): DesignIssue[] {
         });
       }
       if (dp) {
+        const peakHeadroom = casPeakHeadroomIssue(dp);
+        if (peakHeadroom) issues.push(peakHeadroom);
         if (dp.hrtHoursAtDesignFlow < 4) {
           issues.push({ severity: 'warning', code: 'hrt_short', message: `HRT only ${dp.hrtHoursAtDesignFlow.toFixed(1)} h at design flow (conventional CAS usually 4–8 h).` });
         }
@@ -103,6 +167,7 @@ export function validateUnitDesign(unit: PlacedUnit): DesignIssue[] {
           detail: 'Solids will carry over at peak. Enlarge diameter / add trains.',
         });
       }
+      issues.push(...clarifierPeakExposureIssues(load.sorM3M2Day));
       if (area < 40) {
         issues.push({ severity: 'info', code: 'clarifier_small', message: 'Compact clarifier: fine at low flow, fragile under storm peaks.' });
       }
@@ -182,6 +247,14 @@ export function validateEqualizationDesign(unit: PlacedUnit): DesignIssue[] {
         message: `Outflow target ${targetM3h.toFixed(0)} m³/h sits below the ~${avgInM3h.toFixed(0)} m³/h average inflow — level creeps toward overflow between peaks.`,
         detail: 'Sustained drain must match average load; peaks alone should set the storage demand.',
       });
+    }
+
+    // Diurnal storage sizing (§AK items 5/6): once sustained drain keeps up
+    // (ratio ≥ 0.95, checked above), does live storage above the dead pool
+    // actually absorb the municipal curve's fill-side excursion?
+    if (ratio >= 0.95) {
+      const diurnalSizing = eqDiurnalSizingIssue(capacityM3, avgInM3h, targetM3h);
+      if (diurnalSizing) issues.push(diurnalSizing);
     }
 
     // Capital-idle info: >4 days of buffering that never fills.

@@ -22,6 +22,9 @@ import {
   validateStructuralGeometry,
   evaluatePumpStationDesign,
   validateEqualizationDesign,
+  casPeakHeadroomIssue,
+  clarifierPeakExposureIssues,
+  eqDiurnalSizingIssue,
 } from '../src/design/DesignValidator';
 import { blueprintFromTemplate } from '../src/design/UnitBlueprint';
 import { casDesignPoint, stepCasRuntime } from '../src/sim/processes/ActivatedSludge';
@@ -65,8 +68,17 @@ import {
   DIURNAL_MEAN_FACTOR,
   DIURNAL_MIN_FACTOR,
   DIURNAL_MAX_FACTOR,
+  DIURNAL_DEFAULT_STRENGTH,
 } from '../src/sim/InfluentProfile';
 import { createInfluentWater } from '../src/sim/WaterStream';
+import {
+  PEAK_FLOW_FACTOR,
+  PEAK_LOAD_FACTOR,
+  peakFlowFactorForStrength,
+  peakLoadFactorForStrength,
+  peakDesignFlowM3d,
+  requiredBalancingVolumeM3,
+} from '../src/design/PeakFlow';
 
 // ── tiny assert harness ─────────────────────────────────────────────────────
 let passed = 0;
@@ -1157,6 +1169,86 @@ function wq(over: Partial<WaterQuality>): WaterQuality {
   assert(rTutBuy.success && rTutBuy.charged === undefined &&
     rTutBuy.newState.financials.cash === cashStart && rTutRem.refunded === 0,
     'PBILL. tutorial grant builds free and refunds nothing on removal');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PEAK-FLOW DESIGN BASIS (§AK items 5/6) — full-strength diurnal readiness
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  const L1_AVG = 3500; // Level-1 municipal contract flow (m³/d)
+  const avgH = L1_AVG / 24;
+
+  // Factor math: derived from the influent anchors, municipal magnitudes.
+  assert(Math.abs(PEAK_FLOW_FACTOR - DIURNAL_MAX_FACTOR) < 1e-12 &&
+    Math.abs(PEAK_LOAD_FACTOR - (1 + 0.55 * (DIURNAL_MAX_FACTOR - 1))) < 1e-12,
+    'PF1. peak factors derive from the diurnal anchors');
+  assert(PEAK_FLOW_FACTOR > 1.4 && PEAK_FLOW_FACTOR < 1.5 &&
+    PEAK_LOAD_FACTOR > 1.2 && PEAK_LOAD_FACTOR < 1.3,
+    `PF2. municipal magnitudes sane (flow ×${PEAK_FLOW_FACTOR.toFixed(3)}, load ×${PEAK_LOAD_FACTOR.toFixed(3)})`);
+  assert(peakFlowFactorForStrength(0) === 1 && peakLoadFactorForStrength(0) === 1,
+    'PF3a. strength 0 = flat average day');
+  assert(peakFlowFactorForStrength(-5) === 1, 'PF3b. negative strength clamps to flat');
+  assert(peakFlowFactorForStrength(0.5) > 1 && peakFlowFactorForStrength(0.5) < peakFlowFactorForStrength(1),
+    'PF3c. strength blend monotone toward the full curve');
+  assert(Math.abs(peakDesignFlowM3d(L1_AVG, 1) - L1_AVG * DIURNAL_MAX_FACTOR) < 1e-9,
+    'PF4. peakDesignFlow = avg × flow factor at full strength');
+
+  // Balancing-volume integral: zero when flat, shrinks with faster drawdown.
+  assert(requiredBalancingVolumeM3(avgH, avgH, 0) === 0, 'PF5a. flat curve needs no balancing storage');
+  const vAvgOut = requiredBalancingVolumeM3(avgH, avgH, 1);
+  const vFastOut = requiredBalancingVolumeM3(avgH, avgH * 1.2, 1);
+  assert(vAvgOut > vFastOut,
+    `PF5b. faster drawdown shrinks storage need (${vAvgOut.toFixed(0)} → ${vFastOut.toFixed(0)} m³)`);
+  assert(vAvgOut > 10 && vAvgOut < 120, `PF5c. L1-scale balancing volume plausible (${vAvgOut.toFixed(0)} m³)`);
+
+  // ── Template peak-readiness pins @ L1 (items 5/6 acceptance) ──
+  const dpL1 = casDesignPoint(mkBlueprintUnit('activated_sludge_cas'), 210, 25, L1_AVG)!;
+  assert(dpL1.capacityMarginRatio >= PEAK_LOAD_FACTOR,
+    `PF6. CAS template covers the mass-load peak (margin ×${dpL1.capacityMarginRatio.toFixed(2)} ≥ ×${PEAK_LOAD_FACTOR.toFixed(3)})`);
+
+  const clarGeo = defaultGeometryFor('secondary_clarifier')!;
+  const loadL1 = evaluateClarifierLoad(clarGeo, L1_AVG, 3200, L1_AVG * 1.75, 0.25);
+  assert(loadL1.sorM3M2Day * PEAK_FLOW_FACTOR < 24,
+    `PF7. clarifier template peak-hour SOR ${(loadL1.sorM3M2Day * PEAK_FLOW_FACTOR).toFixed(1)} m/d below the 24 warning limit`);
+
+  const eqCap = workingVolumeM3(defaultGeometryFor('equalization_basin')!);
+  const balNeed = requiredBalancingVolumeM3(avgH, 160, 1); // template outflow target
+  assert(balNeed <= eqCap * (1 - EQ_MIN_POOL_FRACTION),
+    `PF8. EQ template holds the diurnal excursion (need ${balNeed.toFixed(0)} ≤ usable ${((eqCap) * (1 - EQ_MIN_POOL_FRACTION)).toFixed(0)} m³)`);
+
+  assert(PUMP_MODELS.sewage_wedge_400.ratedFlowM3h >= peakDesignFlowM3d(L1_AVG, 1) / 24,
+    'PF9. template pump delivers the peak hourly inflow');
+
+  // ── Validator peak checks (pure helpers) ──
+  assert(casPeakHeadroomIssue(dpL1) === null, 'PF10. healthy template raises no peak-headroom warning');
+  const peakShortDp = { ...dpL1, fieldTransferCapacityKgDay: dpL1.netDemandKgDay * 1.1 };
+  assert(casPeakHeadroomIssue(peakShortDp)?.code === 'blower_no_peak_headroom',
+    'PF11. avg-ok/peak-short aeration warns blower_no_peak_headroom');
+  const avgShortDp = { ...dpL1, fieldTransferCapacityKgDay: dpL1.netDemandKgDay * 0.9 };
+  assert(casPeakHeadroomIssue(avgShortDp) === null,
+    'PF12. avg-day undersized defers to blower_undersized');
+
+  assert(clarifierPeakExposureIssues(19).length === 0, 'PF13a. SOR 19 m/d carries no peak exposure');
+  assert(clarifierPeakExposureIssues(23.5)[0]?.code === 'sor_peak_exposure',
+    'PF13b. SOR 23.5 m/d crosses the 33 m/d threshold at peak (≈34)');
+  assert(clarifierPeakExposureIssues(30).length === 0, 'PF13c. SOR > 24 owned by sor_excessive');
+
+  assert(eqDiurnalSizingIssue(20, avgH, avgH)?.code === 'eq_undersized_for_diurnal',
+    'PF14a. basin too small for the fill-side excursion warns eq_undersized_for_diurnal');
+  assert(eqDiurnalSizingIssue(eqCap, avgH, 160) === null, 'PF14b. template EQ passes the diurnal sizing check');
+
+  // ── Full-strength flip ──
+  assert(DIURNAL_DEFAULT_STRENGTH === 1.0, 'PF15. new games default to full municipal strength');
+  const gsFresh = GameManager.createInitialState(0, false);
+  assert(gsFresh.diurnalInfluentStrength === 1.0, 'PF16. createInitialState carries strength 1.0');
+  const specL1 = createInfluentWater({ flowRate: L1_AVG, bod: 210 });
+  const peakHour = applyDiurnalInfluent(specL1, 9.75 / 24, gsFresh.diurnalInfluentStrength);
+  assert(Math.abs(peakHour.flowRate - L1_AVG * DIURNAL_MAX_FACTOR) < 1e-6,
+    `PF17. morning peak delivers ×${(peakHour.flowRate / L1_AVG).toFixed(3)} influent flow`);
+  let sumFlow = 0;
+  for (let i = 0; i < 96; i++) sumFlow += applyDiurnalInfluent(specL1, (i * 0.25) / 24, 1).flowRate;
+  assert(Math.abs(sumFlow / 96 - L1_AVG) < L1_AVG * 0.01,
+    `PF18. full-strength day preserves the daily mean (${(sumFlow / 96).toFixed(0)} vs ${L1_AVG} m³/d)`);
 }
 
 // ── summary ─────────────────────────────────────────────────────────────────

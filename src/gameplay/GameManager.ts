@@ -49,9 +49,8 @@ export interface GameState {
   tutorialStep: number;
   /**
    * MISSION §AK Phase-1 item 14: amplitude of the dynamic municipal influent
-   * curve in [0,1]. Template trains are currently average-day designs; until
-   * peak-flow equipment sizing lands (items 5/6) new games start at a gentle
-   * 0.4 swing. Raise to DIURNAL_DEFAULT_STRENGTH=1 after template resizing.
+   * curve in [0,1]. Full municipal swing since iter 15 (§AK items 5/6
+   * closed): template trains are verified peak-ready — see src/design/PeakFlow.ts.
    */
   diurnalInfluentStrength: number;
 }
@@ -480,7 +479,7 @@ export class GameManager {
     // Dynamic influent (MISSION §AK Phase-1 item 14): the plant sees a real
     // municipal diurnal curve — night trough ≈04:30, morning peak ≈10:00,
     // evening bump ≈20:00. Amplitude controlled by state.diurnalInfluentStrength
-    // (default 0.4 for legacy template trains; raise to 1.0 after peak-flow resizing).
+    // (default 1.0 — templates are peak-ready as of §AK items 5/6 closure).
     const dynamicInfluent = applyDiurnalInfluent(activeInfluent, newDays, state.diurnalInfluentStrength ?? 1);
 
     // Environmental factors driving renewable generation.
