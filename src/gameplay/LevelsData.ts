@@ -258,7 +258,8 @@ export const CAMPAIGN_LEVELS: CampaignLevel[] = [
       { id: 'obj_tn', description: 'Biological Nitrification/Denitrification TN < 5.0 mg/L', type: 'effluent_standard', targetValue: 5.0, achieved: false },
       { id: 'obj_tp', description: 'Total Phosphorus TP < 0.2 mg/L (A2O + Chemical polishing)', type: 'effluent_standard', targetValue: 0.2, achieved: false },
       { id: 'obj_energy', description: 'Reach 50%+ Plant Energy Self-Sufficiency via Anaerobic Biogas CHP', type: 'power_neutrality', targetValue: 50, achieved: false },
-      { id: 'obj_sand', description: 'Filter Suspended Solids TSS < 10 mg/L with Sand Filters', type: 'effluent_standard', targetValue: 10, achieved: false }
+      { id: 'obj_sand', description: 'Filter Suspended Solids TSS < 10 mg/L with Sand Filters', type: 'effluent_standard', targetValue: 10, achieved: false },
+      { id: 'obj_custom_basins', description: 'Owner-Builder: Excavate 2 custom basins (or baffled zones) for staged BNR — prove you can build the process', type: 'construction', targetValue: 2, achieved: false }
     ],
     availableUnits: [
       'influent_inlet',

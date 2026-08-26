@@ -708,7 +708,17 @@ export class GameManager {
       const target = obj.targetValue ?? 0;
       let currentlyMet = false;
 
-      if (hasEffluentFlow) {
+      // ── Owner-builder construction contracts — flow-independent (tycoon) ─
+      if (obj.id === 'obj_custom_basins') {
+        currentlyMet = (state.customBasins?.length ?? 0) >= (target || 1);
+      } else if (obj.id === 'obj_custom_baffles') {
+        currentlyMet = (state.customBaffles?.length ?? 0) >= (target || 2);
+      } else if (obj.id === 'obj_custom_equipment') {
+        currentlyMet = (state.processEquipment?.length ?? 0) >= (target || 3);
+      } else if (obj.id === 'obj_custom_powered') {
+        const powered = _poweredIds(state.processEquipment ?? [], state.utilityConnections ?? []);
+        currentlyMet = powered.size >= (target || 2);
+      } else if (hasEffluentFlow) {
         switch (obj.id) {
           case 'obj_connect':
             // Real continuous liquid path influent → train → outfall.

@@ -3594,5 +3594,139 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
 
 
 
+// ── TYCOON POLISH iter 36: Owner-Builder Construction Contracts (flow-independent) ─
+{
+  const mkBasinCC = (id,x=5,y=5,w=4,h=4) => ({ x, y, w, h, depthM:4, id, createdAtDay:0 });
+  const mkMixerCC = (id,x,y) => ({ id, typeId:'submersible_mixer', x, y, createdAtDay:0 });
+  const mkDiffCC = (id,x,y) => ({ id, typeId:'fine_bubble_diffuser', x, y, createdAtDay:0 });
+  const mkPumpCC = (id,x,y) => ({ id, typeId:'process_pump', x, y, createdAtDay:0 });
+  const cableCC = (ax,ay,bx,by) => ({ type:'power_cable', ax, ay, bx, by });
+  const objCC = (s, id) => s.currentLevel.objectives.find((o)=>o.id===id);
+  {
+    let gs = GameManager.createInitialState(0, true);
+    gs.currentLevel.objectives = [{ id:'obj_custom_basins', description:'2 basins', type:'construction', targetValue:2, achieved:false }];
+    gs.customBasins = [];
+    gs = GameManager.tick(gs, 0.5);
+    assert(!objCC(gs,'obj_custom_basins').achieved, 'CC01. 0 basins does NOT satisfy target 2');
+    gs.customBasins = [mkBasinCC('b1')];
+    gs = GameManager.tick(gs, 0.5);
+    assert(!objCC(gs,'obj_custom_basins').achieved, 'CC01b. 1 basin does NOT satisfy target 2');
+    gs.customBasins = [mkBasinCC('b1'), mkBasinCC('b2',10,10)];
+    gs = GameManager.tick(gs, 0.5);
+    assert(objCC(gs,'obj_custom_basins').achieved, 'CC01c. 2 basins satisfies target 2');
+  }
+  {
+    let gs = GameManager.createInitialState(0, true);
+    gs.currentLevel.objectives = [{ id:'obj_custom_basins', description:'default 1', type:'construction', achieved:false }];
+    gs.customBasins = [mkBasinCC('b1')];
+    gs = GameManager.tick(gs, 0.5);
+    assert(objCC(gs,'obj_custom_basins').achieved, 'CC02. default target -> 1 basin sufficient');
+    gs.customBasins = [];
+    gs = GameManager.tick(gs, 0.5);
+    assert(!objCC(gs,'obj_custom_basins').achieved, 'CC02b. 0 basins fails default target');
+  }
+  {
+    let gs = GameManager.createInitialState(0, true);
+    gs.currentLevel.objectives = [{ id:'obj_custom_baffles', description:'2 baffles', type:'construction', targetValue:2, achieved:false }];
+    gs.customBasins = [mkBasinCC('b1',5,5,8,6)];
+    gs.customBaffles = [{ id:'bf1', basinId:'b1', orientation:'vertical', offsetTiles:2, createdAtDay:0 }];
+    gs = GameManager.tick(gs, 0.5);
+    assert(!objCC(gs,'obj_custom_baffles').achieved, 'CC03. 1 baffle does NOT satisfy target 2');
+    gs.customBaffles = [
+      { id:'bf1', basinId:'b1', orientation:'vertical', offsetTiles:2, createdAtDay:0 },
+      { id:'bf2', basinId:'b1', orientation:'horizontal', offsetTiles:3, createdAtDay:0 },
+    ];
+    gs = GameManager.tick(gs, 0.5);
+    assert(objCC(gs,'obj_custom_baffles').achieved, 'CC03b. 2 baffles satisfies target 2');
+  }
+  {
+    let gs = GameManager.createInitialState(0, true);
+    gs.currentLevel.objectives = [{ id:'obj_custom_equipment', description:'3 machines', type:'construction', targetValue:3, achieved:false }];
+    gs.customBasins = [mkBasinCC('b1',5,5,8,6)];
+    gs.processEquipment = [mkDiffCC('d1',6,6), mkMixerCC('m1',7,6)];
+    gs = GameManager.tick(gs, 0.5);
+    assert(!objCC(gs,'obj_custom_equipment').achieved, 'CC04. 2 machines does NOT satisfy target 3');
+    gs.processEquipment = [mkDiffCC('d1',6,6), mkMixerCC('m1',7,6), mkPumpCC('p1',22,5)];
+    gs = GameManager.tick(gs, 0.5);
+    assert(objCC(gs,'obj_custom_equipment').achieved, 'CC04b. 3 machines satisfies target 3');
+  }
+  {
+    let gs = GameManager.createInitialState(0, true);
+    gs.currentLevel.objectives = [{ id:'obj_custom_powered', description:'2 powered', type:'construction', targetValue:2, achieved:false }];
+    gs.customBasins = [mkBasinCC('b1',5,5,8,6)];
+    const m1 = mkMixerCC('m1',6,6);
+    const m2 = mkMixerCC('m2',7,6);
+    const p1 = mkPumpCC('p1',22,5);
+    gs.processEquipment = [m1, m2, p1];
+    gs.utilityConnections = [];
+    gs = GameManager.tick(gs, 0.5);
+    assert(!objCC(gs,'obj_custom_powered').achieved, 'CC05. 0 powered does NOT satisfy target 2');
+    gs.utilityConnections = [cableCC(6,6,0,0)];
+    gs = GameManager.tick(gs, 0.5);
+    assert(!objCC(gs,'obj_custom_powered').achieved, 'CC05b. 1 powered does NOT satisfy target 2');
+    gs.utilityConnections = [cableCC(6,6,0,0), cableCC(7,6,0,0)];
+    gs = GameManager.tick(gs, 0.5);
+    assert(objCC(gs,'obj_custom_powered').achieved, 'CC05c. 2 powered satisfies target 2');
+    const d1 = mkDiffCC('d1',6,6);
+    let gs2 = GameManager.createInitialState(0, true);
+    gs2.currentLevel.objectives = [{ id:'obj_custom_powered', description:'1 powered', type:'construction', targetValue:1, achieved:false }];
+    gs2.customBasins = [mkBasinCC('b1',5,5,8,6)];
+    gs2.processEquipment = [d1];
+    gs2.utilityConnections = [];
+    gs2 = GameManager.tick(gs2, 0.5);
+    assert(objCC(gs2,'obj_custom_powered').achieved, 'CC05d. passive diffuser (0 kW) is always powered -> satisfies target 1 without cable');
+  }
+  {
+    let gs = GameManager.createInitialState(0, true);
+    gs.currentLevel.objectives = [
+      { id:'obj_custom_basins', description:'1 basin', type:'construction', targetValue:1, achieved:false },
+      { id:'obj_custom_powered', description:'1 powered', type:'construction', targetValue:1, achieved:false },
+    ];
+    gs.customBasins = [mkBasinCC('b1')];
+    gs.processEquipment = [mkDiffCC('d1',6,6)];
+    gs.utilityConnections = [];
+    gs.pipes = [];
+    gs.units = [];
+    gs = GameManager.tick(gs, 0.5);
+    assert(gs.finalEffluent.flowRate < 10, 'CC06a. precondition: no effluent flow ('+gs.finalEffluent.flowRate.toFixed(1)+')');
+    assert(objCC(gs,'obj_custom_basins').achieved, 'CC06b. basins contract passes WITHOUT flow — tycoon early build');
+    assert(objCC(gs,'obj_custom_powered').achieved, 'CC06c. powered contract passes WITHOUT flow (passive)');
+  }
+  {
+    const l4 = CAMPAIGN_LEVELS.find((l)=>l.id===4);
+    const has = l4.objectives.some((o)=>o.id==='obj_custom_basins' && o.targetValue===2);
+    assert(has, 'CC07. Level 4 (Emerald Lake) now carries Owner-Builder 2-basin showcase contract');
+  }
+  {
+    let gs = GameManager.createInitialState(3, true);
+    gs.currentLevel.objectives = [
+      { id:'obj_custom_basins', description:'1 basin', type:'construction', targetValue:1, achieved:false },
+      { id:'obj_bod', description:'BOD < 30', type:'effluent_standard', targetValue:30, achieved:false },
+    ];
+    gs.customBasins = [];
+    const scr = { instanceId:'scrCC', typeId:'bar_screen', gridX:5, gridY:5, rotation:0, volume:200, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:0, lastOpexActual:0 };
+    gs.units.push(scr);
+    gs.pipes.push({ id:'p1', fromUnitId:'inlet_0', fromPortId:'outlet', toUnitId:'scrCC', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'},
+                  { id:'p2', fromUnitId:'scrCC', fromPortId:'outlet', toUnitId:'outfall_0', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'});
+    for(let i=0;i<10;i++) gs = GameManager.tick(gs, 0.5);
+    assert(!gs.isLevelComplete, 'CC08a. not complete when construction contract unmet (even if flow exists)');
+    gs.customBasins = [mkBasinCC('bCC',5,5,4,4)];
+    const cas = { instanceId:'casCC', typeId:'activated_sludge_cas', gridX:10, gridY:5, rotation:0, volume:1728, customParams:{ doSetpoint:2.5, mlss:3200, rasRatio:0.4 }, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:0, lastOpexActual:0 };
+    gs.units.push(cas);
+    gs.pipes = [
+      { id:'p1', fromUnitId:'inlet_0', fromPortId:'outlet', toUnitId:'scrCC', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'},
+      { id:'p1b', fromUnitId:'scrCC', fromPortId:'outlet', toUnitId:'casCC', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'},
+      { id:'p2', fromUnitId:'casCC', fromPortId:'outlet', toUnitId:'outfall_0', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'},
+    ];
+    for(let i=0;i<40;i++) gs = GameManager.tick(gs, 0.5);
+    assert(objCC(gs,'obj_custom_basins').achieved, 'CC08b. construction contract now satisfied');
+    if (gs.currentLevel.objectives.every((o)=>o.achieved)) {
+      assert(gs.isLevelComplete, 'CC08c. level latches complete when BOTH construction + effluent contracts satisfied');
+    } else {
+      assert(!gs.isLevelComplete, 'CC08c. not complete until BOD also satisfied (bod '+gs.finalEffluent.bod.toFixed(1)+') — construction alone insufficient');
+    }
+  }
+}
+
 console.log(failures === 0 ? "\nALL TESTS PASSED" : `\n${failures} TEST(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);
