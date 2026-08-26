@@ -98,11 +98,28 @@ export interface PumpDutyPoint {
   /** Hydraulic power ρgQH/η_pump/η_motor → electrical kW. */
   electricalPowerKw: number;
   reason?: string;
+  /** True when the analytic curve/system intersection lies beyond the
+   *  published curve end (runout): the operating point was clamped to the
+   *  runout limit — continuous operation there needs throttling or a VFD. */
+  atRunout?: boolean;
 }
+
+/** Published pump curves end at ~120–130% of BEP ("runout"): past that point
+ *  efficiency collapses and the motor overheats, so a real installation never
+ *  continuously operates beyond it. Default when a catalog entry omits an
+ *  explicit limit. */
+const RUNOUT_BEP_FRACTION_DEFAULT = 1.25;
 
 /**
  * Intersect Hpump(Q) = H0 − k·Q² with Hsystem(Q) = Hstatic + K·Q².
  * Analytic solution: Q* = sqrt((H0 − Hstatic)/(k + K)).
+ *
+ * Runout / service-factor clamp (backlog #3): if Q* lands beyond the curve
+ * end, the pump physically cannot follow its own curve out there. The
+ * operating point is capped at runout (scaled by speed under the affinity
+ * laws), delivering the pump-curve head at that flow with the surplus head
+ * absorbed by system throttling. Flagged via atRunout so design audits can
+ * warn about the mismatch instead of reporting fantasy flows.
  */
 export function findPumpDutyPoint(
   pump: PumpModel,
@@ -111,11 +128,10 @@ export function findPumpDutyPoint(
   speedFraction: number = 1.0
 ): PumpDutyPoint {
   const s = Math.max(pump.minSpeedFraction, Math.min(1, speedFraction));
-  // Affinity laws for reduced speed.
+  // Affinity laws in homologous form keep k invariant:
+  // H(Q, s) = H0·s² − k·Q²  (curve scales down through s·(BEP, H_BEP)).
   const H0 = pump.shutoffHeadM * s * s;
-  const k = pump.curveKM2perM3h2; // k scales as 1/s² at reduced speed...
   const kEff = pump.curveKM2perM3h2;
-  void k;
 
   const denom = kEff + systemKM2perM3h2;
   const rise = H0 - staticLiftM;
@@ -126,12 +142,26 @@ export function findPumpDutyPoint(
     }
     return { ok: false, flowM3h: 0, headM: staticLiftM, electricalPowerKw: 0.4, reason: 'speed_too_low' };
   }
-  const flow = Math.sqrt(rise / denom);
-  const head = staticLiftM + systemKM2perM3h2 * flow * flow;
+  let flow = Math.sqrt(rise / denom);
+  const runoutM3h = pump.runoutFlowM3h ?? pump.ratedFlowM3h * RUNOUT_BEP_FRACTION_DEFAULT;
+  const runoutAtSpeedM3h = s * runoutM3h;
+  let atRunout = false;
+  if (flow > runoutAtSpeedM3h) {
+    flow = runoutAtSpeedM3h;
+    atRunout = true;
+  }
+  // Head on the PUMP curve at the operating flow (equals the system-curve
+  // value when unclamped — analytic intersection). Never below the static
+  // lift it must overcome; surplus vs the system curve dissipates across
+  // station throttling when clamped.
+  const head = Math.max(staticLiftM, H0 - kEff * flow * flow);
   // Hydraulic power: ρ g Q H (Q in m³/s), divided by efficiencies.
   const Qm3s = flow / 3600;
   const hydraulicKw = (1000 * G * Qm3s * head) / 1000;
   const wireKw = hydraulicKw / (pump.pumpEfficiency * pump.motorEfficiency);
+  if (atRunout) {
+    return { ok: true, flowM3h: flow, headM: head, electricalPowerKw: wireKw, reason: 'clamped_at_runout', atRunout: true };
+  }
   return { ok: true, flowM3h: flow, headM: head, electricalPowerKw: wireKw };
 }
 

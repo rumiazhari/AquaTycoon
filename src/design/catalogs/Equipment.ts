@@ -141,6 +141,10 @@ export interface PumpModel {
   label: string;
   /** BEP flow (m³/h). */
   ratedFlowM3h: number;
+  /** Right end of the published curve (m³/h). Beyond it efficiency collapses
+   *  and the motor overheats, so continuous operation is impossible there.
+   *  Defaults to 125% of rated when omitted. */
+  runoutFlowM3h?: number;
   /** Shutoff head H0 (m). */
   shutoffHeadM: number;
   /** Curve coefficient: Hpump(Q) = shutoffHeadM - k*Q² with Q in m³/h. */

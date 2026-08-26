@@ -347,13 +347,53 @@ function wq(over: Partial<WaterQuality>): WaterQuality {
   assert(!stuck.ok && stuck.reason === 'no_valid_operating_point', `PUMP. lift > shutoff head → no duty point (${stuck.reason})`);
   // Power must sit in the physically possible wire-to-water envelope:
   // electrical ≥ hydraulic (η<1 always) and ≤ hydraulic/0.55 (worst realistic
-  // combined pump×motor efficiency for a wastewater duty). The old constant
-  // "<50 kW" ignored that the free-running duty point here is 759 m³/h @
-  // 16.5 m → ρgQH = ~34.2 kW hydraulic, so ~50 kW at η=0.68 is CORRECT.
+  // combined pump×motor efficiency for a wastewater duty).
   const hydraulicKw = (1000 * 9.81 * (dp.flowM3h / 3600) * dp.headM) / 1000;
   assert(
     dp.electricalPowerKw > hydraulicKw && dp.electricalPowerKw < hydraulicKw / 0.55,
     `PUMP. electrical power in wire-to-water envelope (${dp.electricalPowerKw.toFixed(1)} kW ∈ (${hydraulicKw.toFixed(1)}, ${(hydraulicKw / 0.55).toFixed(1)}) for η∈(0.55,1))`
+  );
+
+  // ── Runout / service-factor clamping (backlog #3, §AM PUMP) ────────────────
+  // Nearly frictionless system: analytic intersection sqrt(17/1.95e-5) ≈
+  // 934 m³/h lies far beyond the 500 m³/h curve end (1.25 × BEP) → clamped.
+  const runaway = findPumpDutyPoint(pump, 5, 0.00001, 1.0);
+  assert(
+    runaway.ok && runaway.atRunout === true && runaway.reason === 'clamped_at_runout',
+    `PUMP. easy-system intersection clamps at runout (${runaway.flowM3h.toFixed(0)} m³/h, reason=${runaway.reason})`
+  );
+  assert(Math.abs(runaway.flowM3h - 500) < 1e-6, `PUMP. clamped flow equals 1.25×BEP runout (${runaway.flowM3h})`);
+  // Head at the clamp sits ON THE PUMP CURVE, above static lift but below
+  // shutoff: H = 22 − 9.5e−6·500² = 19.63 m.
+  assert(Math.abs(runaway.headM - (22 - 9.5e-6 * 500 * 500)) < 1e-9 && runaway.headM > 5,
+    `PUMP. clamped head follows the pump curve (${runaway.headM.toFixed(2)} m)`);
+
+  // Well-matched system stays untouched by the clamp.
+  const normal = findPumpDutyPoint(pump, 12, 0.0004, 1.0);
+  const analyticNormal = Math.sqrt((22 - 12) / (9.5e-6 + 0.0004));
+  assert(
+    normal.ok && !normal.atRunout && Math.abs(normal.flowM3h - analyticNormal) < 1e-9,
+    `PUMP. moderate-system duty unaffected by clamp (${normal.flowM3h.toFixed(1)} = analytic ${analyticNormal.toFixed(1)} m³/h)`
+  );
+
+  // VFD scales the runout cap with speed under affinity laws: s=0.7 → 350.
+  const vfd = findPumpDutyPoint(pump, 5, 0.00001, 0.7);
+  assert(
+    vfd.ok && vfd.atRunout === true && Math.abs(vfd.flowM3h - 350) < 1e-6,
+    `PUMP. VFD speed scales the runout cap (${vfd.flowM3h.toFixed(0)} = 0.7 × 500 m³/h)`
+  );
+
+  // Design audit surfaces the mismatch as a live warning…
+  const easyStation = evaluatePumpStationDesign(PUMP_MODELS.sewage_wedge_400, 'single_100', 3, 4, 300);
+  assert(
+    easyStation.some((i) => i.code === 'pump_at_runout'),
+    `PUMP. validator warns pump_at_runout on an easy-system station (${easyStation.map((i) => i.code).join(',')})`
+  );
+  // …and stays silent for a well-matched station.
+  const hardStation = evaluatePumpStationDesign(PUMP_MODELS.sewage_wedge_400, 'single_100', 15, 4, 200);
+  assert(
+    !hardStation.some((i) => i.code === 'pump_at_runout'),
+    `PUMP. validator silent about runout on a well-matched station (${hardStation.map((i) => i.code).join(',')})`
   );
 }
 

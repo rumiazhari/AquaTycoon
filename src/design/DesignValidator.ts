@@ -260,6 +260,16 @@ export function evaluatePumpStationDesign(
     });
     return issues;
   }
+  // Curve-end guard (backlog #3): an intersection beyond runout means the
+  // system is too easy for this pump — it would ride off the end of its own
+  // curve. The duty solver caps flow there; warn that the selection is wrong.
+  if (duty.atRunout) {
+    issues.push({
+      severity: 'warning', code: 'pump_at_runout',
+      message: `${model.label}'s duty intersection lies beyond its curve end — flow caps at ~${Math.round(duty.flowM3h)} m³/h (runout); continuous operation there overloads the motor and wrecks efficiency.`,
+      detail: 'Pick a lower-flow / higher-head pump, or add a VFD or throttle valve to pull the operating point back toward BEP.',
+    });
+  }
   const installedCapacityM3h = model.ratedFlowM3h * red.unitCount;
   if (installedCapacityM3h < demandM3h * 0.98) {
     issues.push({

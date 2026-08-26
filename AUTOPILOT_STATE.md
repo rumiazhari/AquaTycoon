@@ -1,7 +1,7 @@
 # AUTOPILOT STATE — Aquatycoon
 
 STATUS: OK
-Last run: 2026-08-26 (cron, iter 9 — fix SLR unit mismatch, backlog #1 resolved)
+Last run: 2026-08-26 (cron, iter 10 — pump runout/service-factor clamping, backlog #3 resolved)
 Gate policy: `npm run build` + `npx tsc --noEmit` must be clean; suites:
 `npm test` (sim), `npm run test:ui` (= static ui-tests + ui-interaction-tests),
 `npm run test:eng`.
@@ -22,6 +22,16 @@ Never regress §AL. Respect §AI performance limits. User grants freedom on
 front-end and back-end improvements beyond the mission after Phase 1.
 
 ## Iteration log
+- iter 10 (2026-08-26): Pump runout/service-factor clamping in findPumpDutyPoint
+  (backlog #3). The analytic curve/system intersection could return fantasy flows
+  on easy systems (e.g. 934 m³/h from a 400 m³/h BEP pump). Now capped at the
+  published curve end: PumpModel.runoutFlowM3h (optional, default 1.25 × rated),
+  speed-scaled under affinity laws (s·runout for VFD); clamped point reports
+  reason 'clamped_at_runout' + atRunout flag, head = pump-curve value at the cap
+  (surplus absorbed by throttling). DesignValidator emits pump_at_runout warning
+  (rendered live in UnitDesigner via existing validateUnitDesign path). Removed
+  dead k/void-k cruft in the solver. 7 new PUMP eng tests (199→206).
+  Gates: build ✅ tsc ✅ sim ALL PASS ✅ ui 96/96 ✅ eng 206/206 ✅.
 - iter 9 (2026-08-26): Fix SLR unit mismatch in clarifier physics causing economy collapse (backlog #1).
   Root cause: evaluateClarifierLoad() compared SLR in kg/m²·d against Metcalf&Eddy 6 kg/m²·h threshold — 
   every realistic clarifier looked 24× overloaded → blanket pegged 0.95 → escape TSS 29 mg/L → 
@@ -108,7 +118,10 @@ front-end and back-end improvements beyond the mission after Phase 1.
 1. ✅ RESOLVED (iter 9): Fix Level-1 completion economy — SLR unit mismatch fixed; all 5 sim tests pass.
 2. Idea pool (post-mission freedom): blower VFD upgrade tree; sludge
    treatment line objectives; sound effects for placement.
-3. Pump runout/service-factor clamping in `findPumpDutyPoint`.
+3. ✅ RESOLVED (iter 10): Pump runout/service-factor clamping in
+   `findPumpDutyPoint` — analytic intersections beyond the curve end now cap
+   at runout (1.25×BEP default, affinity-scaled); `pump_at_runout` validator
+   warning added.
 4. EQ API: return `constituentMassKg` snapshot in `EqStepResult`.
 5. Wire validatePipeVelocity into pipe design context (currently defined but
    uncalled) when §AK items 7/8 (custom pipe diameter/material) get their UI.
