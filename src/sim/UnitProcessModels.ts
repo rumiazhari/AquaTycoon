@@ -892,10 +892,11 @@ export function calculateUnitProcess(
           env?.dtDays ?? 0,
           p.eqOutflowTargetM3h
         );
-        // Persist the new storage state on the unit itself.
+        // Persist from the returned SNAPSHOT — no aliasing of the object
+        // stepEqualization mutated in place this step.
         unit.eqStorage = {
           storedVolumeM3: eq.storedVolumeM3,
-          constituentMassKg: unit.eqStorage.constituentMassKg,
+          constituentMassKg: eq.constituentMassKg,
         };
         Object.assign(eff, eq.effluent);
         eff.flowRate = eq.outflowM3d;

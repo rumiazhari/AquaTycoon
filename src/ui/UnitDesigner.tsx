@@ -36,6 +36,7 @@ import {
   estimateSeedSludgeCAPEX,
 } from '../design/CostEstimator';
 import { validateUnitDesign } from '../design/DesignValidator';
+import { EQ_MIN_POOL_FRACTION } from '../sim/processes/Equalization';
 import {
   casDesignPoint,
 } from '../sim/processes/ActivatedSludge';
@@ -322,6 +323,10 @@ function DiagnosticsTab({ unit, bp }: { unit: PlacedUnit; bp: PlacedUnit['bluepr
     ? evaluateClarifierLoad(geo, qForward, unit.mlssActual ?? 3200, qForward * 1.75, (unit.sludgeBlanketHeightPercent ?? 25) / 100)
     : null;
 
+  const eqSt = bp!.processType === 'equalization_basin' ? unit.eqStorage : undefined;
+  const eqCapM3 = workingVolumeM3(geo);
+  const eqLevel = eqSt ? eqSt.storedVolumeM3 / Math.max(1, eqCapM3) : 0;
+
   return (
     <div className="flex flex-col gap-2 text-[11px] font-mono">
       <Row k="Working volume" v={`${fmt(workingVolumeM3(geo), 0)} m³`} />
@@ -352,6 +357,17 @@ function DiagnosticsTab({ unit, bp }: { unit: PlacedUnit; bp: PlacedUnit['bluepr
           <Row k="Solids loading" v={`${fmt(clar.slrKgM2Day, 2)} kg/m²·d`} bad={clar.slrKgM2Day > 144} />
           <Row k="Blanket level" v={`${fmt(clar.blanketLevelFraction * 100, 0)} %`} bad={clar.blanketLevelFraction > 0.7} />
           <Row k="Escape TSS" v={`${fmt(clar.escapeTssMgL, 0)} mg/L`} bad={clar.escapeTssMgL > 20} />
+        </>
+      )}
+      {bp!.processType === 'equalization_basin' && (
+        <>
+          <Divider />
+          <Row k="Storage level (live)" v={`${fmt(Math.min(1.5, eqLevel) * 100, 0)} %`} good={!!eqSt && eqLevel < 0.9} bad={!!eqSt && eqLevel >= 0.999} />
+          <Row k="Stored volume" v={`${fmt(eqSt?.storedVolumeM3 ?? 0, 0)} of ${fmt(eqCapM3, 0)} m³`} />
+          <Row k="Stored BOD load" v={`${fmt(eqSt?.constituentMassKg['bod'] ?? 0, 0)} kg`} />
+          <Row k="Stored TSS load" v={`${fmt(eqSt?.constituentMassKg['tss'] ?? 0, 0)} kg`} />
+          <Row k="Min pump-out pool" v={`~${fmt(eqCapM3 * EQ_MIN_POOL_FRACTION, 0)} m³`} />
+          <p className="text-[10px] text-slate-500 font-mono">Mixed storage: V′ = V + (Qin − Qout)·dt; each pollutant integrates Qin·Cin − Qout·Ctank. Bigger basin ⇒ smoother downstream load (§J).</p>
         </>
       )}
     </div>

@@ -21,12 +21,13 @@ import {
   validateUnitDesign,
   validateStructuralGeometry,
   evaluatePumpStationDesign,
+  validateEqualizationDesign,
 } from '../src/design/DesignValidator';
 import { blueprintFromTemplate } from '../src/design/UnitBlueprint';
 import { casDesignPoint, stepCasRuntime } from '../src/sim/processes/ActivatedSludge';
 import { evaluateClarifierLoad } from '../src/sim/processes/Clarifier';
 import { SimulationEngine } from '../src/sim/SimulationEngine';
-import { stepEqualization, initEqStorage } from '../src/sim/processes/Equalization';
+import { stepEqualization, initEqStorage, EQ_MIN_POOL_FRACTION } from '../src/sim/processes/Equalization';
 import {
   pathLengthM,
   evaluatePipeHydraulics,
@@ -312,6 +313,86 @@ function wq(over: Partial<WaterQuality>): WaterQuality {
     // same in-place mutation as above — no concentration→mass feedback
   }
   assert(overflowed, 'EQ. basin overflows when inflow exceeds capacity + pump rate');
+
+  // ── Result API: mass snapshot + inflow report (backlog #4) ─────────────────
+  const u4 = mkBlueprintUnit('equalization_basin');
+  u4.blueprint!.design.geometry.lengthM = 20; u4.blueprint!.design.geometry.widthM = 10; u4.blueprint!.design.geometry.waterDepthM = 5;
+  u4.eqStorage = initEqStorage();
+  const eqCap = workingVolumeM3(u4.blueprint!.design.geometry);
+  const snap1 = stepEqualization(u4, wq({ flowRate: 5000, bod: 400 }), 1 / 24, 100);
+  assert(
+    typeof snap1.constituentMassKg['bod'] === 'number' && snap1.constituentMassKg['bod'] > 0,
+    `EQ. result exposes constituentMassKg snapshot (bod=${snap1.constituentMassKg['bod'].toFixed(1)} kg)`
+  );
+  assert(Math.abs(snap1.inflowM3d - 5000) < 1e-9, `EQ. result reports inflowM3d (${snap1.inflowM3d} m³/d)`);
+  // Snapshot is a COPY: mutating it must not corrupt the live tank state.
+  snap1.constituentMassKg['bod'] = -999;
+  const snap2 = stepEqualization(u4, wq({ flowRate: 5000, bod: 400 }), 1 / 24, 100);
+  assert(
+    snap2.constituentMassKg['bod'] > 0 && snap2.constituentMassKg['bod'] !== -999,
+    `EQ. snapshot is isolated from tank state after caller mutation (${snap2.constituentMassKg['bod'].toFixed(1)} kg)`
+  );
+  // Effluent concentration is exactly tank mass ÷ mixed volume (CSTR coherence).
+  const mixV2 = Math.max(snap2.storedVolumeM3, eqCap * EQ_MIN_POOL_FRACTION);
+  const concFromMass = ((snap2.constituentMassKg['bod'] ?? 0) / mixV2) * 1000;
+  assert(
+    Math.abs(concFromMass - snap2.effluent.bod) < 1e-6,
+    `EQ. effluent BOD = stored mass ÷ mixed volume (${snap2.effluent.bod.toFixed(2)} ≈ ${concFromMass.toFixed(2)} mg/L)`
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// EQUALIZATION — design audit (§AK item 10 telemetry warnings)
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  // Fresh placement with no telemetry and a sane outflow target stays clean.
+  const fresh = mkBlueprintUnit('equalization_basin');
+  const freshIssues = validateEqualizationDesign(fresh);
+  assert(freshIssues.length === 0, `EQV. fresh basin with default controls passes clean (${freshIssues.map((i) => i.code).join(',') || 'none'})`);
+
+  // Zero outflow target can never drain — critical, unconditional.
+  const dead = mkBlueprintUnit('equalization_basin');
+  dead.blueprint!.controls.eqOutflowTargetM3h = 0;
+  assert(
+    validateEqualizationDesign(dead).some((i) => i.code === 'eq_no_outflow' && i.severity === 'critical'),
+    'EQV. zero outflow target → critical eq_no_outflow'
+  );
+
+  // Telemetry: target below observed average inflow warns (0.5×–0.95×) or goes critical (<0.5×).
+  const creeping = mkBlueprintUnit('equalization_basin');
+  creeping.lastInletQuality = wq({ flowRate: 5000 }); // avg 208 m³/h vs target 160 → 77%
+  assert(
+    validateEqualizationDesign(creeping).some((i) => i.code === 'eq_target_below_inflow' && i.severity === 'warning'),
+    'EQV. target at 77% of observed inflow → warning'
+  );
+  const doomed = mkBlueprintUnit('equalization_basin');
+  doomed.lastInletQuality = wq({ flowRate: 5000 });
+  doomed.blueprint!.controls.eqOutflowTargetM3h = 80; // 38% of average
+  assert(
+    validateEqualizationDesign(doomed).some((i) => i.code === 'eq_target_below_inflow' && i.severity === 'critical'),
+    'EQV. target below half of observed inflow → critical'
+  );
+
+  // Live level audit reads eqStorage (works even before flow telemetry exists).
+  const nearlyFull = mkBlueprintUnit('equalization_basin');
+  const capNF = workingVolumeM3(nearlyFull.blueprint!.design.geometry);
+  nearlyFull.eqStorage = { storedVolumeM3: capNF * 0.95, constituentMassKg: {} };
+  assert(
+    validateEqualizationDesign(nearlyFull).some((i) => i.code === 'eq_level_high' && i.severity === 'warning'),
+    'EQV. storage at 95% capacity → eq_level_high warning'
+  );
+  const spilling = mkBlueprintUnit('equalization_basin');
+  const capSP = workingVolumeM3(spilling.blueprint!.design.geometry);
+  spilling.eqStorage = { storedVolumeM3: capSP, constituentMassKg: {} };
+  assert(
+    validateEqualizationDesign(spilling).some((i) => i.code === 'eq_overflowing_now' && i.severity === 'critical'),
+    'EQV. storage at capacity → critical eq_overflowing_now'
+  );
+  // Full validator path routes EQ units through the same audit.
+  assert(
+    validateUnitDesign(spilling).some((i) => i.code === 'eq_overflowing_now'),
+    'EQV. validateUnitDesign includes the EQ audit for equalization basins'
+  );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

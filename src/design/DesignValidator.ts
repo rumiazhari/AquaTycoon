@@ -5,7 +5,7 @@
  */
 
 import type { PlacedUnit } from '../types/simulation';
-import { planAreaM2, structuralDepthM, type BasinGeometry } from './Geometry';
+import { planAreaM2, structuralDepthM, workingVolumeM3, type BasinGeometry } from './Geometry';
 import { casDesignPoint } from '../sim/processes/ActivatedSludge';
 import { evaluateClarifierLoad } from '../sim/processes/Clarifier';
 import {
@@ -124,6 +124,10 @@ export function validateUnitDesign(unit: PlacedUnit): DesignIssue[] {
       ));
       break;
     }
+
+    case 'equalization_basin':
+      issues.push(...validateEqualizationDesign(unit));
+      break;
   }
 
   return issues;
@@ -134,6 +138,80 @@ function estimateDesignFlow(_unit: PlacedUnit): number {
   // Phase-1 heuristic: typical municipal module scale; replaced by contract
   // design flow once contracts carry it through placement context.
   return 5000;
+}
+
+// ── Equalization storage audit (§J / §AK item 10) ────────────────────────────
+
+/**
+ * Real-storage EQ audit: can this basin drain what arrives, and — when live
+ * telemetry exists — is it actually keeping up right now? Static checks are
+ * unconditional; flow/level checks only fire once the simulator has fed real
+ * numbers into lastInletQuality / eqStorage, so fresh placements stay clean.
+ * Pure over its inputs; reads runtime state read-only.
+ */
+export function validateEqualizationDesign(unit: PlacedUnit): DesignIssue[] {
+  const issues: DesignIssue[] = [];
+  const bp = unit.blueprint;
+  if (!bp) return issues;
+
+  const targetM3h = bp.controls?.eqOutflowTargetM3h ?? 160;
+  if (targetM3h <= 0) {
+    issues.push({
+      severity: 'critical', code: 'eq_no_outflow',
+      message: 'Outflow target is zero — the basin can never drain; the first wet day plugs it solid.',
+      detail: 'Set a sustained pumping rate at or above the average incoming flow.',
+    });
+    return issues;
+  }
+
+  const capacityM3 = workingVolumeM3(bp.design.geometry);
+  const recentInflowM3d = unit.lastInletQuality?.flowRate ?? 0;
+
+  if (recentInflowM3d > 1) {
+    const avgInM3h = recentInflowM3d / 24;
+    const ratio = targetM3h / avgInM3h;
+    if (ratio < 0.5) {
+      issues.push({
+        severity: 'critical', code: 'eq_target_below_inflow',
+        message: `Outflow target ${targetM3h.toFixed(0)} m³/h passes only ${(ratio * 100).toFixed(0)}% of the ~${avgInM3h.toFixed(0)} m³/h average inflow — guaranteed overflow.`,
+        detail: 'Raise the pump-out rate or add storage volume; the basin cannot absorb the daily balance forever.',
+      });
+    } else if (ratio < 0.95) {
+      issues.push({
+        severity: 'warning', code: 'eq_target_below_inflow',
+        message: `Outflow target ${targetM3h.toFixed(0)} m³/h sits below the ~${avgInM3h.toFixed(0)} m³/h average inflow — level creeps toward overflow between peaks.`,
+        detail: 'Sustained drain must match average load; peaks alone should set the storage demand.',
+      });
+    }
+
+    // Capital-idle info: >4 days of buffering that never fills.
+    if (unit.eqStorage && capacityM3 > 4 * recentInflowM3d) {
+      issues.push({
+        severity: 'info', code: 'eq_oversized',
+        message: `${Math.round(capacityM3)} m³ of storage buffers more than four days of observed inflow — most of it never fills.`,
+      });
+    }
+  }
+
+  // Live level audit from the mixed-storage state (§AK item 10 telemetry).
+  const st = unit.eqStorage;
+  if (st && capacityM3 > 0 && st.storedVolumeM3 > 0) {
+    const level = st.storedVolumeM3 / capacityM3;
+    if (level >= 0.999) {
+      issues.push({
+        severity: 'critical', code: 'eq_overflowing_now',
+        message: 'Basin is full and spilling untreated peaks right now.',
+        detail: 'Raise the outflow target or add storage volume.',
+      });
+    } else if (level >= 0.9) {
+      issues.push({
+        severity: 'warning', code: 'eq_level_high',
+        message: `Basin at ${(level * 100).toFixed(0)}% of capacity — one more peak will spill.`,
+        detail: 'Raise the outflow target or add storage volume.',
+      });
+    }
+  }
+  return issues;
 }
 
 // ── Structural sanity (Prompt §AM "unrealistic structural dimensions") ───────

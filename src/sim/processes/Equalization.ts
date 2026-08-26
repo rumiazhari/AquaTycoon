@@ -20,17 +20,24 @@ const CONSTITUENT_KEYS: Array<keyof WaterQuality> = [
 /** Fraction of working volume kept as permanent minimum operating pool
  *  (water below the pump intake). Gives every slug something to blend with,
  *  even when the basin is otherwise empty. 8% ≈ typical dead storage. */
-const EQ_MIN_POOL_FRACTION = 0.08;
+export const EQ_MIN_POOL_FRACTION = 0.08;
 
 export interface EqStepResult {
   /** Mixed-tank discharge for this step (m³/d averaged over dt). */
   outflowM3d: number;
+  /** Inflow accepted by the basin this step (m³/d averaged over dt). */
+  inflowM3d: number;
   /** Tank effluent concentration = fully-mixed tank contents. */
   effluent: WaterQuality;
   overflowed: boolean;
   overflowM3d: number;
   storedVolumeM3: number;
   levelFraction: number;
+  /** Post-step snapshot of stored constituent masses (kg), cloned from tank
+   *  state so callers can persist/observe without sharing mutation
+   *  (backlog #4). Same keys as WaterQuality minus flowRate; ph is the
+   *  blended storage pH, not a mass. */
+  constituentMassKg: Record<string, number>;
 }
 
 function cloneConstituents(m: Record<string, number>): Record<string, number> {
@@ -125,10 +132,14 @@ export function stepEqualization(
 
   return {
     outflowM3d: qOut,
+    inflowM3d: qIn,
     effluent: eff,
     overflowed: overflowM3d > 0.01,
     overflowM3d,
     storedVolumeM3: storage.storedVolumeM3,
     levelFraction: storage.storedVolumeM3 / Math.max(1, capacityM3),
+    // Snapshot (clone) so callers can persist or observe tank load without
+    // aliasing the live storage object (backlog #4).
+    constituentMassKg: cloneConstituents(storage.constituentMassKg),
   };
 }

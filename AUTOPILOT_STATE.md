@@ -1,7 +1,7 @@
 # AUTOPILOT STATE — Aquatycoon
 
 STATUS: OK
-Last run: 2026-08-26 (cron, iter 10 — pump runout/service-factor clamping, backlog #3 resolved)
+Last run: 2026-08-26 (cron, iter 11 — EQ storage snapshot API + overflow-risk audit, backlog #4 resolved)
 Gate policy: `npm run build` + `npx tsc --noEmit` must be clean; suites:
 `npm test` (sim), `npm run test:ui` (= static ui-tests + ui-interaction-tests),
 `npm run test:eng`.
@@ -22,6 +22,19 @@ Never regress §AL. Respect §AI performance limits. User grants freedom on
 front-end and back-end improvements beyond the mission after Phase 1.
 
 ## Iteration log
+- iter 11 (2026-08-26): EQ storage observability + overflow-risk audit (backlog #4,
+  §AK item 10). EqStepResult now returns an inflowM3d report and a CLONED
+  constituentMassKg snapshot — UnitProcessModels persists from the snapshot so
+  tank state no longer aliases step-mutated objects. NEW validateEqualization-
+  Design() in DesignValidator (wired into validateUnitDesign → live in
+  UnitDesigner): critical eq_no_outflow (target ≤ 0), warning/critical
+  eq_target_below_inflow when pump-out can't match observed average inflow,
+  info eq_oversized, runtime telemetry checks eq_level_high (≥90%) /
+  eq_overflowing_now (≥99.9%) reading unit.eqStorage. DiagnosticsTab shows a
+  live EQ block (level %, stored volume, stored BOD/TSS mass, min pool).
+  Flow/level checks are telemetry-gated so fresh placements stay clean.
+  11 new EQ/EQV eng tests (206→217).
+  Gates: build ✅ tsc ✅ sim ALL PASS ✅ ui ✅ eng 217/217 ✅.
 - iter 10 (2026-08-26): Pump runout/service-factor clamping in findPumpDutyPoint
   (backlog #3). The analytic curve/system intersection could return fantasy flows
   on easy systems (e.g. 934 m³/h from a 400 m³/h BEP pump). Now capped at the
@@ -122,15 +135,17 @@ front-end and back-end improvements beyond the mission after Phase 1.
    `findPumpDutyPoint` — analytic intersections beyond the curve end now cap
    at runout (1.25×BEP default, affinity-scaled); `pump_at_runout` validator
    warning added.
-4. EQ API: return `constituentMassKg` snapshot in `EqStepResult`.
+4. ✅ RESOLVED (iter 11): EQ API returns `constituentMassKg` snapshot +
+   `inflowM3d` in `EqStepResult`; validator EQ audit + live DiagnosticsTab
+   readout landed with it (§AK item 10 telemetry half).
 5. Wire validatePipeVelocity into pipe design context (currently defined but
    uncalled) when §AK items 7/8 (custom pipe diameter/material) get their UI.
 6. §AK Phase-1 audit of remaining vertical-slice items:
    - 1–3: design/runtime data model, custom geometry, CAS sizing (partial)
    - 5–6: blower/equipment capacity, clarifier custom sizing (templates need
      peak-flow resize before raising diurnal strength to 1.0)
-   - 7–10: custom pipe diameter/material, pipe headloss, pump duty point,
-     equalization dynamic storage (partial)
+   - 7–10: custom pipe diameter/material, pipe headloss, pump duty point ✅,
+     equalization dynamic storage ✅ (physics iters 1–9; audit+telemetry iter 11)
    - 11–13: quantity-based CAPEX, Unit Designer UI, Show Calculation (partial)
    - 14: dynamic influent ✅ (strength 0.4; full 1.0 after 5/6)
    - 15: engineering warnings ✅ phase 1+2 (structural + pump stations);
