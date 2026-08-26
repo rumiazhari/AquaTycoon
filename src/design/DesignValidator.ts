@@ -17,7 +17,12 @@ import { PUMP_MODELS, REDUNDANCY_CONFIGS, type PumpModel } from './catalogs/Equi
 import type { PumpingDesign } from './UnitBlueprint';
 import type { CASDesignPoint } from '../sim/processes/ActivatedSludge';
 import { EQ_MIN_POOL_FRACTION } from '../sim/processes/Equalization';
-import { PEAK_FLOW_FACTOR, peakLoadFactorForStrength, requiredBalancingVolumeM3 } from './PeakFlow';
+import {
+  PEAK_FLOW_FACTOR,
+  VALIDATOR_REFERENCE_FLOW_M3D,
+  peakLoadFactorForStrength,
+  requiredBalancingVolumeM3,
+} from './PeakFlow';
 
 export type DesignIssueSeverity = 'info' | 'warning' | 'critical';
 
@@ -200,9 +205,12 @@ export function validateUnitDesign(unit: PlacedUnit): DesignIssue[] {
 
 /** Rough per-unit design flow used by validator heuristics (m³/d). */
 function estimateDesignFlow(_unit: PlacedUnit): number {
-  // Phase-1 heuristic: typical municipal module scale; replaced by contract
-  // design flow once contracts carry it through placement context.
-  return 5000;
+  // Phase-1 heuristic — the SINGLE shared sizing basis (VALIDATOR_REFERENCE_
+  // FLOW_M3D = Level-1 municipal contract flow, the same number the §AK item
+  // 5/6 template pins use), so a fresh template placement is judged by the
+  // standard it was engineered for. Replaced by contract design flow once
+  // contracts carry it through placement context.
+  return VALIDATOR_REFERENCE_FLOW_M3D;
 }
 
 // ── Equalization storage audit (§J / §AK item 10) ────────────────────────────

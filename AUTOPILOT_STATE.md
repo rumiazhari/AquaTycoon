@@ -1,7 +1,7 @@
 # AUTOPILOT STATE — Aquatycoon
 
 STATUS: OK
-Last run: 2026-08-26 (cron, iter 16 — MBBR denitrification (SND) for Test K TN compliance at full diurnal peak)
+Last run: 2026-08-26 (cron, iter 17 — single-source peak basis: VALIDATOR_REFERENCE_FLOW_M3D + clarifier factor unified; §AK items 5/6 CLOSED)
 Gate policy: `npm run build` + `npx tsc --noEmit` must be clean; suites:
 `npm test` (sim), `npm run test:ui` (= static ui-tests + ui-interaction-tests),
 `npm run test:eng`.
@@ -22,6 +22,22 @@ Never regress §AL. Respect §AI performance limits. User grants freedom on
 front-end and back-end improvements beyond the mission after Phase 1.
 
 ## Iteration log
+- iter 17 (2026-08-26): §AK items 5/6 CLOSED — ONE authoritative peak-flow
+  basis everywhere. (a) NEW PeakFlow.VALIDATOR_REFERENCE_FLOW_M3D = 3500 (the
+  L1 contract flow every PF template pin uses); DesignValidator.
+  estimateDesignFlow returns it instead of magic 5000 — before this, a FRESH
+  default CAS placement tripped blower_no_peak_headroom under the validator's
+  own basis (peak need 2429 > capacity 2413 kg O₂/d @5000 m³/d), directly
+  contradicting PF10's "templates validate clean". Now fresh CAS + clarifier
+  carry zero peak issues [none]. (b) Clarifier.ts legacy private
+  PEAK_FACTOR = 1.8 deleted → imports shared PEAK_FLOW_FACTOR (×1.446):
+  peakSorM3M2Day now honestly reports 19.9 m/d where it said 24.8 @L1. No
+  runtime physics consumed that field, so zero sim impact. 4 new eng tests
+  PF19–PF22 pin the shared constant, clean fresh-template validation for
+  CAS+clarifier, and the death of ×1.8. Branch hygiene: main fast-forwarded
+  to the autopilot-attempts tip (iters 15–16 had been stranded there);
+  iteration committed on main. Probe quarantined in junk/autopilot-probe-peak/.
+  Gates: build ✅ tsc ✅ sim ALL PASS ✅ ui 26/26 ✅ eng 298/298 ✅.
 - iter 16 (2026-08-26): Fixed sim Test K (compliance streak) — TN/NH₄ violations
   under full municipal diurnal peak (strength 1.0). Root cause: MBBR only
   nitrified (NH₄→NO₃) with NO denitrification; TN accumulated at ~68 mg/L vs
@@ -34,23 +50,6 @@ front-end and back-end improvements beyond the mission after Phase 1.
   achieve complianceScore ≥ 90% at full diurnal strength. streakBefore = 2.9d
   → streakAfter = 0.0d on bypass. All gates: build ✅ tsc ✅ sim 29/29 ✅
   ui 96/96 ✅ eng 294/294 ✅.
-
-## ⭐ MISSION DIRECTIVE (user, 2026-08-26)
-`MISSION_REDESIGN.md` (repo root) is the authoritative roadmap: full
-architectural redesign into a wastewater-engineering tycoon / process-design
-simulator. Work it TOP-DOWN:
-1. ✅ Legacy backlog #1 cleared in iter 1.
-2. Section A bug fixes: A1 terrain decals ✅, A2 tool invariant ✅, A3 permit
-   single-source verification ✅, A4 CI gating ✅, A5 UI interaction tests ✅
-   (landed iter 2), A6 PFD branching ✅, A7 junk cleanup ✅.
-3. Then §AK PHASE 1 vertical slice: AUDIT each of the 17 items against the
-   actual code, finish/strengthen what is partial, one coherent slice per
-   iteration, tests per §AM.
-4. After Phase 1 stabilizes: migrate MBR/RO/A2O/DAF/sludge/disinfection.
-Never regress §AL. Respect §AI performance limits. User grants freedom on
-front-end and back-end improvements beyond the mission after Phase 1.
-
-## Iteration log
 - iter 14 (2026-08-26): Quantity-based pipe CAPEX billing end-to-end (§AK item 11 —
   the "billing still open" half of iter 12's display work). NEW GameManager pure
   statics: purchasePipes() bills Σ estimatePipeCAPEX over drafts at pathLengthM and
@@ -210,21 +209,24 @@ front-end and back-end improvements beyond the mission after Phase 1.
 7. ✅ RESOLVED (iter 13): Wired stepPumpStation into runtime pump_station (§AK item 9 runtime half). Pump stations now use real duty-point solver (static lift + downstream headloss → system curve intersect), return PumpRuntimeTelemetry (status, duty point, power, BEP%, cavitation, failed units). VFD speedCommand honored, clog penalty stacks on duty-point power/opex. Live telemetry panel in UnitDesigner DiagnosticsTab. 12 new PUMP_RT eng tests. All gates clean.
 8. §AK Phase-1 audit of remaining vertical-slice items:
    - 1–3: design/runtime data model, custom geometry, CAS sizing (partial)
-   - 5–6: blower/equipment capacity, clarifier custom sizing (templates need
-     peak-flow resize before raising diurnal strength to 1.0)
-     (NOTE iter 12 audit: item 5 blower physics + validator + tests already
-     green; remaining 5/6 work is template/peak-flow resize)
+   - 5–6: blower/equipment capacity ✅, clarifier custom sizing ✅ — physics +
+     validators + PF tests landed iter 15; iter 17 closed the residue by
+     sharing ONE reference flow (VALIDATOR_REFERENCE_FLOW_M3D) between
+     validator and template pins and purging Clarifier's private ×1.8 factor
    - 7–10: custom pipe diameter/material ✅, pipe headloss ✅ (iter 12),
      pump duty point ✅ runtime-wired iter 13, equalization dynamic storage ✅ —
      §AK items 7–10 CLOSED (NEXT slice candidates: items 5/6 template peak-flow resize → diurnal 1.0, or 16/17 campaign)
    - 11–13: quantity-based CAPEX ✅ FULLY RESOLVED iter 14 (billing charged on
      build/edit/remove + 70% salvage; display ✅ iter 12), Unit Designer UI, Show Calculation (partial)
-   - 14: dynamic influent ✅ (strength 0.4; full 1.0 after 5/6)
+   - 14: dynamic influent ✅ (full strength 1.0 default since iter 15)
    - 15: engineering warnings ✅ phase 1+2 (+pipe velocity iter 12);
      membrane-flux check lands with the MBR migration
    - 16–17: updated campaign L1/L2/L3, tests.
 
-Next goal (iter 17): §AK items 5/6 — resize CAS/clarifier templates for peak diurnal flow, then raise municipal diurnal strength to 1.0 for new games. This unlocks the full campaign realism and validates template sizing against the now-passing MBBR SND model.
+Next goal (iter 18): §AK items 16/17 — updated campaign L1/L2/L3 levels that
+exercise the engineered systems (+tests). Documented follow-up: wire
+per-contract design flow through placement context into DesignValidator,
+retiring the VALIDATOR_REFERENCE_FLOW_M3D heuristic (its stated exit condition).
 
 ## Notes
 - Never delete files — move into junk/. Probes live in junk/autopilot-20260826/

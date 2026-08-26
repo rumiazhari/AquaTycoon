@@ -74,6 +74,7 @@ import { createInfluentWater } from '../src/sim/WaterStream';
 import {
   PEAK_FLOW_FACTOR,
   PEAK_LOAD_FACTOR,
+  VALIDATOR_REFERENCE_FLOW_M3D,
   peakFlowFactorForStrength,
   peakLoadFactorForStrength,
   peakDesignFlowM3d,
@@ -1249,6 +1250,24 @@ function wq(over: Partial<WaterQuality>): WaterQuality {
   for (let i = 0; i < 96; i++) sumFlow += applyDiurnalInfluent(specL1, (i * 0.25) / 24, 1).flowRate;
   assert(Math.abs(sumFlow / 96 - L1_AVG) < L1_AVG * 0.01,
     `PF18. full-strength day preserves the daily mean (${(sumFlow / 96).toFixed(0)} vs ${L1_AVG} m³/d)`);
+
+  // ── Single-source coherence (iter 17): one basis, no private factors ──
+  assert(VALIDATOR_REFERENCE_FLOW_M3D === L1_AVG,
+    'PF19. validator sizing basis = L1 contract flow (one shared source)');
+  const casFreshCodes = validateUnitDesign(mkBlueprintUnit('activated_sludge_cas')).map(i => i.code);
+  assert(!casFreshCodes.includes('blower_undersized') &&
+    !casFreshCodes.includes('blower_no_peak_headroom'),
+    `PF20. fresh CAS template validates clean at the shared basis [${casFreshCodes.join(',') || 'none'}]`);
+  const clarFreshCodes = validateUnitDesign(mkBlueprintUnit('secondary_clarifier')).map(i => i.code);
+  assert(!clarFreshCodes.includes('sor_excessive') &&
+    !clarFreshCodes.includes('sor_peak_exposure'),
+    `PF21. fresh clarifier template carries no SOR warnings [${clarFreshCodes.join(',') || 'none'}]`);
+  const loadCo = evaluateClarifierLoad(
+    defaultGeometryFor('secondary_clarifier')!, L1_AVG, 3200, L1_AVG * 1.75, 0.25);
+  assert(Math.abs(loadCo.peakSorM3M2Day - loadCo.sorM3M2Day * PEAK_FLOW_FACTOR) < 1e-9 &&
+    Math.abs(loadCo.sorM3M2Day * 1.8 - loadCo.peakSorM3M2Day) > 1e-6,
+    `PF22. clarifier peakSOR rides the shared factor ×${PEAK_FLOW_FACTOR.toFixed(3)}, not legacy ×1.8 ` +
+      `(${loadCo.peakSorM3M2Day.toFixed(1)} vs ${(loadCo.sorM3M2Day * 1.8).toFixed(1)} m/d)`);
 }
 
 // ── summary ─────────────────────────────────────────────────────────────────

@@ -28,6 +28,15 @@ export const PEAK_FLOW_FACTOR = DIURNAL_MAX_FACTOR;
 /** Pollutant mass-load peak factor at full strength (sewer routing damping). */
 export const PEAK_LOAD_FACTOR = 1 + DIURNAL_LOAD_DAMPING * (DIURNAL_MAX_FACTOR - 1);
 
+/**
+ * Single validator sizing basis (m³/d): the Level-1 municipal contract design
+ * flow — the SAME number the §AK item 5/6 template-readiness pins use. Until
+ * placement context carries a per-contract design flow, every heuristic
+ * validator check sizes against this basis, so a fresh template placement is
+ * judged by exactly the standard its template was engineered for.
+ */
+export const VALIDATOR_REFERENCE_FLOW_M3D = 3500;
+
 /** Flow peak factor for an arbitrary strength blend (0 = flat, 1 = municipal). */
 export function peakFlowFactorForStrength(strength: number): number {
   return 1 + Math.max(0, strength) * (PEAK_FLOW_FACTOR - 1);

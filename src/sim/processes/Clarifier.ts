@@ -5,6 +5,7 @@
  */
 
 import { planAreaM2, BasinGeometry } from '../../design/Geometry';
+import { PEAK_FLOW_FACTOR } from '../../design/PeakFlow';
 
 export interface ClarifierLoadResult {
   planAreaM2: number;
@@ -12,7 +13,8 @@ export interface ClarifierLoadResult {
   sorM3M2Day: number;
   /** Solids loading rate on total mixed-liquor feed (kg TSS/m²·d). */
   slrKgM2Day: number;
-  /** Peak-factor-adjusted SOR used for overload checks. */
+  /** Peak-factor-adjusted SOR on the SHARED municipal diurnal basis
+   *  (PeakFlow.PEAK_FLOW_FACTOR — never a private local factor). */
   peakSorM3M2Day: number;
   /** 0..1 sludge blanket level. */
   blanketLevelFraction: number;
@@ -21,7 +23,8 @@ export interface ClarifierLoadResult {
   overloaded: boolean;
 }
 
-const PEAK_FACTOR = 1.8; // storm/diurnal peak over average
+// Legacy private PEAK_FACTOR (1.8, "storm/diurnal guess") removed — §AK items
+// 5/6 demand ONE authoritative peak basis; see src/design/PeakFlow.ts.
 
 /**
  * Evaluate clarifier state for a design at a given instant.
@@ -64,7 +67,7 @@ export function evaluateClarifierLoad(
     planAreaM2: A,
     sorM3M2Day: sor,
     slrKgM2Day: slrKgM2Day,
-    peakSorM3M2Day: sor * PEAK_FACTOR,
+    peakSorM3M2Day: sor * PEAK_FLOW_FACTOR,
     blanketLevelFraction,
     escapeTssMgL: escapeTss,
     overloaded: overloadPressure > 0 || blanketLevelFraction > 0.7,
