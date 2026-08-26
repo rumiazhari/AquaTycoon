@@ -34,9 +34,17 @@ import {
   findPumpDutyPoint,
 } from '../src/sim/hydraulics/PipeHydraulics';
 import {
+  recommendDiameterM,
+  refreshPipeHydraulics,
+  defaultMaterialForPipeType,
+  STANDARD_DIAMETERS_M,
+  AUTO_TARGET_VELOCITY_MS,
+} from '../src/design/PipeSizing';
+import {
   estimateStructureCAPEX,
   estimateBlowerCAPEX,
   estimateSeedSludgeCAPEX,
+  estimatePipeCAPEX,
   SEED_SLUDGE_USD_PER_M3,
   SEED_FILL_FRACTION,
   SEED_MIN_CHARGE_USD,
@@ -44,7 +52,7 @@ import {
 import { PIPE_MATERIALS, BLOWER_MODELS, PUMP_MODELS } from '../src/design/catalogs/Equipment';
 import { resolveTrainTopology } from '../src/ui/TrainTopology';
 import { GameManager } from '../src/gameplay/GameManager';
-import type { PlacedUnit, WaterQuality } from '../src/types/simulation';
+import type { PlacedUnit, WaterQuality, PipeConnection } from '../src/types/simulation';
 import type { GameFinancials } from '../src/types/game';
 import { UNIT_DEFINITIONS } from '../src/sim/UnitProcessModels';
 import { evaluatePermitCriteria } from '../src/sim/PermitEngine';
@@ -846,6 +854,101 @@ function wq(over: Partial<WaterQuality>): WaterQuality {
       .some(i => i.code === 'no_margin_one_down'),
     'WARN. losing a unit below design flow warned for no-standby banks'
   );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PIPE SIZING — §AK items 7/8: engineered pipes end-to-end
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  const mkPipe = (flowRateM3d: number, over: Partial<PipeConnection> = {}): PipeConnection => ({
+    id: 'pipe_t', fromUnitId: 'a', fromPortId: 'outlet',
+    toUnitId: 'b', toPortId: 'inlet',
+    pathPoints: [[0, 0, 0], [10, 0, 0]],
+    flowRate: flowRateM3d, quality: emptyWater(), pipeType: 'liquid',
+    autoSized: true, ...over,
+  });
+
+  // PS1. Recommended DN is monotone in flow; tiny flows stay unsized.
+  assert(recommendDiameterM(5) === undefined, 'PIPE2. sub-noise flow stays unsized');
+  assert(recommendDiameterM(2000)! <= recommendDiameterM(9000)!, 'PIPE2. recommended DN grows with flow');
+
+  // PS2. Mean velocity at the recommended DN respects the auto-sizing target,
+  //      and one ladder step down would overshoot it (tight ladder fit).
+  for (const q of [500, 2000, 6000, 12000]) {
+    const d = recommendDiameterM(q)!;
+    const v = evaluatePipeHydraulics(d, 'pvc', 50, q).velocityMs;
+    assert(v <= AUTO_TARGET_VELOCITY_MS + 0.01, `PIPE2. v=${v.toFixed(2)} m/s ≤ target at ${q} m³/d`);
+    const idx = STANDARD_DIAMETERS_M.indexOf(d);
+    if (idx > 0) {
+      const dSmaller = STANDARD_DIAMETERS_M[idx - 1];
+      assert(
+        evaluatePipeHydraulics(dSmaller, 'pvc', 50, q).velocityMs > AUTO_TARGET_VELOCITY_MS,
+        `PIPE2. DN${Math.round(dSmaller * 1000)} overshoots target at ${q} m³/d`
+      );
+    }
+  }
+
+  // PS3–PS5. Headloss grows as diameter shrinks / length grows / roughness rises.
+  assert(
+    evaluatePipeHydraulics(0.15, 'pvc', 100, 8000).totalHeadlossM >
+    evaluatePipeHydraulics(0.4, 'pvc', 100, 8000).totalHeadlossM,
+    'PIPE2. smaller DN → larger headloss'
+  );
+  assert(
+    evaluatePipeHydraulics(0.3, 'pvc', 400, 8000).totalHeadlossM >
+    evaluatePipeHydraulics(0.3, 'pvc', 20, 8000).totalHeadlossM,
+    'PIPE2. longer run → larger headloss'
+  );
+  assert(
+    evaluatePipeHydraulics(0.3, 'ductile_iron', 100, 8000).totalHeadlossM >
+    evaluatePipeHydraulics(0.3, 'pvc', 100, 8000).totalHeadlossM,
+    'PIPE2. rougher material → larger headloss'
+  );
+
+  // PS6. refreshPipeHydraulics sizes + caches hydraulics from the path.
+  const cached = mkPipe(8000);
+  refreshPipeHydraulics([cached]);
+  assert(cached.diameterM !== undefined && cached.cachedHydraulics !== undefined,
+    'PIPE2. auto pipe sized+cached after refresh');
+  assert(Math.abs(cached.cachedHydraulics!.lengthM - 60) < 1e-6,
+    'PIPE2. cached length = path cells × 6 m/cell');
+  assert(cached.cachedHydraulics!.velocityMs > 0 && cached.cachedHydraulics!.headlossM > 0,
+    'PIPE2. cached velocity/headloss positive');
+
+  // PS7. Auto-sized pipes track flow; player-locked diameters never move.
+  const auto = mkPipe(2000);
+  refreshPipeHydraulics([auto]);
+  const dLow = auto.diameterM!;
+  auto.flowRate = 12000;
+  refreshPipeHydraulics([auto]);
+  assert(auto.diameterM! > dLow, `PIPE2. auto re-size grows with flow (${dLow}→${auto.diameterM})`);
+
+  const locked = mkPipe(2000, { diameterM: 0.6, autoSized: false });
+  locked.flowRate = 12000;
+  refreshPipeHydraulics([locked]);
+  assert(locked.diameterM === 0.6, 'PIPE2. player-locked DN survives flow changes');
+  assert(locked.cachedHydraulics !== undefined && locked.cachedHydraulics.velocityMs < AUTO_TARGET_VELOCITY_MS,
+    'PIPE2. locked oversize DN still gets fresh cache (low velocity)');
+
+  // PS8. Default materials match service (§AK item 7).
+  assert(defaultMaterialForPipeType('liquid') === 'pvc', 'PIPE2. liquid default PVC');
+  assert(defaultMaterialForPipeType('sludge') === 'hdpe', 'PIPE2. sludge default HDPE');
+  assert(defaultMaterialForPipeType('ras') === 'hdpe', 'PIPE2. RAS default HDPE');
+  assert(defaultMaterialForPipeType('gas') === 'carbon_steel', 'PIPE2. gas default carbon steel');
+
+  // PS9. CAPEX scales with diameter and material (§AM CAPEX row).
+  assert(estimatePipeCAPEX(0.5, 'pvc', 10) > estimatePipeCAPEX(0.1, 'pvc', 10),
+    'PIPE2. bigger DN costs more');
+  assert(estimatePipeCAPEX(0.1, 'ductile_iron', 10) > estimatePipeCAPEX(0.1, 'pvc', 10),
+    'PIPE2. stronger material costs more');
+
+  // PS10. Legacy unsized pipes are untouched by the refresh — old saves stay valid.
+  const legacy = mkPipe(9000);
+  delete legacy.autoSized;
+  delete legacy.materialId;
+  refreshPipeHydraulics([legacy]);
+  assert(legacy.diameterM === undefined && legacy.cachedHydraulics === undefined,
+    'PIPE2. unsized legacy pipes stay untouched');
 }
 
 // ── summary ─────────────────────────────────────────────────────────────────

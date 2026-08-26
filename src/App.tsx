@@ -27,6 +27,7 @@ import { HeaderHUD } from './ui/HeaderHUD';
 import { BuildToolbar } from './ui/BuildToolbar';
 import { UnitInspector } from './ui/UnitInspector';
 import { PlantFlowDiagram } from './ui/PlantFlowDiagram';
+import { defaultMaterialForPipeType } from './design/PipeSizing';
 import { UnitDesigner } from './ui/UnitDesigner';
 import { LevelModal } from './ui/LevelModal';
 import { TechTreeModal } from './ui/TechTreeModal';
@@ -484,6 +485,7 @@ export const App: React.FC = () => {
     }
 
     SoundManager.playConnect();
+    const newPipeType = resolvePipeType(fpDef, tpDef);
     const newPipe: PipeConnection = {
       id: `pipe_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       fromUnitId: fromUnit.instanceId, fromPortId: fpDef.id,
@@ -494,8 +496,10 @@ export const App: React.FC = () => {
       ),
       flowRate: 0,
       quality: emptyWater(),
-      ...(resolvePipeType(fpDef, tpDef) === 'gas' ? { gasFlowRate: 0 } : {}),
-      pipeType: resolvePipeType(fpDef, tpDef)
+      ...(newPipeType === 'gas' ? { gasFlowRate: 0 } : {}),
+      materialId: defaultMaterialForPipeType(newPipeType),
+      autoSized: true,
+      pipeType: newPipeType
     };
     pushHistory(gs);
     const updatedPipes = [...gs.pipes, newPipe];
@@ -506,6 +510,16 @@ export const App: React.FC = () => {
     pendingTargetRef.current = null;
     cancelPipeSelection(true);
   }, [portPicker, armPipeSource, cancelPipeSelection, pushHistory]);
+
+  /** Player edit of one pipe's engineering (DN / material) from the PFD panel.
+   *  Explicit DN choices set autoSized=false so the sim never overrides them. */
+  const handleUpdatePipe = useCallback((pipeId: string, patch: Partial<PipeConnection>) => {
+    const gs = gsRef.current;
+    pushHistory(gs);
+    const updatedPipes = gs.pipes.map(p => (p.id === pipeId ? { ...p, ...patch } : p));
+    setGameState(prev => ({ ...prev, pipes: updatedPipes }));
+    sceneRef.current?.syncPipes(updatedPipes);
+  }, [pushHistory]);
 
   const handleCanvasClick = (clientX: number, clientY: number) => {
     try {
@@ -669,6 +683,8 @@ export const App: React.FC = () => {
           flowRate: 0,
           quality: emptyWater(),
           ...(pipeType === 'gas' ? { gasFlowRate: 0 } : {}),
+          materialId: defaultMaterialForPipeType(pipeType),
+          autoSized: true,
           pipeType,
         };
         pushHistory(gs);
@@ -1205,7 +1221,7 @@ export const App: React.FC = () => {
 
       {/* ── Unit Designer (engineered assets) ─────────────────────────────── */}
       {pfdModal && (
-        <PlantFlowDiagram gameState={gameState} onClose={() => setPfdModal(false)} />
+        <PlantFlowDiagram gameState={gameState} onUpdatePipe={handleUpdatePipe} onClose={() => setPfdModal(false)} />
       )}
       {designerModalId && (() => {
         const u = gameState.units.find(x => x.instanceId === designerModalId);

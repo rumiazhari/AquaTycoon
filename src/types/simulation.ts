@@ -173,6 +173,9 @@ export interface PipeConnection {
   endInvertM?: number;   // at the TO end (m)
   /** Sum of minor-loss coefficients (bends, valves, entrances). */
   minorLossK?: number;
+  /** true = diameter chosen by the auto-sizer and may be re-picked as observed
+   *  flow evolves; false/undefined = player-locked (never overridden). */
+  autoSized?: boolean;
   /** Derived/cached: path length (m), headloss (m), velocity (m/s). */
   cachedHydraulics?: {
     lengthM: number;

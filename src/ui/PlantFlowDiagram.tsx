@@ -2,7 +2,7 @@ import React, { useMemo } from 'react';
 import { X, GitBranch, ShieldCheck, AlertTriangle } from 'lucide-react';
 import { GameState } from '../gameplay/GameManager';
 import { UNIT_DEFINITIONS } from '../sim/UnitProcessModels';
-import type { UnitTypeId } from '../types/simulation';
+import type { UnitTypeId, PipeConnection } from '../types/simulation';
 import { permitRows } from '../sim/PermitEngine';
 import {
   resolveTrainTopology,
@@ -10,9 +10,15 @@ import {
   TrainBranchKind,
 } from '../ui/TrainTopology';
 import { SoundManager } from '../audio/SoundManager';
+import { STANDARD_DIAMETERS_M, AUTO_TARGET_VELOCITY_MS } from '../design/PipeSizing';
+import { PIPE_MATERIALS } from '../design/catalogs/Equipment';
+import { estimatePipeCAPEX } from '../design/CostEstimator';
+import { validatePipeVelocity, type DesignIssue } from '../design/DesignValidator';
 
 interface PlantFlowDiagramProps {
   gameState: GameState;
+  /** Player edit of one pipe's DN/material. Omitted in static test mounts. */
+  onUpdatePipe?: (pipeId: string, patch: Partial<PipeConnection>) => void;
   onClose: () => void;
 }
 
@@ -36,11 +42,35 @@ const BRANCH_CHIP: Record<BranchChipKind, string> = {
   gas: 'bg-orange-500/10 text-orange-300 border-orange-500/40',
 };
 
-export const PlantFlowDiagram: React.FC<PlantFlowDiagramProps> = ({ gameState, onClose }) => {
+export const PlantFlowDiagram: React.FC<PlantFlowDiagramProps> = ({ gameState, onUpdatePipe, onClose }) => {
   const { units, pipes, finalEffluent, currentLevel, overallStats } = gameState;
 
   // REAL hydraulic topology from pipe connections — never `units.map(...)`.
   const topo = useMemo(() => resolveTrainTopology(units, pipes), [units, pipes]);
+
+  // ── Engineered-pipe panel data (§AK items 7/8) ─────────────────────────────
+  const unitById = useMemo(() => new Map(units.map(u => [u.instanceId, u])), [units]);
+  const liquidPipes = useMemo(() => pipes.filter(p => p.pipeType !== 'gas'), [pipes]);
+
+  /** Human-readable "Unit [Port]" endpoint label. */
+  const portName = (unitId: string, portId: string): string => {
+    const u = unitById.get(unitId);
+    const def = u ? UNIT_DEFINITIONS[u.typeId] : undefined;
+    const port = def?.ports.find(pp => pp.id === portId);
+    return `${u ? (def?.name ?? u.typeId) : '?'} [${port?.name ?? portId}]`;
+  };
+
+  /** Live velocity/headloss warnings per pipe (backlog #5: validator wired). */
+  const pipeIssues = useMemo(() => {
+    const m = new Map<string, DesignIssue[]>();
+    for (const p of liquidPipes) {
+      if (!p.diameterM || !(p.flowRate > 0)) continue;
+      const len = p.cachedHydraulics?.lengthM;
+      if (len === undefined) continue;
+      m.set(p.id, validatePipeVelocity(p.diameterM, p.materialId, p.flowRate, len));
+    }
+    return m;
+  }, [liquidPipes]);
   // THE authoritative permit table (shared with HUD + Operator Console).
   const rows = useMemo(
     () => permitRows(finalEffluent, currentLevel.standards),
@@ -130,6 +160,92 @@ export const PlantFlowDiagram: React.FC<PlantFlowDiagramProps> = ({ gameState, o
                 {overallStats.overallTpRemoval.toFixed(1)}%
               </div>
             </div>
+          </div>
+
+          {/* ── Engineered pipes (§AK items 7/8): DN / material / live hydraulics ── */}
+          <div className="flex flex-col gap-3">
+            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300 font-mono">
+              Pipe Engineering ({liquidPipes.length} liquid line{liquidPipes.length === 1 ? '' : 's'})
+            </h3>
+            {liquidPipes.length === 0 && (
+              <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800 text-[11px] text-slate-500 font-mono">
+                No liquid pipes yet — connect units with the Pipes tool. New pipes auto-size to keep mean
+                velocity ≤ {AUTO_TARGET_VELOCITY_MS} m/s; pick a DN below to override.
+              </div>
+            )}
+            {liquidPipes.map(p => {
+              const hyd = p.cachedHydraulics;
+              const capex = p.diameterM && hyd ? estimatePipeCAPEX(p.diameterM, p.materialId, hyd.lengthM) : null;
+              const issues = pipeIssues.get(p.id) ?? [];
+              return (
+                <div key={p.id} className="p-3 rounded-xl bg-slate-950/50 border border-slate-800 flex flex-col gap-2">
+                  <div className="text-[11px] font-mono text-slate-300 truncate">
+                    {portName(p.fromUnitId, p.fromPortId)}{' '}
+                    <span className="text-cyan-400">→</span>{' '}
+                    {portName(p.toUnitId, p.toPortId)}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <label htmlFor={`dn_${p.id}`} className="text-[10px] font-mono text-slate-400">Diameter</label>
+                    <select
+                      id={`dn_${p.id}`}
+                      value={p.diameterM !== undefined ? String(p.diameterM) : ''}
+                      disabled={!onUpdatePipe}
+                      onChange={e => {
+                        const v = e.target.value;
+                        onUpdatePipe?.(p.id, v === ''
+                          ? { diameterM: undefined, autoSized: true }
+                          : { diameterM: Number(v), autoSized: false });
+                        SoundManager.playClick();
+                      }}
+                      className="px-1.5 py-1 rounded bg-slate-900 border border-slate-700 text-[10px] font-mono text-slate-200 focus:outline-none focus:border-cyan-600"
+                    >
+                      <option value="">Auto (≤{AUTO_TARGET_VELOCITY_MS} m/s)</option>
+                      {STANDARD_DIAMETERS_M.map(d => (
+                        <option key={d} value={String(d)}>DN{Math.round(d * 1000)}</option>
+                      ))}
+                    </select>
+                    <label htmlFor={`mat_${p.id}`} className="text-[10px] font-mono text-slate-400">Material</label>
+                    <select
+                      id={`mat_${p.id}`}
+                      value={p.materialId ?? 'pvc'}
+                      disabled={!onUpdatePipe}
+                      onChange={e => {
+                        onUpdatePipe?.(p.id, { materialId: e.target.value });
+                        SoundManager.playClick();
+                      }}
+                      className="px-1.5 py-1 rounded bg-slate-900 border border-slate-700 text-[10px] font-mono text-slate-200 focus:outline-none focus:border-cyan-600"
+                    >
+                      {Object.values(PIPE_MATERIALS).map(m => (
+                        <option key={m.id} value={m.id}>{m.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="grid grid-cols-4 gap-1 text-[10px] font-mono p-2 rounded bg-slate-900/60 text-slate-400">
+                    <div>Q: <span className="text-cyan-300">{fmtNum(p.flowRate, 0)} m³/d</span></div>
+                    <div>v: <span className={hyd && hyd.velocityMs > 2.5 ? 'text-red-400' : 'text-emerald-300'}>{hyd ? `${hyd.velocityMs.toFixed(2)} m/s` : '—'}</span></div>
+                    <div>Δh: <span className="text-sky-300">{hyd ? `${hyd.headlossM.toFixed(2)} m` : '—'}</span></div>
+                    <div>L: <span className="text-slate-300">{hyd ? `${hyd.lengthM.toFixed(0)} m` : '—'}</span></div>
+                  </div>
+                  {capex !== null && (
+                    <div className="text-[10px] font-mono text-slate-500">
+                      Est. pipework CAPEX ≈ ${capex.toLocaleString()}
+                    </div>
+                  )}
+                  {issues.some(i => i.severity !== 'info') && (
+                    <div className="flex flex-col gap-1">
+                      {issues.filter(i => i.severity !== 'info').map((i, idx) => (
+                        <div
+                          key={idx}
+                          className={`text-[10px] font-mono ${i.severity === 'critical' ? 'text-red-400' : 'text-amber-300'}`}
+                        >
+                          ⚠ {i.message}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
 
           {/* ── ACTIVE hydraulic treatment train (real reachability) ── */}

@@ -6,6 +6,7 @@ import { calculateUnitProcess, EnvironmentFactors, ProcessResult } from './UnitP
 import { cloneWater, emptyWater, mixWaterStreams } from './WaterStream';
 import { evaluatePermitCriteria } from './PermitEngine';
 import { evaluateTechEffects } from './TechEffects';
+import { refreshPipeHydraulics } from '../design/PipeSizing';
 
 export interface SimulationStepResult {
   updatedUnits: PlacedUnit[];
@@ -463,6 +464,8 @@ export class SimulationEngine {
       totalTreatedM3: currentFinancials.totalTreatedM3, // accumulated by GameManager per simulated day
       netDailyProfit
     };
+
+    refreshPipeHydraulics(updatedPipes);
 
     return {
       updatedUnits: Array.from(unitMap.values()),

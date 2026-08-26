@@ -1,7 +1,7 @@
 # AUTOPILOT STATE — Aquatycoon
 
 STATUS: OK
-Last run: 2026-08-26 (cron, iter 11 — EQ storage snapshot API + overflow-risk audit, backlog #4 resolved)
+Last run: 2026-08-26 (cron, iter 12 — engineered pipes end-to-end, §AK items 7/8 + backlog #5 resolved)
 Gate policy: `npm run build` + `npx tsc --noEmit` must be clean; suites:
 `npm test` (sim), `npm run test:ui` (= static ui-tests + ui-interaction-tests),
 `npm run test:eng`.
@@ -22,6 +22,26 @@ Never regress §AL. Respect §AI performance limits. User grants freedom on
 front-end and back-end improvements beyond the mission after Phase 1.
 
 ## Iteration log
+- iter 12 (2026-08-26): Engineered pipes end-to-end (§AK items 7/8 + backlog #5).
+  NEW `src/design/PipeSizing.ts`: STANDARD_DIAMETERS_M ladder (DN80–DN1200),
+  recommendDiameterM() = smallest DN keeping MEAN velocity ≤1.2 m/s at observed
+  daily volume, defaultMaterialForPipeType() per service (liquid/recycle→PVC,
+  sludge/RAS→HDPE, gas→carbon steel, chemical→PVC), refreshPipeHydraulics()
+  called by SimulationEngine AFTER convergence each tick — auto-sized pipes
+  re-pick DN from the ladder as observed flow evolves (discrete ⇒ stable), all
+  sized pipes get cachedHydraulics {lengthM(cells×6), velocityMs, headlossM}.
+  Both App.tsx pipe-creation sites now emit materialId + autoSized:true.
+  NEW PFD "Pipe Engineering" panel (PlantFlowDiagram): per liquid pipe a DN
+  select (Auto + ladder; explicit pick sets autoSized=false and is never
+  overridden), material select, live Q/v/Δh/L readout, estimatePipeCAPEX
+  display (function finally called), and validatePipeVelocity warnings —
+  backlog #5 validator wiring done. Legacy unsized pipes remain untouched
+  (backward compat). 25 new PIPE2 eng tests (217→242) covering §AM PIPE rows.
+  DISCOVERY for later: stepPumpStation (§AK item 9 runtime: duty point/NPSH/
+  energy) is still NEVER CALLED — pump_station units run a legacy pass-through
+  in UnitProcessModels; wiring it needs topology context passed into process
+  evaluation (next natural slice, closes the headloss→energy loop).
+  Gates: build ✅ tsc ✅ sim ALL PASS ✅ ui ✅ eng 242/242 ✅.
 - iter 11 (2026-08-26): EQ storage observability + overflow-risk audit (backlog #4,
   §AK item 10). EqStepResult now returns an inflowM3d report and a CLONED
   constituentMassKg snapshot — UnitProcessModels persists from the snapshot so
@@ -138,17 +158,22 @@ front-end and back-end improvements beyond the mission after Phase 1.
 4. ✅ RESOLVED (iter 11): EQ API returns `constituentMassKg` snapshot +
    `inflowM3d` in `EqStepResult`; validator EQ audit + live DiagnosticsTab
    readout landed with it (§AK item 10 telemetry half).
-5. Wire validatePipeVelocity into pipe design context (currently defined but
-   uncalled) when §AK items 7/8 (custom pipe diameter/material) get their UI.
+5. ✅ RESOLVED (iter 12): validatePipeVelocity wired into the PFD Pipe
+   Engineering panel (live per-pipe warnings); §AK items 7/8 landed with it
+   (auto-sizing ladder, materials UI, cached hydraulics, CAPEX display).
 6. §AK Phase-1 audit of remaining vertical-slice items:
    - 1–3: design/runtime data model, custom geometry, CAS sizing (partial)
    - 5–6: blower/equipment capacity, clarifier custom sizing (templates need
      peak-flow resize before raising diurnal strength to 1.0)
-   - 7–10: custom pipe diameter/material, pipe headloss, pump duty point ✅,
-     equalization dynamic storage ✅ (physics iters 1–9; audit+telemetry iter 11)
-   - 11–13: quantity-based CAPEX, Unit Designer UI, Show Calculation (partial)
+     (NOTE iter 12 audit: item 5 blower physics + validator + tests already
+     green; remaining 5/6 work is template/peak-flow resizing)
+   - 7–10: custom pipe diameter/material ✅, pipe headloss ✅ (iter 12),
+     pump duty point ✅, equalization dynamic storage ✅ — NEXT: wire
+     stepPumpStation into runtime pump_station (item 9 runtime half)
+   - 11–13: quantity-based CAPEX (pipe CAPEX display ✅ iter 12; billing
+     still open), Unit Designer UI, Show Calculation (partial)
    - 14: dynamic influent ✅ (strength 0.4; full 1.0 after 5/6)
-   - 15: engineering warnings ✅ phase 1+2 (structural + pump stations);
+   - 15: engineering warnings ✅ phase 1+2 (+pipe velocity iter 12);
      membrane-flux check lands with the MBR migration
    - 16–17: updated campaign L1/L2/L3, tests.
 
