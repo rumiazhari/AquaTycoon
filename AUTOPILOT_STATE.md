@@ -1,7 +1,7 @@
 # AUTOPILOT STATE — Aquatycoon
 
 STATUS: OK
-Last run: 2026-08-26 (cron, iter 21 — MBR migration slice 1: real membrane design basis (flux/area/TMP) + §R membrane catalog + validator warnings; gates: build ✅ tsc ✅ sim ✅ ui ✅ eng 317/317 ✅)
+Last run: 2026-08-26 (cron, iter 22 — MBR migration slice 2: runtime membrane fouling progression (resistance R rises with TSS/flux/time, falls via backwash/CIP) + live TMP/power/opex degradation + Show-Calculation block + CIP "Clean Membranes" button; legacy binary fouling heuristic retired; gates: build ✅ tsc ✅ sim ✅ ui 60/60 ✅ eng 329/329 ✅)
 
 Gate policy: `npm run build` + `npx tsc --noEmit` must be clean; suites:
 `npm test` (sim), `npm run test:ui` (= static ui-tests + ui-interaction-tests),
@@ -59,8 +59,39 @@ front-end and back-end improvements beyond the mission after Phase 1.
    - 15: engineering warnings ✅ phase 1+2 (+pipe velocity iter 12); membrane‑flux check lands with the MBR migration
    - 16–17: ✅ RESOLVED (iter 19): updated campaign L1/L2/L3 levels with new objectives (obj_pump, obj_cas_sizing) and revised Test S for staged pump+UV build.
 
-Next goal (iter 21): MBR migration SLICE 1 DONE — design-basis flux/area/TMP + §R catalog + validator warnings live (fresh template clean). Slice 2: runtime membrane resistance/fouling progression (TMP ∝ flux × R, R rises with TSS/flux/time, falls via backwash/CIP) and a Show-Calculation block in the MBR DiagnosticsTab — gate by eng + ui tests.
+Next goal (iter 22): MBR migration SLICE 2 DONE — runtime membrane resistance/fouling progression + live Show-Calculation block + CIP cleaning button live (fresh template still clean, sim/eng/ui all green). Slice 3 (post-mission freedom): feed the CIP/cleaning *cost & outage* into the economics/opex (currently cleaning is a free maintenance click) and surface a "cleaning due" advisory in AdvisoryEngine + HUD so the player learns the fouling↔cleaning loop without opening the designer.
+- iter 22 (2026-08-26): **MBR migration SLICE 2 landed** — runtime membrane fouling progression. Replaced the legacy binary fouled/not-fouled heuristic in `mbr_membrane` with a continuous resistance model: `MbrFoulingState` (R×, daysSinceClean, irreversible, cleaningDue) seeded on first engineered tick, advanced ONCE per sim-day by `SimulationEngine` (outside the relaxation loop, so it can't be multiplied by solver passes), persisted on the unit. `evaluateMbrRuntime` degrades flux/TMP/power/opex as R climbs (TMP ∝ flux ÷ (permeability/ρ)); the absolute barrier (permeate TSS≈0, 4-log) holds regardless. CIP cleaning (`performMembraneClean`) strips resistance + resets the clock; wired to a "Clean Membranes" button in the MBR Diagnostics tab via a new `onUpdateFouling` callback → `App.tsx`. Show-Calculation block renders live resistance/TMP/headroom/power/opex. 10 new eng tests MBR11–20; ui-interaction gained an MBR row (TMP eq + resistance readout + CIP control). Gates: build ✅ tsc ✅ sim ALL PASS ✅ ui 60/60 ✅ eng 329/329 ✅.
 
 ## Notes
 - Never delete files — move into junk/. Probes live in junk/autopilot-20260826/ (delim-scan, probe-range-events, probe-input-death, probe-input-matrix, probe-checkbox-delegation document the React‑event investigation); scratch gate‑run logs in junk/autopilot-20260827/.
 - HEAD baseline comparison trick: git worktree in $LOCALAPPDATA/Temp with a node_modules junction; prune metadata afterwards. (Used stash round‑trip in iter 8 — equally effective for tracked‑file baselines.)
+## ⭐ MISSION DIRECTIVE v2 (user, 2026-08-26 evening) — SUPREME PRIORITY
+User has set the long-term product direction. Work everything below through the
+existing top-down order (finish backlog #1 eng-test physics gaps first, then
+Section A, then Phase-1 audit) — but EVERY slice must advance this direction:
+
+### V2-A. FULLY DESIGNABLE UNITS (the core of the game)
+Every unit in the game must become engineer-designed, not predefined-box-placed:
+dimensions (L×W×H / Ø×SWD), construction materials, equipment selections,
+operation parameters — each with proper engineering calculations behind it
+(HRT, SOR, SLR, flux, headloss, duty points, MLSS/SRT, quantities → CAPEX).
+Extend the src/design/* blueprint+geometry+validator system until ALL unit
+families are designable. Predefined units remain only as templates/presets.
+EXPAND THE CATALOG with new unit types not yet in the game (e.g. DAF,
+anaerobic digesters variants, constructed wetlands, cyclonic grit, drum
+screens, SBR, IFAS, MBBR carriers, UV/ozonation chambers, sludge dryers,
+biogas CHP, chemical storage/dosing, outfall structures…).
+
+### V2-B. TYCOON GAME FEEL — STORY, ART, STAGES
+Make it an enjoyable tycoon, not just a sandbox calculator:
+- Stages/campaign levels each get a DISTINCT surrounding environment
+  (different terrain themes, climates, city contexts) and DIFFERENT GOALS.
+- Build story/narrative per stage: briefs from characters/municipalities,
+  progression arcs, stakes.
+- Add illustrations/art where feasible (UI portraits, event art, scene dressing).
+- Economic depth: contracts, reputation, financing, OPEX pressure, expansions.
+
+### V2-C. LAUNCHER (DONE by user's session 2026-08-26)
+package.json build now chains make-launcher.mjs — AquaTycoon_Launcher.html
+auto-regenerates on every npm run build. NEVER remove this chain. The
+launcher HTML at repo root is tracked in git and must always reflect HEAD.

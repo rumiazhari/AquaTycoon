@@ -38,6 +38,11 @@ import {
   requiredMembraneAreaM2,
   fluxAtArea,
   classifyFlux,
+  evaluateMbrRuntime,
+  advanceMbrFouling,
+  performMembraneClean,
+  FRESH_MBR_FOULING,
+  MBR_CLEANING_THRESHOLD,
 } from '../src/sim/processes/MBR';
 import {
   pathLengthM,
@@ -1377,6 +1382,71 @@ function wq(over: Partial<WaterQuality>): WaterQuality {
     'MBR10a. blueprintFromTemplate(mbr_membrane) carries the default PVDF design');
   assert(Math.abs(workingVolumeM3(bp.design.geometry) - 1728) < 1e-6,
     `MBR10b. MBR template geometry preserves the legacy nominal volume (${workingVolumeM3(bp.design.geometry).toFixed(0)} m³)`);
+}
+
+// ── MBR11–20: runtime fouling progression (migration slice 2) ──
+{
+  const fresh = { ...FRESH_MBR_FOULING };
+  // MBR11: fresh membrane is at clean resistance and not due for cleaning.
+  assert(Math.abs(fresh.resistanceMultiple - 1) < 1e-9 && !fresh.cleaningDue,
+    `MBR11. fresh membrane R=1.0×, cleaningDue=${fresh.cleaningDue}`);
+
+  // MBR12: resistance RISES with TSS loading at fixed flux/time.
+  const lo = advanceMbrFouling({ prev: fresh, materialId: 'pvdf_hollow_fiber', feedTssMgL: 5000, fluxLmh: 20, airScourNm3hPerM2: 0.30, dtDays: 30 });
+  const hi = advanceMbrFouling({ prev: fresh, materialId: 'pvdf_hollow_fiber', feedTssMgL: 20000, fluxLmh: 20, airScourNm3hPerM2: 0.30, dtDays: 30 });
+  assert(hi.resistanceMultiple > lo.resistanceMultiple,
+    `MBR12. higher feed TSS raises R (${hi.resistanceMultiple.toFixed(2)} > ${lo.resistanceMultiple.toFixed(2)})`);
+
+  // MBR13: resistance RISES with operating flux at fixed TSS/time.
+  const slow = advanceMbrFouling({ prev: fresh, materialId: 'pvdf_hollow_fiber', feedTssMgL: 10000, fluxLmh: 15, airScourNm3hPerM2: 0.30, dtDays: 30 });
+  const fast = advanceMbrFouling({ prev: fresh, materialId: 'pvdf_hollow_fiber', feedTssMgL: 10000, fluxLmh: 28, airScourNm3hPerM2: 0.30, dtDays: 30 });
+  assert(fast.resistanceMultiple > slow.resistanceMultiple,
+    `MBR13. higher flux raises R (${fast.resistanceMultiple.toFixed(2)} > ${slow.resistanceMultiple.toFixed(2)})`);
+
+  // MBR14: sub-minimum air scour fouls faster than adequate scour.
+  const goodScour = advanceMbrFouling({ prev: fresh, materialId: 'pvdf_hollow_fiber', feedTssMgL: 10000, fluxLmh: 20, airScourNm3hPerM2: 0.30, dtDays: 30 });
+  const weakScour = advanceMbrFouling({ prev: fresh, materialId: 'pvdf_hollow_fiber', feedTssMgL: 10000, fluxLmh: 20, airScourNm3hPerM2: 0.08, dtDays: 30 });
+  assert(weakScour.resistanceMultiple > goodScour.resistanceMultiple,
+    `MBR14. weak air scour fouls faster (${weakScour.resistanceMultiple.toFixed(2)} > ${goodScour.resistanceMultiple.toFixed(2)})`);
+
+  // MBR15: dtDays=0 never changes state (snapshot-safe).
+  const frozen = advanceMbrFouling({ prev: fresh, materialId: 'pvdf_hollow_fiber', feedTssMgL: 30000, fluxLmh: 40, airScourNm3hPerM2: 0.01, dtDays: 0 });
+  assert(frozen.resistanceMultiple === 1 && frozen.daysSinceClean === 0,
+    `MBR15. dtDays=0 leaves state unchanged (R=${frozen.resistanceMultiple.toFixed(2)})`);
+
+  // MBR16: cleaning (CIP) drops resistance below the threshold again.
+  const fouled = advanceMbrFouling({ prev: fresh, materialId: 'pvdf_hollow_fiber', feedTssMgL: 20000, fluxLmh: 26, airScourNm3hPerM2: 0.15, dtDays: 120 });
+  assert(fouled.resistanceMultiple >= MBR_CLEANING_THRESHOLD,
+    `MBR16a. long duty pushes R to cleaning threshold (${fouled.resistanceMultiple.toFixed(2)}× ≥ ${MBR_CLEANING_THRESHOLD})`);
+  const cleaned = performMembraneClean(fouled);
+  assert(cleaned.resistanceMultiple < MBR_CLEANING_THRESHOLD && cleaned.daysSinceClean === 0 && !cleaned.cleaningDue,
+    `MBR16b. CIP strips resistance back below threshold (${cleaned.resistanceMultiple.toFixed(2)}×, daysSince=${cleaned.daysSinceClean.toFixed(0)})`);
+
+  // MBR17: runtime TMP climbs with resistance and stays near clean when fresh.
+  const rtFresh = evaluateMbrRuntime({ materialId: 'pvdf_hollow_fiber', installedAreaM2: 7650, designFluxLmh: 20, airScourNm3hPerM2: 0.30 }, 3500, fresh);
+  const rtFouled = evaluateMbrRuntime({ materialId: 'pvdf_hollow_fiber', installedAreaM2: 7650, designFluxLmh: 20, airScourNm3hPerM2: 0.30 }, 3500, fouled);
+  assert(rtFouled.tmpKpa > rtFresh.tmpKpa && rtFouled.powerMult > 1 && rtFouled.opexMult > 1,
+    `MBR17. fouled runtime TMP/power/opex all above fresh (TMP ${rtFouled.tmpKpa.toFixed(1)} vs ${rtFresh.tmpKpa.toFixed(1)} kPa)`);
+  assert(rtFresh.tmpHeadroomRatio < 1,
+    `MBR17b. fresh PVDF at 20 LMH sits below its TMP rating (headroom ${rtFresh.tmpHeadroomRatio.toFixed(2)})`);
+
+  // MBR18: material affinity sets fouling speed — PES fouls faster than PVDF
+  // under identical duty (matches MBR02c ordering).
+  const pvdfRun = advanceMbrFouling({ prev: fresh, materialId: 'pvdf_hollow_fiber', feedTssMgL: 12000, fluxLmh: 22, airScourNm3hPerM2: 0.20, dtDays: 60 });
+  const pesRun = advanceMbrFouling({ prev: fresh, materialId: 'pes_hollow_fiber', feedTssMgL: 12000, fluxLmh: 22, airScourNm3hPerM2: 0.20, dtDays: 60 });
+  assert(pesRun.resistanceMultiple > pvdfRun.resistanceMultiple,
+    `MBR18. PES fouls faster than PVDF (${pesRun.resistanceMultiple.toFixed(2)} > ${pvdfRun.resistanceMultiple.toFixed(2)})`);
+
+  // MBR19: resistance is clamped — never runs away to Infinity.
+  const runaway = advanceMbrFouling({ prev: fresh, materialId: 'pes_hollow_fiber', feedTssMgL: 40000, fluxLmh: 35, airScourNm3hPerM2: 0.01, dtDays: 5000 });
+  assert(runaway.resistanceMultiple <= 4.01 && Number.isFinite(runaway.resistanceMultiple),
+    `MBR19. resistance clamped to ceiling (${runaway.resistanceMultiple.toFixed(2)}× ≤ 4)`);
+
+  // MBR20: design-basis (slice 1) and runtime (slice 2) live side-by-side —
+  // the fresh template both validates CLEAN and reports a fresh fouling state.
+  const freshTemplate = mkBlueprintUnit('mbr_membrane');
+  const freshCodes20 = validateUnitDesign(freshTemplate).map(i => i.code);
+  assert(freshCodes20.length === 0, `MBR20. fresh MBR template CLEAN with runtime model present [${freshCodes20.join(',') || 'none'}]`);
 }
 
 // ── summary ─────────────────────────────────────────────────────────────────

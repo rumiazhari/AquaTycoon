@@ -1,19 +1,29 @@
 /**
- * MBR membrane engineering — Mission §Q + §R, migration slice 1.
+ * MBR membrane engineering — Mission §Q + §R, migration slice 1 + 2.
  *
  * Replaces the legacy binary fouled/not-fouled heuristic with a real design
- * basis:
+ * basis AND a runtime resistance/fouling progression.
  *
+ * DESIGN BASIS (slice 1, used by the validator + Show Calculation):
  *   Flux            J = Qp·1000 / (Am·24)  [LMH]
  *   Required area   Am = Qp·1000 / (24·J)
  *   Clean TMP       TMP₀ = J / permeability          [kPa]
  *   Design-basis    TMP = TMP₀ · (1 + kFoul · foulLoad)
  *     foulLoad = foulingCoefficient · (TSS/TSSref) · (J/Jref) · scourPenalty
  *
+ * RUNTIME PROGRESSION (slice 2, used by the simulation engine):
+ *   Resistance is the inverse of permeability: R = 1/permeability. As foulant
+ *   mass accumulates the effective permeability drops, so:
+ *     R_t = R_clean · ρ            where ρ = resistanceMultiple
+ *     J_actual = TMP / R_t  (lower permeability ⇒ lower sustainable flux)
+ *   Fouling resistance RISES with TSS loading, operating flux and time, and
+ *   FALLS with backwash and chemical cleaning (CIP), exactly as real MBR
+ *   trains behave. The membrane barrier itself never fails (permeate TSS ≈ 0),
+ *   but the TMP needed to push the same flow climbs — surfaced to the player
+ *   as power/opex growth and an overload warning they can fix with cleaning.
+ *
  * High flux: area↓ CAPEX↓ fouling↑ TMP↑ cleaning↑ replacement↑. Conservative:
  * CAPEX↑ resilience↑ — emergent from the formulas, not scripted bonuses.
- * This module is DESIGN-TIME physics (validator + Show Calculation); the
- * runtime resistance/fouling progression lands with the next MBR slice.
  */
 
 // ── §R membrane material catalog ─────────────────────────────────────────────
@@ -188,5 +198,168 @@ export function evaluateMembraneDesign(
     tmpHeadroomRatio: tmpEstimateKpa / mat.maxTmpKpa,
     fluxClass: classifyFlux(actualFluxLmh),
     scourAdequate,
+  };
+}
+
+// ── Runtime fouling progression (migration slice 2) ─────────────────────────
+//
+// Persistent per-unit membrane state. Held on the placed unit (`mbrFouling`)
+// and advanced once per simulation day. All fields are plain numbers so the
+// state survives JSON save/load unchanged.
+
+export interface MbrFoulingState {
+  /** Filtration resistance multiple vs clean membrane (1 = brand new). */
+  resistanceMultiple: number;
+  /** Days since the last maintenance clean (backwash/CIP). */
+  daysSinceClean: number;
+  /** Cumulative irreversible resistance multiple after last CIP (0 = none). */
+  irreversibleMultiple: number;
+  /** True once R exceeds the operator's cleaning threshold (advisory only). */
+  cleaningDue: boolean;
+}
+
+/** A clean, healthy membrane at the start of operation. */
+export const FRESH_MBR_FOULING: MbrFoulingState = {
+  resistanceMultiple: 1,
+  daysSinceClean: 0,
+  irreversibleMultiple: 0,
+  cleaningDue: false,
+};
+
+/** Resistance multiple at/above which the player is advised to clean. */
+export const MBR_CLEANING_THRESHOLD = 1.6;
+/** Hard ceiling on reversible resistance (prevents runaway + NaN). */
+export const MBR_RESISTANCE_CEIL = 4.0;
+/** Reversible component is scrubbed back to this fraction per CIP. */
+export const MBR_CIP_RESIDUAL = 0.15;
+/** Daily reversible-resistance growth coefficient (calibrated). */
+export const MBR_FOUL_RATE_PER_DAY = 0.045;
+/** Daily reversible recovery from routine backwash. */
+export const MBR_BACKWASH_RECOVERY_PER_DAY = 0.012;
+
+export interface AdvanceFoulingInput {
+  /** Current fouling state (mutated-free: returns a new object). */
+  prev: MbrFoulingState;
+  /** Membrane material id (PVDF/PES/ceramic). */
+  materialId: string;
+  /** Feed mixed-liquor TSS (mg/L) — higher solids foul faster. */
+  feedTssMgL: number;
+  /** Operating flux through the installed area (LMH). */
+  fluxLmh: number;
+  /** Specific air-scour demand (Nm³/h per m²); below minimum fouls faster. */
+  airScourNm3hPerM2: number;
+  /** Days elapsed this tick (fractional ok). 0 = snapshot, no change. */
+  dtDays: number;
+}
+
+/**
+ * Advances the membrane fouling state by dtDays.
+ *
+ * Resistance RISES with TSS loading, operating flux and elapsed time, and
+ * FALLS with routine backwash; CIP (performMembraneClean) drops it further.
+ * The reversible fraction is what accumulates day to day; the irreversible
+ * fraction only moves when CIP strips accumulated irreversible fouling.
+ */
+export function advanceMbrFouling(input: AdvanceFoulingInput): MbrFoulingState {
+  const mat = MEMBRANE_MATERIALS[input.materialId] ?? MEMBRANE_MATERIALS.pvdf_hollow_fiber;
+  const dt = Math.max(0, input.dtDays);
+  if (dt <= 0) return { ...input.prev };
+
+  const tssFactor = Math.max(0.4, input.feedTssMgL / FOUL_TSS_REF_MGL);
+  const fluxFactor = Math.max(0.5, input.fluxLmh / FOUL_FLUX_REF_LMH);
+  const scourAdequate = input.airScourNm3hPerM2 >= SCOUR_MIN_NM3H_PER_M2;
+  const scourPenalty = scourAdequate ? 1 : SCOUR_PENALTY;
+  // Material fouling affinity sets how fast resistance accumulates.
+  const foulDriver = mat.foulingCoefficient * tssFactor * fluxFactor * scourPenalty;
+
+  // Reversible resistance = total − fixed irreversible baseline.
+  const reversibleNow = Math.max(1, input.prev.resistanceMultiple - input.prev.irreversibleMultiple);
+  const growth = MBR_FOUL_RATE_PER_DAY * foulDriver * dt;
+  const recovery = MBR_BACKWASH_RECOVERY_PER_DAY * dt;
+  let reversibleNext = reversibleNow + growth - recovery;
+  reversibleNext = Math.max(1, Math.min(MBR_RESISTANCE_CEIL, reversibleNext));
+
+  const resistanceMultiple = Math.min(
+    MBR_RESISTANCE_CEIL,
+    reversibleNext + input.prev.irreversibleMultiple,
+  );
+  const daysSinceClean = input.prev.daysSinceClean + dt;
+
+  return {
+    resistanceMultiple,
+    daysSinceClean,
+    irreversibleMultiple: input.prev.irreversibleMultiple,
+    cleaningDue: resistanceMultiple >= MBR_CLEANING_THRESHOLD,
+  };
+}
+
+/**
+ * Chemical cleaning (CIP / backwash event). Strips most of the reversible
+ * resistance and a fraction of the irreversible accumulation, resets the
+ * clean-day clock. Returns the new state — never mutates the input.
+ */
+export function performMembraneClean(prev: MbrFoulingState): MbrFoulingState {
+  const reversibleNow = Math.max(1, prev.resistanceMultiple - prev.irreversibleMultiple);
+  const reversibleAfter = 1 + (reversibleNow - 1) * MBR_CIP_RESIDUAL;
+  const irreversibleAfter = prev.irreversibleMultiple * MBR_CIP_RESIDUAL;
+  const resistanceMultiple = Math.min(MBR_RESISTANCE_CEIL, reversibleAfter + irreversibleAfter);
+  return {
+    resistanceMultiple,
+    daysSinceClean: 0,
+    irreversibleMultiple: irreversibleAfter,
+    cleaningDue: resistanceMultiple >= MBR_CLEANING_THRESHOLD,
+  };
+}
+
+export interface MbrRuntimePoint {
+  /** Current operating flux (LMH) — drops as resistance climbs at fixed TMP. */
+  fluxLmh: number;
+  /** Estimated TMP to push the design flow through current resistance (kPa). */
+  tmpKpa: number;
+  /** TMP referenced to the material's rated maximum (1 = at rating). */
+  tmpHeadroomRatio: number;
+  /** Power multiplier from elevated TMP (∝ resistanceMultiple). */
+  powerMult: number;
+  /** Opex multiplier from elevated TMP + cleaning frequency. */
+  opexMult: number;
+  /** Resistance multiple vs clean membrane. */
+  resistanceMultiple: number;
+  cleaningDue: boolean;
+}
+
+/**
+ * Runtime operating point for the MBR at its current fouling state. Used by
+ * the process model to degrade flux / raise power+opex and by the Diagnostics
+ * Show-Calculation block to display the live numbers.
+ */
+export function evaluateMbrRuntime(
+  design: MembraneDesignInput,
+  flowM3d: number,
+  foul: MbrFoulingState,
+): MbrRuntimePoint {
+  const mat = MEMBRANE_MATERIALS[design.materialId] ?? MEMBRANE_MATERIALS.pvdf_hollow_fiber;
+  const installedAreaM2 = Math.max(1, design.installedAreaM2);
+  const targetFluxLmh = design.designFluxLmh || FOUL_FLUX_REF_LMH;
+
+  // TMP needed to push the design flow: TMP = J / (permeability / ρ).
+  const rho = Math.max(1e-3, foul.resistanceMultiple);
+  const effectivePerm = mat.permeabilityLmhPerKpa / rho;
+  const actualFluxLmh = fluxAtArea(flowM3d, installedAreaM2);
+
+  // Equivalent TMP at the design target flux through current resistance.
+  const tmpKpa = (targetFluxLmh / effectivePerm);
+  const powerMult = rho; // suction/permeate pumping scales with resistance
+  // Cleaning frequency rises once over threshold → maintenance opex climbs.
+  const opexMult = 1 + 0.25 * Math.max(0, foul.resistanceMultiple - 1)
+    + (foul.cleaningDue ? 0.15 : 0);
+
+  return {
+    fluxLmh: actualFluxLmh,
+    tmpKpa,
+    tmpHeadroomRatio: tmpKpa / mat.maxTmpKpa,
+    powerMult,
+    opexMult,
+    resistanceMultiple: foul.resistanceMultiple,
+    cleaningDue: foul.cleaningDue,
   };
 }

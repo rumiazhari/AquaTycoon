@@ -349,6 +349,7 @@ console.log('\n── N. BuildToolbar: seed-sludge placement toggle ──');
       { id: 'secondary_clarifier', name: 'Clarifier', hasPumpRuntime: false },
       { id: 'equalization_basin', name: 'EQ', hasPumpRuntime: false },
       { id: 'pump_station', name: 'Pump', hasPumpRuntime: true },
+      { id: 'mbr_membrane', name: 'MBR', hasPumpRuntime: false },
     ] as const;
 
     for (const t of types) {
@@ -413,6 +414,11 @@ console.log('\n── N. BuildToolbar: seed-sludge placement toggle ──');
         assert(text.includes("V′ =") || text.includes("V' ="), 'EQ: Storage balance equation present');
       } else if (t.id === 'pump_station') {
         assert(text.includes('P_hyd'), 'Pump: wire-to-water equation present');
+      } else if (t.id === 'mbr_membrane') {
+        assert(text.includes('TMP ='), 'MBR: membrane TMP equation present in Diagnostics');
+        assert(text.includes('Resistance'), 'MBR: resistance readout present in Diagnostics');
+        // The live Diagnostics block must expose the CIP cleaning action.
+        assert(text.includes('Clean Membranes'), 'MBR: Clean Membranes (CIP) control present');
       }
 
       // Click "Econ" tab

@@ -2,10 +2,18 @@ import { GasStream, PlacedUnit, UnitDefinition, UnitTypeId, WaterQuality } from 
 import { cloneWater, emptyWater } from './WaterStream';
 import { loadKgDay } from './MassBalance';
 import { freshCommissioning } from '../design/UnitBlueprint';
+import type { MembraneDesign } from '../design/UnitBlueprint';
 import { stepCasRuntime } from './processes/ActivatedSludge';
 import { evaluateClarifierLoad } from './processes/Clarifier';
 import { stepEqualization } from './processes/Equalization';
 import { stepPumpStation } from './processes/Pumping';
+import {
+  evaluateMbrRuntime,
+  FRESH_MBR_FOULING,
+  FOUL_FLUX_REF_LMH,
+  SCOUR_MIN_NM3H_PER_M2,
+  type MbrFoulingState,
+} from './processes/MBR';
 
 export interface ProcessResult {
   /** Main treated liquid effluent ('outlet' port). Kept for UI compatibility. */
@@ -39,6 +47,8 @@ export interface ProcessResult {
     failedUnitCount: number;
     electricalPowerKw: number;
   };
+  /** MBR membrane runtime operating point (fouling-resistance progression). */
+  mbrFouling?: MbrFoulingState;
 }
 
 /**
@@ -864,6 +874,7 @@ export function calculateUnitProcess(
   let mlss = 3000;
   let svi = 110;
   let pumpRuntime: ProcessResult['pumpRuntime'] = undefined;
+  let mbrFouling: MbrFoulingState | undefined = undefined;
 
   switch (unit.typeId) {
     // -----------------------------------------------------
@@ -1215,31 +1226,46 @@ export function calculateUnitProcess(
 
     // -----------------------------------------------------
     case 'mbr_membrane': {
-      // MEMBRANE FOULING (piping consequence): MBR cassettes are engineered
-      // for biological mixed liquor from its own bioreactor. Piping raw
-      // sludge or screenings straight in blinds the hollow fibers.
-      const fouled = inlet.tss > 500 && inlet.tss < 4000 && inlet.bod > 300;
-      if (fouled) {
-        eff.tss = Math.max(1, eff.tss * 0.3);
-        eff.turbidity = Math.min(6, eff.turbidity * 0.5);
-        eff.bod = Math.max(8, eff.bod * 0.35);
-        eff.cod = Math.max(30, eff.cod * 0.5);
-        eff.pathogens = Math.max(0, eff.pathogens * 0.05);
-        powerKw = def.powerConsumptionKw * 1.7; // suction strain
-        opexDay = def.baseOpexPerDay * 1.8;     // chemical cleans
-        efficiency = 58;
-      } else {
-        // Membrane absolute barrier: intact hollow fibers retain ALL suspended
-        // solids (pore size ≈ 0.1–0.4 µm << floc size) — permeate TSS is
-        // effectively zero, turbidity < 0.2 NTU, 4-log pathogen rejection.
-        eff.tss = 0;
-        eff.turbidity = Math.min(0.2, eff.turbidity * 0.02);
-        eff.bod = Math.max(2, eff.bod * 0.03);
-        eff.cod = Math.max(12, eff.cod * 0.06);
-        eff.pathogens = Math.max(0, eff.pathogens * 0.0001); // 4-log kill
-        eff.tp *= 0.6; // High particulate P retention
-        eff.do = 2.5;
+      // MEMBRANE FOULING (runtime, Mission §Q slice 2): the legacy binary
+      // "fouled if raw-ish feed else perfect" heuristic is replaced by a
+      // continuous resistance progression. The membrane is an absolute barrier
+      // (pore << floc) REGARDLESS of fouling state — so permeate quality is
+      // always excellent — but as resistance R rises the TMP needed to push
+      // the design flow climbs, raising suction power and chemical/cleaning
+      // opex. The player sees this via the live Diagnostics block and the
+      // AdvisoryEngine, and fixes it with membrane cleaning (CIP).
+      const mem = unit.blueprint?.equipment as MembraneDesign | undefined;
+      const matId = mem?.materialId ?? 'pvdf_hollow_fiber';
+      const installedAreaM2 = mem ? mem.moduleCount * mem.areaPerModuleM2 : 7650;
+      const designFlux = mem?.designFluxLmh ?? FOUL_FLUX_REF_LMH;
+      const airScour = mem?.airScourNm3hPerM2 ?? SCOUR_MIN_NM3H_PER_M2;
+      const qInMbr = Math.max(0, inlet.flowRate);
+      const feedTss = inlet.tss;
+
+      // Seed (engineered, first engineered tick) or reuse the persisted
+      // fouling state. This state is ADVANCED once per tick by the engine
+      // (outside the relaxation loop) — here we only READ it.
+      if (unit.blueprint && !unit.mbrFouling) {
+        unit.mbrFouling = { ...FRESH_MBR_FOULING };
       }
+      const foul = unit.mbrFouling ?? FRESH_MBR_FOULING;
+      const runtime = evaluateMbrRuntime(
+        { materialId: matId, installedAreaM2, designFluxLmh: designFlux, airScourNm3hPerM2: airScour },
+        qInMbr,
+        foul,
+      );
+
+      // ── Membrane absolute barrier: intact hollow fibers retain ALL solids
+      //    (pore size ≈ 0.1–0.4 µm << floc size) — permeate TSS effectively
+      //    zero, turbidity < 0.2 NTU, 4-log pathogen rejection, whatever the
+      //    fouling resistance. ──
+      eff.tss = 0;
+      eff.turbidity = Math.min(0.2, eff.turbidity * 0.02);
+      eff.bod = Math.max(2, eff.bod * 0.03);
+      eff.cod = Math.max(12, eff.cod * 0.06);
+      eff.pathogens = Math.max(0, eff.pathogens * 0.0001); // 4-log kill
+      eff.tp *= 0.6; // High particulate P retention
+      eff.do = 2.5;
 
       // ── WAS from solids retention, not arbitrary numbers ────────────────
       // The membrane retains essentially ALL incoming biomass; the WAS pump
@@ -1250,8 +1276,7 @@ export function calculateUnitProcess(
       //
       // HYDRAULIC COMPLEMENTARITY: Qin = Qpermeate + Qwas. Permeate flow is
       // DERIVED as whatever remains after the WAS draw — never added on top.
-      const qInMbr = Math.max(0, inlet.flowRate);
-      const inSolidsKg = loadKgDay(qInMbr, inlet.tss);
+      const inSolidsKg = loadKgDay(qInMbr, feedTss);
       const wastedSolidsKg = Math.max(0, inSolidsKg); // membrane passes ~no solids
       const mbrWasTss = 10000; // mg/L — typical MBR waste sludge density
       const wasFlow = Math.min(qInMbr * 0.2, Math.max(2, (wastedSolidsKg * 1000) / mbrWasTss));
@@ -1264,7 +1289,19 @@ export function calculateUnitProcess(
       };
       // Permeate = feed minus wasting — strictly complementary (conserves flow)
       eff.flowRate = Math.max(0, qInMbr - wasFlow);
-      if (!fouled) efficiency = 99;
+      efficiency = 99;
+
+      // ── Fouling consequence: more resistance ⇒ more suction power + opex,
+      //    plus a modest efficiency haircut as TMP climbs toward rating. ──
+      powerKw = def.powerConsumptionKw * runtime.powerMult;
+      opexDay = def.baseOpexPerDay * runtime.opexMult;
+      // TMP approaching the material rating is the headline degradation.
+      if (runtime.tmpHeadroomRatio > 1) {
+        efficiency = Math.max(80, 99 - 12 * (runtime.tmpHeadroomRatio - 1));
+      }
+
+      // Expose runtime operating point for UI / diagnostics / persistence.
+      mbrFouling = foul;
       break;
     }
 
@@ -1788,6 +1825,7 @@ export function calculateUnitProcess(
     dissolvedOxygen,
     mlss,
     svi,
-    pumpRuntime
+    pumpRuntime,
+    mbrFouling
   };
 }

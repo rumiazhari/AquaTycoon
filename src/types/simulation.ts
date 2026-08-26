@@ -160,6 +160,13 @@ export interface PlacedUnit {
     failedUnitCount: number;
     electricalPowerKw: number;
   };
+  /** MBR membrane runtime fouling state (resistance progression) — filled by engine. */
+  mbrFouling?: {
+    resistanceMultiple: number;
+    daysSinceClean: number;
+    irreversibleMultiple: number;
+    cleaningDue: boolean;
+  };
 }
 
 export interface PipeConnection {

@@ -1296,6 +1296,16 @@ export const App: React.FC = () => {
                 setToast(`Seed sludge haul-in purchased — $${Math.round(res.seedCapexCharged).toLocaleString()}.`);
               }
             }}
+            onUpdateFouling={(id, next) => {
+              // Operational membrane cleaning: write the fouling state back to
+              // the placed unit's runtime record (no CAPEX — maintenance action).
+              setGameState(prev => ({
+                ...prev,
+                units: prev.units.map(un =>
+                  un.instanceId === id && next ? { ...un, mbrFouling: next } : un
+                ),
+              }));
+            }}
           />
         );
       })()}

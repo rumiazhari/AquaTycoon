@@ -3,6 +3,7 @@ import {
   GasStream, PipeConnection, PlacedUnit, TreatmentStandard, WaterQuality, emptyGas
 } from '../types/simulation';
 import { calculateUnitProcess, EnvironmentFactors, ProcessResult } from './UnitProcessModels';
+import { advanceMbrFouling, FRESH_MBR_FOULING, FOUL_FLUX_REF_LMH, SCOUR_MIN_NM3H_PER_M2 } from './processes/MBR';
 import { cloneWater, emptyWater, mixWaterStreams } from './WaterStream';
 import { evaluatePermitCriteria } from './PermitEngine';
 import { evaluateTechEffects } from './TechEffects';
@@ -312,6 +313,27 @@ export class SimulationEngine {
         // Persist pump station runtime telemetry for live UI readout
         if (unit.typeId === 'pump_station' && result.pumpRuntime) {
           targetUnit.pumpRuntime = { ...result.pumpRuntime };
+        }
+        // MBR membrane fouling: READ by the process model (it returns the
+        // current state in result.mbrFouling); ADVANCE it once per tick here
+        // (outside the relaxation loop) so resistance accumulates per day,
+        // not per solver pass. dtDays is the actual elapsed sim time.
+        if (unit.typeId === 'mbr_membrane' && result.mbrFouling) {
+          const mem = targetUnit.blueprint?.equipment as
+            { materialId?: string; airScourNm3hPerM2?: number; moduleCount?: number; areaPerModuleM2?: number } | undefined;
+          const installedAreaM2 = (mem?.moduleCount ?? 9) * (mem?.areaPerModuleM2 ?? 850);
+          const fluxLmh = installedAreaM2 > 0
+            ? (mergedInlet.flowRate * 1000) / (24 * installedAreaM2)
+            : FOUL_FLUX_REF_LMH;
+          const next = advanceMbrFouling({
+            prev: targetUnit.mbrFouling ?? { ...FRESH_MBR_FOULING },
+            materialId: mem?.materialId ?? 'pvdf_hollow_fiber',
+            feedTssMgL: mergedInlet.tss,
+            fluxLmh,
+            airScourNm3hPerM2: mem?.airScourNm3hPerM2 ?? SCOUR_MIN_NM3H_PER_M2,
+            dtDays: env?.dtDays ?? 0,
+          });
+          targetUnit.mbrFouling = { ...next };
         }
         // sludgeBlanketHeight is a 0..1 FRACTION in ProcessResult; the unit
         // field is named …Percent and every reader (UnitDesigner, clarifier
