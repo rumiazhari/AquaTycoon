@@ -13,7 +13,7 @@ export const CAMPAIGN_LEVELS: CampaignLevel[] = [
     subtitle: 'Coastal Suburb Domestic Treatment',
     district: 'Emerald Coast Municipality',
     difficulty: 'Beginner',
-    briefing: 'Construct a primary and secondary treatment line for a growing coastal town. Prevent beach pollution fines by reducing organic loads (BOD) and suspended solids (TSS) before outfall discharge.',
+    briefing: 'Construct a primary and secondary treatment line for a growing coastal town using the engineered design validator reference flow (VALIDATOR_REFERENCE_FLOW_M3D = 3500 m³/day). Prevent beach pollution fines by reducing organic loads (BOD) and suspended solids (TSS) before outfall discharge. Peak-flow design basis ensures templates validate clean at the contracted design flow.',
     backgroundStory: 'Tourism is the lifeblood of Seaside Haven. However, raw discharge into the bay is threatening the blue-flag beach status. The mayor has provided an initial municipal grant to construct your first automated WWTP.',
     mapSize: [40, 30],
     startingBudget: 350000,
