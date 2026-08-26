@@ -48,7 +48,9 @@ import {
   evaluateMbrRuntime,
   FRESH_MBR_FOULING,
   MBR_CLEANING_THRESHOLD,
+  MEMBRANE_MATERIALS,
   membraneCipCostUsd,
+  membraneReplacementCostUsd,
   performMembraneClean,
   } from '../sim/processes/MBR';
 
@@ -60,6 +62,8 @@ export interface UnitDesignerProps {
   onUpdateCommissioning?: (unitId: string, next: CommissioningState) => void;
   /** Writes the placed unit's runtime MBR membrane fouling state (cleaning). */
   onUpdateFouling?: (unitId: string, next: PlacedUnit['mbrFouling']) => void;
+  /** Swaps worn membrane cassettes for new ones (domain-charged CAPEX). */
+  onReplaceMembranes?: (unitId: string) => void;
   /** Player cash for affordability gating of the seed-sludge haul-in purchase. */
   playerCash?: number;
 }
@@ -69,7 +73,7 @@ type Tab = 'design' | 'operate' | 'diagnostics' | 'economics' | 'maintenance';
 const fmt = (v: number | undefined, d = 1) => (v === undefined || Number.isNaN(v) ? '—' : v.toFixed(d));
 const money = (v: number) => `$${Math.round(v).toLocaleString()}`;
 
-export const UnitDesigner: React.FC<UnitDesignerProps> = ({ unit, onClose, onUpdateBlueprint, onUpdateCommissioning, onUpdateFouling, playerCash }) => {
+export const UnitDesigner: React.FC<UnitDesignerProps> = ({ unit, onClose, onUpdateBlueprint, onUpdateCommissioning, onUpdateFouling, onReplaceMembranes, playerCash }) => {
   const def = UNIT_DEFINITIONS[unit.typeId];
   if (!def || !unit.blueprint) {
     return (
@@ -172,7 +176,7 @@ export const UnitDesigner: React.FC<UnitDesignerProps> = ({ unit, onClose, onUpd
 
       {tab === 'design' && <DesignTab bp={bp} onChange={commit} geo={geo} />}
       {tab === 'operate' && <OperateTab bp={bp} onChange={commit} />}
-      {tab === 'diagnostics' && <DiagnosticsTab unit={unit} bp={bp} onUpdateFouling={onUpdateFouling} />}
+      {tab === 'diagnostics' && <DiagnosticsTab unit={unit} bp={bp} onUpdateFouling={onUpdateFouling} onReplaceMembranes={onReplaceMembranes} />}
       {tab === 'economics' && <EconomicsTab bp={bp} />}
       {tab === 'maintenance' && <MaintenanceTab unit={unit} />}
     </Shell>
@@ -322,10 +326,11 @@ function OperateTab({ bp, onChange }: {
   );
 }
 
-function DiagnosticsTab({ unit, bp, onUpdateFouling }: {
+function DiagnosticsTab({ unit, bp, onUpdateFouling, onReplaceMembranes }: {
   unit: PlacedUnit;
   bp: PlacedUnit['blueprint'];
   onUpdateFouling?: (unitId: string, next: PlacedUnit['mbrFouling']) => void;
+  onReplaceMembranes?: (unitId: string) => void;
 }) {
   const geo = bp!.design.geometry;
   const isCAS = bp!.processType === 'activated_sludge_cas';
@@ -469,6 +474,13 @@ function DiagnosticsTab({ unit, bp, onUpdateFouling }: {
             <Row k="Power ×" v={`${fmt(rt.powerMult, 2)} ×`} bad={rt.powerMult > 1.5} />
             <Row k="Opex ×" v={`${fmt(rt.opexMult, 2)} ×`} bad={rt.opexMult > 1.3} />
             {foul.cleaningDue && <Row k="⚠ Cleaning due" v="YES" bad />}
+            {(foul.offlineHours ?? 0) > 0 && <Row k="⚠ CIP outage" v={`${fmt(foul.offlineHours, 1)} h offline — zero permeate`} bad />}
+            <Row
+              k="Cassette age"
+              v={`${fmt((foul.ageDays ?? 0) / 365.25, 1)} / ${MEMBRANE_MATERIALS[mem?.materialId ?? 'pvdf_hollow_fiber'].lifetimeYears} yr rated`}
+              bad={!!foul.endOfLife}
+            />
+            {foul.endOfLife && <Row k="⚠ End of life" v="CIP cannot recover — replace" bad />}
             <CalcBlock title="Membrane TMP (live)"
               eq="TMP = J_target / (K_permeability / ρ)"
               sub={`${fmt(designFlux, 0)} LMH ÷ (K ÷ ${fmt(foul.resistanceMultiple, 2)}×, ρ=fouling) ⇒ ${fmt(rt.tmpKpa, 1)} kPa vs material rating`}
@@ -478,6 +490,12 @@ function DiagnosticsTab({ unit, bp, onUpdateFouling }: {
               onClick={() => { SoundManager.playClick(); onUpdateFouling?.(unit.instanceId, performMembraneClean(foul)); }}
               className="mt-1 px-2.5 py-1.5 rounded-lg text-[11px] font-bold uppercase tracking-wide border border-teal-400/50 bg-teal-500/10 text-teal-200 hover:bg-teal-500/20 transition"
             >Clean Membranes (CIP) · {money(membraneCipCostUsd(mem?.materialId ?? 'pvdf_hollow_fiber', installedAreaM2))}</button>
+            <button
+              onClick={() => { SoundManager.playClick(); onReplaceMembranes?.(unit.instanceId); }}
+              className={`mt-1 px-2.5 py-1.5 rounded-lg text-[11px] font-bold uppercase tracking-wide border transition ${foul.endOfLife
+                ? 'border-amber-400/70 bg-amber-500/20 text-amber-200 hover:bg-amber-500/30 animate-pulse'
+                : 'border-slate-500/50 bg-slate-500/10 text-slate-300 hover:bg-slate-500/20'}`}
+            >Replace Membranes · {money(membraneReplacementCostUsd(mem?.materialId ?? 'pvdf_hollow_fiber', installedAreaM2))}</button>
           </>
         );
       })()}

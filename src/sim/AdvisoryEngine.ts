@@ -10,7 +10,7 @@ import {
   PermitCriterionKey,
 } from './PermitEngine';
 import { PlacedUnit, TreatmentStandard, UnitTypeId, WaterQuality } from '../types/simulation';
-import { membraneCipCostUsd, MBR_CLEANING_THRESHOLD } from './processes/MBR';
+import { membraneCipCostUsd, membraneReplacementCostUsd, MBR_CLEANING_THRESHOLD, MBR_EOL_IRREVERSIBLE, MEMBRANE_MATERIALS } from './processes/MBR';
 
 /**
  * Compliance Doctor — turns raw effluent numbers into an actionable,
@@ -20,7 +20,7 @@ import { membraneCipCostUsd, MBR_CLEANING_THRESHOLD } from './processes/MBR';
  */
 
 export interface FixAction {
-  kind: 'adjust_param' | 'build_unit' | 'start_piping' | 'auto_train' | 'clean_mbr';
+  kind: 'adjust_param' | 'build_unit' | 'start_piping' | 'auto_train' | 'clean_mbr' | 'replace_mbr';
   label: string;
   detail: string;
   /** predicted parameter outcome for adjust_param actions */
@@ -288,6 +288,37 @@ export function generateAdvisories(gs: GameState): Advisory[] {
           detail: 'Hypochlorite + citric-acid soak of the cassettes: strips reversible fouling and resets the clean-day clock.',
           instanceId: u.instanceId,
           affordable: gs.gameMode === 'sandbox' || gs.financials.cash >= cipCost,
+        }],
+      });
+    }
+    // Replacement-due advisory (slice 4): end-of-life membranes cannot be
+    // cleaned back to health — CIP no longer helps, only new cassettes do.
+    if (u.typeId === 'mbr_membrane' && u.mbrFouling?.endOfLife) {
+      const name = UNIT_DEFINITIONS[u.typeId].name;
+      const mem = u.blueprint?.equipment as
+        { materialId?: string; moduleCount?: number; areaPerModuleM2?: number } | undefined;
+      const mat = MEMBRANE_MATERIALS[mem?.materialId ?? 'pvdf_hollow_fiber'];
+      const replCost = membraneReplacementCostUsd(
+        mem?.materialId ?? 'pvdf_hollow_fiber',
+        (mem?.moduleCount ?? 9) * (mem?.areaPerModuleM2 ?? 850),
+      );
+      const ageYears = (u.mbrFouling.ageDays ?? 0) / 365.25;
+      const byAge = ageYears >= mat.lifetimeYears;
+      adv.push({
+        id: `mbr_replacement_due_${u.instanceId}`,
+        severity: 'critical',
+        title: `${name} membranes are at end of life — replacement due`,
+        cause: byAge
+          ? `The ${mat.name} cassettes have served ${ageYears.toFixed(1)} yr of their rated ${mat.lifetimeYears} yr municipal life. Irreversible fouling is now structural (${u.mbrFouling.irreversibleMultiple.toFixed(2)}× clean) — another CIP will not recover design flux.`
+          : `Irreversible fouling reached ${u.mbrFouling.irreversibleMultiple.toFixed(2)}× clean (limit ${MBR_EOL_IRREVERSIBLE}×). Heavy duty has aged the ${mat.name} cassettes past recovery at just ${ageYears.toFixed(1)} yr of a rated ${mat.lifetimeYears} yr life.`,
+        fixes: [{
+          kind: 'replace_mbr',
+          label: gs.gameMode === 'sandbox'
+            ? 'Replace membrane cassettes (free)'
+            : `Replace membrane cassettes (~$${replCost.toLocaleString()})`,
+          detail: 'Swaps every cassette for a new set of the same material: resistance, age and end-of-life flags reset to brand-new.',
+          instanceId: u.instanceId,
+          affordable: gs.gameMode === 'sandbox' || gs.financials.cash >= replCost,
         }],
       });
     }

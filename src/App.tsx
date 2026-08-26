@@ -1004,6 +1004,20 @@ export const App: React.FC = () => {
       return;
     }
 
+    if (fix.kind === 'replace_mbr' && fix.instanceId) {
+      const res = GameManager.replaceMbrMembranes(gs, fix.instanceId);
+      if (!res.success) {
+        if (res.reason) setToast(`🔒 ${res.reason}`);
+        return;
+      }
+      setGameState(res.newState);
+      SoundManager.playPlace();
+      setToast(res.replacementCapexCharged
+        ? `Membrane cassettes replaced — $${Math.round(res.replacementCapexCharged).toLocaleString()} CAPEX. Brand-new membranes installed.`
+        : 'Membrane cassettes replaced — brand-new membranes installed.');
+      return;
+    }
+
     if (fix.kind === 'adjust_param' && fix.instanceId && fix.paramKey) {
       const unit = gs.units.find(u => u.instanceId === fix.instanceId);
       if (!unit) return;
@@ -1320,8 +1334,22 @@ export const App: React.FC = () => {
               }
               setGameState(res.newState);
               if (res.cipCostCharged) {
-                setToast(`CIP clean complete — $${Math.round(res.cipCostCharged).toLocaleString()} chemicals & labor.`);
+                setToast(`CIP clean complete — $${Math.round(res.cipCostCharged).toLocaleString()} chemicals & labor. Train offline ~6 h for the soak.`);
               }
+            }}
+            onReplaceMembranes={(id) => {
+              // Cassette replacement goes through the domain layer so the
+              // end-of-life CAPEX is enforced no matter which UI path fires it.
+              const res = GameManager.replaceMbrMembranes(gsRef.current, id);
+              if (!res.success) {
+                if (res.reason) setToast(`🔒 ${res.reason}`);
+                return;
+              }
+              setGameState(res.newState);
+              SoundManager.playPlace();
+              setToast(res.replacementCapexCharged
+                ? `Membrane cassettes replaced — $${Math.round(res.replacementCapexCharged).toLocaleString()} CAPEX. Brand-new membranes installed.`
+                : 'Membrane cassettes replaced — brand-new membranes installed.');
             }}
           />
         );

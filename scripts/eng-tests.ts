@@ -43,8 +43,11 @@ import {
   performMembraneClean,
   FRESH_MBR_FOULING,
   MBR_CLEANING_THRESHOLD,
-  membraneCipCostUsd,
   MBR_CIP_COST_USD_PER_M2,
+  MBR_CIP_OFFLINE_HOURS,
+  MBR_EOL_IRREVERSIBLE,
+  membraneCipCostUsd,
+  membraneReplacementCostUsd,
 } from '../src/sim/processes/MBR';
 import { generateAdvisories } from '../src/sim/AdvisoryEngine';
 import {
@@ -1535,6 +1538,154 @@ function wq(over: Partial<WaterQuality>): WaterQuality {
   const gsOk: any = { ...gsAdv, units: [{ ...mbrU, mbrFouling: { ...cleaned }, lastInletQuality: flowingIn }] };
   assert(!generateAdvisories(gsOk).some(a => a.id.startsWith('mbr_clean_due')),
     'MBR31. no cleaning-due advisory while membranes are fresh');
+}
+
+// ── MBR32–49: CIP outage window + end-of-life replacement (slice 4) ─────────
+{
+  const areaDef = DEFAULT_MEMBRANE_DESIGN.moduleCount * DEFAULT_MEMBRANE_DESIGN.areaPerModuleM2;
+  const refTick = { prev: FRESH_MBR_FOULING, materialId: 'pvdf_hollow_fiber', feedTssMgL: 10000, fluxLmh: 20, airScourNm3hPerM2: 0.3 };
+
+  // MBR32: a CIP event takes the train offline for the documented soak window.
+  const cleanedSt = performMembraneClean({ ...FRESH_MBR_FOULING, ageDays: 1200 });
+  assert(cleanedSt.offlineHours === MBR_CIP_OFFLINE_HOURS && MBR_CIP_OFFLINE_HOURS === 6,
+    `MBR32. CIP opens a ${MBR_CIP_OFFLINE_HOURS} h outage window`);
+  assert(cleanedSt.ageDays === 1200 && cleanedSt.endOfLife === false,
+    'MBR32b. cleaning preserves service age — it never de-ages membranes');
+  assert(FRESH_MBR_FOULING.offlineHours === 0,
+    'MBR32c. fresh membranes are online (zero outage window)');
+
+  // MBR33/34: countdown consumes min(remaining, step) hours of the window.
+  const after1d = advanceMbrFouling({ ...refTick, prev: { ...FRESH_MBR_FOULING, offlineHours: 6 }, dtDays: 1 });
+  assert(after1d.offlineHours === 0, 'MBR33. a full day clears the outage window entirely');
+  const after3h = advanceMbrFouling({ ...refTick, prev: { ...FRESH_MBR_FOULING, offlineHours: 6 }, dtDays: 0.125 });
+  assert(Math.abs((after3h.offlineHours ?? -1) - 3) < 1e-9,
+    `MBR34. a 3 h step consumes exactly 3 h (${after3h.offlineHours} h left)`);
+
+  // MBR35: fully offline ⇒ filtration suspended — no growth AND no backwash.
+  const frozenPrev = { resistanceMultiple: 1.5, daysSinceClean: 2, irreversibleMultiple: 0.1, cleaningDue: false, offlineHours: 24, ageDays: 100, endOfLife: false };
+  const frozen = advanceMbrFouling({ ...refTick, prev: frozenPrev, dtDays: 1 });
+  assert(Math.abs(frozen.resistanceMultiple - 1.5) < 1e-12 &&
+    Math.abs(frozen.irreversibleMultiple - 0.1) < 1e-12,
+    `MBR35. an offline train fouls zero and ages no resistance (${frozen.resistanceMultiple.toFixed(4)}× unchanged)`);
+
+  // MBR36: part-day outage pro-rates accumulation by the online fraction.
+  const baseA = { ...refTick, prev: { ...FRESH_MBR_FOULING, resistanceMultiple: 1.05 }, dtDays: 1 };
+  const onDay = advanceMbrFouling(baseA);
+  const offDay = advanceMbrFouling({ ...baseA, prev: { ...baseA.prev, offlineHours: 6 } });
+  const dOn = onDay.resistanceMultiple - 1.05;
+  const dOff = offDay.resistanceMultiple - 1.05;
+  assert(dOn > 0 && Math.abs(dOff - 0.75 * dOn) < 1e-9,
+    `MBR36. a 6 h outage pro-rates the day to 75% online (${dOff.toExponential(3)} vs ${(0.75 * dOn).toExponential(3)})`);
+
+  // MBR37: permanent-aging resistance accumulates ∝ §R fouling affinity.
+  const irrOf = (id: string) => advanceMbrFouling({ ...refTick, materialId: id, dtDays: 365 }).irreversibleMultiple;
+  const irrP = irrOf('pes_hollow_fiber'), irrV = irrOf('pvdf_hollow_fiber'), irrC = irrOf('ceramic_multichannel');
+  assert(irrP > irrV && irrV > irrC && irrV > 0,
+    `MBR37. irreversible aging orders PES > PVDF > ceramic (${irrP.toFixed(3)}/${irrV.toFixed(3)}/${irrC.toFixed(3)} ×/yr)`);
+
+  // MBR38: gentle duty reaches end of life by AGE at the rated §R lifetime.
+  const agedOut = advanceMbrFouling({ ...refTick, dtDays: 365.25 * 8 });
+  assert(agedOut.endOfLife === true && (agedOut.ageDays ?? 0) >= 365.25 * 8 &&
+    agedOut.irreversibleMultiple < MBR_EOL_IRREVERSIBLE,
+    `MBR38. PVDF retires by AGE at 8 yr while irreversible is only ${agedOut.irreversibleMultiple.toFixed(2)}× (< ${MBR_EOL_IRREVERSIBLE})`);
+
+  // MBR39: heavy duty kills polymers by FOULING well before rated life.
+  const heavyTick = { ...refTick, feedTssMgL: 12000, fluxLmh: 30, airScourNm3hPerM2: 0.10 };
+  const midLife = advanceMbrFouling({ ...heavyTick, dtDays: 1500 });
+  assert(midLife.endOfLife === false,
+    `MBR39a. heavy duty at 4.1 yr not yet EoL (irrev ${midLife.irreversibleMultiple.toFixed(2)}×)`);
+  const wornOut = advanceMbrFouling({ ...heavyTick, prev: midLife, dtDays: 500 });
+  assert(wornOut.endOfLife === true && (wornOut.ageDays ?? 0) < 365.25 * 8,
+    `MBR39b. heavy duty retires by FOULING at ${((wornOut.ageDays ?? 0) / 365.25).toFixed(1)} yr — before the 8 yr rating`);
+
+  // MBR40: young healthy installation is neither.
+  const young = advanceMbrFouling({ ...refTick, dtDays: 30 });
+  assert(young.endOfLife === false, 'MBR40. a 30 d old installation is not end-of-life');
+
+  // MBR41: replacement quote = area × §R catalog module price.
+  const qReplPvdf = membraneReplacementCostUsd('pvdf_hollow_fiber', areaDef);
+  assert(qReplPvdf === Math.round(areaDef * MEMBRANE_MATERIALS.pvdf_hollow_fiber.capexUsdPerM2),
+    `MBR41. replacement quote = area·catalog $/m² = $${qReplPvdf.toLocaleString()}`);
+  assert(membraneReplacementCostUsd('ceramic_multichannel', areaDef) > qReplPvdf &&
+    qReplPvdf > membraneReplacementCostUsd('pes_hollow_fiber', areaDef),
+    'MBR41b. catalog price orders ceramic > PVDF > PES');
+
+  // MBR42–44: domain-layer replacement path mirrors the CIP pattern.
+  const eolState = { resistanceMultiple: 3.2, daysSinceClean: 40, irreversibleMultiple: 1.7, cleaningDue: true, offlineHours: 2, ageDays: 3100, endOfLife: true };
+  const gsR = GameManager.createInitialState(0, false);
+  const mbrR = mkBlueprintUnit('mbr_membrane', 16, 20);
+  const cashR = 10_000_000;
+  const sR: any = {
+    ...gsR,
+    units: [{ ...mbrR, mbrFouling: { ...eolState } }],
+    financials: { ...gsR.financials, cash: cashR },
+    simSpeed: 1 as const,
+  };
+
+  const rr = GameManager.replaceMbrMembranes(sR, mbrR.instanceId);
+  assert(rr.success && rr.replacementCapexCharged === qReplPvdf,
+    `MBR42. domain replacement charges exactly the quote ($${qReplPvdf.toLocaleString()})`);
+  assert(rr.success && rr.newState.financials.cash === cashR - qReplPvdf,
+    'MBR42b. replacement CAPEX debited from cash exactly once');
+  const fresh2 = rr.newState.units[0].mbrFouling!;
+  assert(fresh2.resistanceMultiple === 1 && fresh2.daysSinceClean === 0 &&
+    fresh2.irreversibleMultiple === 0 && fresh2.cleaningDue === false &&
+    fresh2.offlineHours === 0 && fresh2.ageDays === 0 && fresh2.endOfLife === false,
+    'MBR43. replaced cassettes are brand-new: resistance, age and EoL all reset');
+
+  const brokeCashR = Math.floor(qReplPvdf / 2);
+  const brokeR: any = { ...sR, financials: { ...sR.financials, cash: brokeCashR } };
+  const rbR = GameManager.replaceMbrMembranes(brokeR, mbrR.instanceId);
+  assert(!rbR.success && !!rbR.reason && rbR.reason.includes('Insufficient funds') &&
+    rbR.newState.financials.cash === brokeCashR &&
+    rbR.newState.units[0].mbrFouling!.resistanceMultiple === eolState.resistanceMultiple,
+    'MBR44. unaffordable replacement rejected atomically — cash and cassettes untouched');
+  const sbxR: any = { ...brokeR, gameMode: 'sandbox' as const };
+  const rsR = GameManager.replaceMbrMembranes(sbxR, mbrR.instanceId);
+  assert(rsR.success && rsR.replacementCapexCharged === undefined &&
+    rsR.newState.financials.cash === brokeCashR && rsR.newState.units[0].mbrFouling!.ageDays === 0,
+    'MBR44b. sandbox replacement is free yet still resets the state');
+  const casU4 = mkBlueprintUnit('activated_sludge_cas', 4, 4);
+  const sCR: any = { ...sR, units: [...sR.units, casU4] };
+  assert(!GameManager.replaceMbrMembranes(sCR, casU4.instanceId).success &&
+    !GameManager.replaceMbrMembranes(sCR, 'ghost').success,
+    'MBR44c. non-membrane and unknown unit ids are refused');
+
+  // MBR45/46: runtime bypass — an outage window stops ALL permeate AND WAS
+  // flow and drops suction power to standby; the online twin flows normally.
+  const inletQ4 = wq({ flowRate: 3500 });
+  const uOn = { ...mkBlueprintUnit('mbr_membrane', 8, 8), mbrFouling: { ...FRESH_MBR_FOULING } };
+  const uOff = { ...mkBlueprintUnit('mbr_membrane', 8, 8), mbrFouling: { ...FRESH_MBR_FOULING, offlineHours: 6 } };
+  const rOn = calculateUnitProcess(uOn, inletQ4);
+  const rOff = calculateUnitProcess(uOff, inletQ4);
+  assert(rOff.effluent.flowRate === 0 && (rOff.sludge?.flowRate ?? 0) === 0 &&
+    rOff.powerKw < rOn.powerKw,
+    `MBR45. CIP outage ⇒ zero permeate AND zero WAS at standby power (${rOff.powerKw.toFixed(1)} vs ${rOn.powerKw.toFixed(1)} kW)`);
+  assert(rOn.effluent.flowRate > 0 && rOn.effluent.tss === 0,
+    `MBR46. online twin produces clean permeate (${rOn.effluent.flowRate.toFixed(0)} m³/d, TSS 0)`);
+
+  // MBR47–49: advisory — EoL emits a critical one-click replacement fix that
+  // coexists with cleaning-due; affordability flags; silence while young.
+  const flowingIn4 = wq({ flowRate: 5000 });
+  const gsEol: any = {
+    ...sR,
+    finalEffluent: wq({ flowRate: 5000 }),
+    units: [{ ...mbrR, mbrFouling: { ...eolState }, lastInletQuality: flowingIn4 }],
+  };
+  const advEol = generateAdvisories(gsEol);
+  const replAdv = advEol.find(a => a.id === `mbr_replacement_due_${mbrR.instanceId}`);
+  assert(!!replAdv && replAdv.fixes.length === 1 && replAdv.fixes[0].kind === 'replace_mbr' &&
+    replAdv.fixes[0].affordable === true,
+    'MBR47. end-of-life MBR emits a one-click affordable replacement advisory');
+  assert(advEol.some(a => a.id === `mbr_clean_due_${mbrR.instanceId}`),
+    'MBR47b. cleaning-due advisory still fires alongside replacement-due');
+  const gsBrokeR: any = { ...gsEol, financials: { ...gsEol.financials, cash: Math.floor(qReplPvdf / 2) } };
+  const brokeAdvR = generateAdvisories(gsBrokeR).find(a => a.id === `mbr_replacement_due_${mbrR.instanceId}`);
+  assert(!!brokeAdvR && brokeAdvR.fixes[0].affordable === false,
+    'MBR48. advisory marks replacement unaffordable when cash is short');
+  const gsYoung: any = { ...gsEol, units: [{ ...mbrR, mbrFouling: { ...young }, lastInletQuality: flowingIn4 }] };
+  assert(!generateAdvisories(gsYoung).some(a => a.id.startsWith('mbr_replacement_due')),
+    'MBR49. no replacement advisory while cassettes are young');
 }
 
 // ── summary ─────────────────────────────────────────────────────────────────

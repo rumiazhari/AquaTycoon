@@ -14,7 +14,7 @@ import { isEngineerable, workingVolumeM3 } from '../design/Geometry';
 import { casDesignPoint } from "../sim/processes/ActivatedSludge";
 import { blueprintFromTemplate, CommissioningState } from '../design/UnitBlueprint';
 import { estimatePipeCAPEX, estimateSeedSludgeCAPEX } from '../design/CostEstimator';
-import { FRESH_MBR_FOULING, membraneCipCostUsd, performMembraneClean } from '../sim/processes/MBR';
+import { FRESH_MBR_FOULING, membraneCipCostUsd, performMembraneClean, membraneReplacementCostUsd } from '../sim/processes/MBR';
 import { pathLengthM } from '../sim/hydraulics/PipeHydraulics';
 
 export interface NextStepSuggestion {
@@ -1065,6 +1065,52 @@ export class GameManager {
       newState,
       success: true,
       ...(charged > 0 ? { cipCostCharged: charged } : {}),
+    };
+  }
+
+  /**
+   * Membrane cassette replacement — migration slice 4 end-of-life economics.
+   * Domain-layer write so the replacement CAPEX is enforced even if a future
+   * UI path calls this directly (same pattern as cleanMbrMembranes). Charges
+   * the quoted module price outside sandbox, then swaps the unit's fouling
+   * state for brand-new cassettes (fresh resistance, zero age, online).
+   */
+  public static replaceMbrMembranes(
+    state: GameState,
+    unitId: string
+  ): { newState: GameState; success: boolean; reason?: string; replacementCapexCharged?: number } {
+    const unit = state.units.find(u => u.instanceId === unitId);
+    if (!unit) return { newState: state, success: false, reason: 'Unknown unit' };
+    if (unit.typeId !== 'mbr_membrane') {
+      return { newState: state, success: false, reason: 'Unit has no membrane cassettes' };
+    }
+
+    const mem = unit.blueprint?.equipment as
+      { materialId?: string; moduleCount?: number; areaPerModuleM2?: number } | undefined;
+    const cost = membraneReplacementCostUsd(
+      mem?.materialId ?? 'pvdf_hollow_fiber',
+      (mem?.moduleCount ?? 9) * (mem?.areaPerModuleM2 ?? 850),
+    );
+    const charged = state.gameMode === 'sandbox' ? 0 : cost;
+    if (state.financials.cash < charged) {
+      return {
+        newState: state,
+        success: false,
+        reason: `Insufficient funds for membrane replacement ($${cost.toLocaleString()} required)`,
+      };
+    }
+
+    const newState: GameState = {
+      ...state,
+      financials: { ...state.financials, cash: state.financials.cash - charged },
+      units: state.units.map(u =>
+        u.instanceId === unitId ? { ...u, mbrFouling: { ...FRESH_MBR_FOULING } } : u
+      ),
+    };
+    return {
+      newState,
+      success: true,
+      ...(charged > 0 ? { replacementCapexCharged: charged } : {}),
     };
   }
 

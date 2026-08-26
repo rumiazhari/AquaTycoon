@@ -419,6 +419,9 @@ console.log('\n── N. BuildToolbar: seed-sludge placement toggle ──');
         assert(text.includes('Resistance'), 'MBR: resistance readout present in Diagnostics');
         // The live Diagnostics block must expose the CIP cleaning action.
         assert(text.includes('Clean Membranes'), 'MBR: Clean Membranes (CIP) control present');
+        // Slice 4: end-of-life economics surfaced in the same block.
+        assert(text.includes('Replace Membranes'), 'MBR: Replace Membranes control present');
+        assert(text.includes('Cassette age'), 'MBR: cassette-age readout present in Diagnostics');
       }
 
       // Click "Econ" tab

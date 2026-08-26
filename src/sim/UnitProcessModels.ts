@@ -1255,6 +1255,23 @@ export function calculateUnitProcess(
         foul,
       );
 
+      // ── CIP OUTAGE (slice 4): a clean-in-place takes the train valved off
+      //    for the documented soak window. Zero permeate AND zero WAS (the
+      //    tank is drained); suction pumps idle at mixing-only power while
+      //    standby opex continues. This is cleaning's THROUGHPUT cost on top
+      //    of its fee — schedule cleans for low-flow hours. ──
+      if ((foul.offlineHours ?? 0) > 0) {
+        eff.flowRate = 0;
+        sludge = { ...cloneWater(inlet), flowRate: 0 };
+        eff.tss = 0; eff.turbidity = 0; eff.bod = 0; eff.cod = 0;
+        eff.pathogens = 0; eff.tp = 0; eff.do = 0;
+        powerKw = def.powerConsumptionKw * 0.25;
+        opexDay = def.baseOpexPerDay;
+        efficiency = 99;
+        mbrFouling = foul; // countdown still surfaced to UI/diagnostics
+        break;
+      }
+
       // ── Membrane absolute barrier: intact hollow fibers retain ALL solids
       //    (pore size ≈ 0.1–0.4 µm << floc size) — permeate TSS effectively
       //    zero, turbidity < 0.2 NTU, 4-log pathogen rejection, whatever the

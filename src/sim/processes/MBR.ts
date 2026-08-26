@@ -216,6 +216,15 @@ export interface MbrFoulingState {
   irreversibleMultiple: number;
   /** True once R exceeds the operator's cleaning threshold (advisory only). */
   cleaningDue: boolean;
+  /** Remaining CIP outage window (h). > 0 ⇒ train valved off, zero permeate.
+   *  Optional so legacy saves without the field load as "online". */
+  offlineHours?: number;
+  /** Cumulative service age since cassette installation (days). Ages even
+   *  through cleans and outages — membranes do not de-age. */
+  ageDays?: number;
+  /** True once service age ≥ rated lifetime OR irreversible fouling is past
+   *  the end-of-life basis — replacement, not another CIP, is the fix. */
+  endOfLife?: boolean;
 }
 
 /** A clean, healthy membrane at the start of operation. */
@@ -224,6 +233,9 @@ export const FRESH_MBR_FOULING: MbrFoulingState = {
   daysSinceClean: 0,
   irreversibleMultiple: 0,
   cleaningDue: false,
+  offlineHours: 0,
+  ageDays: 0,
+  endOfLife: false,
 };
 
 /** Resistance multiple at/above which the player is advised to clean. */
@@ -236,6 +248,21 @@ export const MBR_CIP_RESIDUAL = 0.15;
 export const MBR_FOUL_RATE_PER_DAY = 0.045;
 /** Daily reversible recovery from routine backwash. */
 export const MBR_BACKWASH_RECOVERY_PER_DAY = 0.012;
+
+// ── Slice 4: CIP outage + aging / end-of-life basis ──────────────────────────
+/** A CIP event takes the train offline for drain → soak → rinse → refill.
+ *  6 h is a documented design assumption for one immersed-cassette bank. */
+export const MBR_CIP_OFFLINE_HOURS = 6;
+/** Slow permanent-aging resistance growth per day at reference duty
+ *  (baseline PVDF @10 g/L MLSS, 20 LMH, adequate scour). Calibrated so that
+ *  gentle duty lets each material live out its §R rated life on the AGE
+ *  trigger, while heavy duty (high TSS/flux, weak scour) kills polymers
+ *  early via the FOULING trigger below. */
+export const MBR_IRREVERSIBLE_RATE_PER_DAY = 0.0003;
+/** Irreversible resistance multiple at which the installation is considered
+ *  worn out regardless of calendar age (≈1.5× clean-water resistance that no
+ *  clean recovers — the train can no longer meet design flux after CIP). */
+export const MBR_EOL_IRREVERSIBLE = 1.5;
 
 export interface AdvanceFoulingInput {
   /** Current fouling state (mutated-free: returns a new object). */
@@ -257,13 +284,24 @@ export interface AdvanceFoulingInput {
  *
  * Resistance RISES with TSS loading, operating flux and elapsed time, and
  * FALLS with routine backwash; CIP (performMembraneClean) drops it further.
- * The reversible fraction is what accumulates day to day; the irreversible
- * fraction only moves when CIP strips accumulated irreversible fouling.
+ * Slice 4 additions: (a) a CIP outage window counts down — while any of it
+ * remains inside this step, filtration is suspended so reversible growth AND
+ * backwash recovery are pro-rated by the online fraction; (b) irreversible
+ * (permanent-aging) resistance accumulates slowly whenever the train filters,
+ * and (c) the installation ages on the calendar until it hits end-of-life —
+ * rated §R lifetime reached, or irreversible fouling past MBR_EOL_IRREVERSIBLE.
  */
 export function advanceMbrFouling(input: AdvanceFoulingInput): MbrFoulingState {
   const mat = MEMBRANE_MATERIALS[input.materialId] ?? MEMBRANE_MATERIALS.pvdf_hollow_fiber;
   const dt = Math.max(0, input.dtDays);
   if (dt <= 0) return { ...input.prev };
+
+  // ── CIP outage countdown: consumes min(remaining, step length) hours ──
+  const offPrev = Math.max(0, input.prev.offlineHours ?? 0);
+  const stepHours = 24 * dt;
+  const offlineHours = Math.max(0, offPrev - stepHours);
+  const onlineFraction =
+    stepHours > 0 ? 1 - Math.min(1, Math.min(offPrev, stepHours) / stepHours) : 1;
 
   const tssFactor = Math.max(0.4, input.feedTssMgL / FOUL_TSS_REF_MGL);
   const fluxFactor = Math.max(0.5, input.fluxLmh / FOUL_FLUX_REF_LMH);
@@ -272,31 +310,46 @@ export function advanceMbrFouling(input: AdvanceFoulingInput): MbrFoulingState {
   // Material fouling affinity sets how fast resistance accumulates.
   const foulDriver = mat.foulingCoefficient * tssFactor * fluxFactor * scourPenalty;
 
-  // Reversible resistance = total − fixed irreversible baseline.
-  const reversibleNow = Math.max(1, input.prev.resistanceMultiple - input.prev.irreversibleMultiple);
-  const growth = MBR_FOUL_RATE_PER_DAY * foulDriver * dt;
-  const recovery = MBR_BACKWASH_RECOVERY_PER_DAY * dt;
+  // Reversible resistance = total − permanent-aging baseline.
+  const irreversiblePrev = input.prev.irreversibleMultiple;
+  const irreversibleNext = Math.min(
+    MBR_RESISTANCE_CEIL,
+    irreversiblePrev + MBR_IRREVERSIBLE_RATE_PER_DAY * foulDriver * onlineFraction * dt,
+  );
+  const reversibleNow = Math.max(1, input.prev.resistanceMultiple - irreversiblePrev);
+  const growth = MBR_FOUL_RATE_PER_DAY * foulDriver * onlineFraction * dt;
+  const recovery = MBR_BACKWASH_RECOVERY_PER_DAY * onlineFraction * dt;
   let reversibleNext = reversibleNow + growth - recovery;
   reversibleNext = Math.max(1, Math.min(MBR_RESISTANCE_CEIL, reversibleNext));
 
   const resistanceMultiple = Math.min(
     MBR_RESISTANCE_CEIL,
-    reversibleNext + input.prev.irreversibleMultiple,
+    reversibleNext + irreversibleNext,
   );
   const daysSinceClean = input.prev.daysSinceClean + dt;
+  const ageDays = (input.prev.ageDays ?? 0) + dt;
+  const endOfLife =
+    ageDays >= 365.25 * mat.lifetimeYears ||
+    irreversibleNext >= MBR_EOL_IRREVERSIBLE;
 
   return {
     resistanceMultiple,
     daysSinceClean,
-    irreversibleMultiple: input.prev.irreversibleMultiple,
+    irreversibleMultiple: irreversibleNext,
     cleaningDue: resistanceMultiple >= MBR_CLEANING_THRESHOLD,
+    offlineHours,
+    ageDays,
+    endOfLife,
   };
 }
 
 /**
  * Chemical cleaning (CIP / backwash event). Strips most of the reversible
  * resistance and a fraction of the irreversible accumulation, resets the
- * clean-day clock. Returns the new state — never mutates the input.
+ * clean-day clock — and takes the train OFFLINE for the documented soak
+ * window (slice 4): no permeate flows while it runs out. Aging fields
+ * (ageDays/endOfLife) are untouched — cleaning never de-ages membranes.
+ * Returns the new state — never mutates the input.
  */
 export function performMembraneClean(prev: MbrFoulingState): MbrFoulingState {
   const reversibleNow = Math.max(1, prev.resistanceMultiple - prev.irreversibleMultiple);
@@ -308,6 +361,9 @@ export function performMembraneClean(prev: MbrFoulingState): MbrFoulingState {
     daysSinceClean: 0,
     irreversibleMultiple: irreversibleAfter,
     cleaningDue: resistanceMultiple >= MBR_CLEANING_THRESHOLD,
+    offlineHours: MBR_CIP_OFFLINE_HOURS,
+    ageDays: prev.ageDays ?? 0,
+    endOfLife: prev.endOfLife ?? false,
   };
 }
 
@@ -329,6 +385,22 @@ export function membraneCipCostUsd(materialId: string, installedAreaM2: number):
   const mat = MEMBRANE_MATERIALS[materialId] ?? MEMBRANE_MATERIALS.pvdf_hollow_fiber;
   const area = Math.max(0, installedAreaM2);
   return Math.round(area * MBR_CIP_COST_USD_PER_M2 * (0.8 + 0.4 * mat.foulingCoefficient));
+}
+
+// ── Membrane end-of-life replacement economics (migration slice 4) ──────────
+// Worn cassettes are swapped for new ones of the same material: the quote is
+// the §R catalog module price (incl. modules + installation) applied to the
+// full installed area. Retired cassettes are scrapped with no salvage credit
+// (conservative disposal assumption).
+
+/**
+ * Quoted CAPEX of replacing ALL membrane cassettes of an installation.
+ * Deterministic: area × §R catalog capexUsdPerM2.
+ */
+export function membraneReplacementCostUsd(materialId: string, installedAreaM2: number): number {
+  const mat = MEMBRANE_MATERIALS[materialId] ?? MEMBRANE_MATERIALS.pvdf_hollow_fiber;
+  const area = Math.max(0, installedAreaM2);
+  return Math.round(area * mat.capexUsdPerM2);
 }
 
 export interface MbrRuntimePoint {

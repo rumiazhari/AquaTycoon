@@ -166,6 +166,12 @@ export interface PlacedUnit {
     daysSinceClean: number;
     irreversibleMultiple: number;
     cleaningDue: boolean;
+    /** Remaining CIP outage window (h) — >0 ⇒ train offline (slice 4). */
+    offlineHours?: number;
+    /** Cumulative service age since cassette install (days). */
+    ageDays?: number;
+    /** True once rated lifetime or irreversible-fouling limit is reached. */
+    endOfLife?: boolean;
   };
 }
 
