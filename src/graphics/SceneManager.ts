@@ -769,7 +769,9 @@ export class SceneManager {
   public syncEquipment(
     items: { id: string; typeId: string; x: number; y: number }[],
     basins: { x: number; y: number; w: number; h: number; depthM: number }[],
-    selectedId?: string | null
+    selectedId?: string | null,
+    poweredIds?: Set<string> | null,
+    aeratedIds?: Set<string> | null
   ) {
     if (!this.equipGroup.parent) this.scene.add(this.equipGroup);
     const activeIds = new Set(items.map(i => i.id));
@@ -798,14 +800,38 @@ export class SceneManager {
         this.equipGroup.add(mesh);
       }
       const selected = it.id === selectedId;
+      // ── Phase 4 functional status (power + aeration) ────────────────
+      // Selection takes precedence (amber); otherwise unpowered machines glow
+      // dim red and aerated diffusers get a cool blue shimmer so the player
+      // can see at a glance what is actually live without opening a panel.
+      const isDiffuser = it.typeId === 'fine_bubble_diffuser';
+      const isPowered = !poweredIds || poweredIds.has(it.id);
+      const isAerated = !aeratedIds || !isDiffuser || aeratedIds.has(it.id);
       mesh.traverse(o => {
         const mm = o as THREE.Mesh;
         if (mm.isMesh && mm.material) {
           const mat = Array.isArray(mm.material) ? mm.material[0] : mm.material;
           const m = mat as THREE.MeshStandardMaterial;
           if (m && (m as any)._equipBase) {
-            m.emissive.setHex(selected ? 0x8a5200 : 0x000000);
-            m.emissiveIntensity = selected ? 0.65 : 0;
+            if (selected) {
+              m.emissive.setHex(0x8a5200);
+              m.emissiveIntensity = 0.65;
+            } else if (isDiffuser) {
+              // Diffusers: aerated = blue shimmer, idle = no glow
+              if (isAerated) {
+                m.emissive.setHex(0x1a4a8a);
+                m.emissiveIntensity = 0.45;
+              } else {
+                m.emissive.setHex(0x000000);
+                m.emissiveIntensity = 0;
+              }
+            } else if (!isPowered) {
+              m.emissive.setHex(0x5a1a1a);
+              m.emissiveIntensity = 0.52;
+            } else {
+              m.emissive.setHex(0x000000);
+              m.emissiveIntensity = 0;
+            }
           }
         }
       });

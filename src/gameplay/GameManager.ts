@@ -35,6 +35,12 @@ import {
   validateUtilityConnection,
   pointNearUtility,
 } from '../design/UtilityConnection';
+import {
+  poweredEquipmentIds as _poweredIds,
+  aeratedDiffuserIds as _aeratedIds,
+  constructionStats as _constructionStats,
+  ConstructionStats,
+} from '../design/ConstructionNetwork';
 
 export interface NextStepSuggestion {
   unitTypeId: UnitTypeId;
@@ -1497,6 +1503,17 @@ export class GameManager {
       success: true,
       ...(charged > 0 ? { replacementCapexCharged: charged } : {}),
     };
+  }
+
+  // ── CONSTRUCTION-BUILDER Phase 4: functional network ───────────────────
+  public static poweredEquipmentIds(state: GameState): Set<string> {
+    return _poweredIds(state.processEquipment ?? [], state.utilityConnections ?? []);
+  }
+  public static aeratedDiffuserIds(state: GameState): Set<string> {
+    return _aeratedIds(state.processEquipment ?? [], state.utilityConnections ?? []);
+  }
+  public static constructionStats(state: GameState): ConstructionStats {
+    return _constructionStats(state.customBasins ?? [], state.processEquipment ?? [], state.utilityConnections ?? []);
   }
 
   /**

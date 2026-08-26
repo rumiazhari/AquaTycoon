@@ -24,11 +24,14 @@ import { TUTORIAL_STEPS, TUTORIAL_PIPE_CHAIN } from './gameplay/TutorialSteps';
 import { BASIN_DEFAULT_DEPTH_M, validateBasinPlacement } from './design/CustomBasin';
 import { EQUIPMENT_TYPES, validateEquipmentPlacement } from './design/ProcessEquipment';
 import { UTILITY_TYPES, UtilityConnectionType, validateUtilityConnection } from './design/UtilityConnection';
+import { poweredEquipmentIds, aeratedDiffuserIds } from './design/ConstructionNetwork';
 
 // UI Components
 import { HeaderHUD } from './ui/HeaderHUD';
 import { BuildToolbar } from './ui/BuildToolbar';
 import { UnitInspector } from './ui/UnitInspector';
+import { EquipmentInspector } from './ui/EquipmentInspector';
+import { ConstructionStatusChip } from './ui/ConstructionStatusChip';
 import { PlantFlowDiagram } from './ui/PlantFlowDiagram';
 import { defaultMaterialForPipeType } from './design/PipeSizing';
 import { UnitDesigner } from './ui/UnitDesigner';
@@ -242,7 +245,11 @@ export const App: React.FC = () => {
       sm.syncUnits(state.units);
       sm.syncPipes(state.pipes);
       sm.syncBasins(state.customBasins ?? [], null);
-      sm.syncEquipment(state.processEquipment ?? [], state.customBasins ?? [], null);
+      sm.syncEquipment(
+        state.processEquipment ?? [], state.customBasins ?? [], null,
+        poweredEquipmentIds(state.processEquipment ?? [], state.utilityConnections ?? []),
+        aeratedDiffuserIds(state.processEquipment ?? [], state.utilityConnections ?? [])
+      );
       sm.syncUtilityConnections(state.utilityConnections ?? [], null);
       if (state.suggestion) {
         sm.showNextStepGhost(state.suggestion.unitTypeId, state.suggestion.gridX, state.suggestion.gridY);
@@ -311,7 +318,11 @@ export const App: React.FC = () => {
     sm.syncUnits(initState.units);
     sm.syncPipes(initState.pipes);
     sm.syncBasins(initState.customBasins ?? [], selectedBasinId);
-    sm.syncEquipment(initState.processEquipment ?? [], initState.customBasins ?? [], null);
+    sm.syncEquipment(
+      initState.processEquipment ?? [], initState.customBasins ?? [], null,
+      poweredEquipmentIds(initState.processEquipment ?? [], initState.utilityConnections ?? []),
+      aeratedDiffuserIds(initState.processEquipment ?? [], initState.utilityConnections ?? [])
+    );
     sm.syncUtilityConnections(initState.utilityConnections ?? [], null);
 
     if (initState.suggestion) {
@@ -719,11 +730,21 @@ export const App: React.FC = () => {
         setSelectedBasinId(null);
         setSelectedUtilityId(null);
         setSelectedEquipmentId(clickedEquipment.id);
-        sm.syncEquipment(gs.processEquipment ?? [], gs.customBasins ?? [], clickedEquipment.id);
+        sm.syncEquipment(
+          gs.processEquipment ?? [], gs.customBasins ?? [], clickedEquipment.id,
+          poweredEquipmentIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
+          aeratedDiffuserIds(gs.processEquipment ?? [], gs.utilityConnections ?? [])
+        );
         sm.syncUtilityConnections(gs.utilityConnections ?? [], null);
         const eq = EQUIPMENT_TYPES[clickedEquipment.typeId];
         if (eq) {
-          setToast(`${eq.name} — $${eq.capexUsd.toLocaleString()} · ${eq.powerKw} kW · ${eq.blurb} Switch to Demolish to remove.`);
+          // Phase 4: include live status in the toast
+          const isDiffuser = clickedEquipment.typeId === 'fine_bubble_diffuser';
+          const live = isDiffuser
+            ? aeratedDiffuserIds(gs.processEquipment ?? [], gs.utilityConnections ?? []).has(clickedEquipment.id)
+            : poweredEquipmentIds(gs.processEquipment ?? [], gs.utilityConnections ?? []).has(clickedEquipment.id);
+          const status = isDiffuser ? (live ? 'aerated ✓' : 'not aerated — needs air pipe from powered blower') : (eq.powerKw === 0 ? 'passive' : (live ? 'powered ✓' : 'UNPOWERED — needs Power cable'));
+          setToast(`${eq.name} — ${status} — $${eq.capexUsd.toLocaleString()} · ${eq.powerKw} kW · ${eq.blurb} Switch to Demolish to remove.`);
         } else {
           setToast('Installed equipment. Switch to Demolish to remove.');
         }
@@ -733,7 +754,11 @@ export const App: React.FC = () => {
         setSelectedUtilityId(null);
         setSelectedBasinId(clickedBasin.id);
         sm.syncBasins(gs.customBasins ?? [], clickedBasin.id);
-        sm.syncEquipment(gs.processEquipment ?? [], gs.customBasins ?? [], null);
+        sm.syncEquipment(
+          gs.processEquipment ?? [], gs.customBasins ?? [], null,
+          poweredEquipmentIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
+          aeratedDiffuserIds(gs.processEquipment ?? [], gs.utilityConnections ?? [])
+        );
         sm.syncUtilityConnections(gs.utilityConnections ?? [], null);
         const area = clickedBasin.w * clickedBasin.h;
         const vol = area * clickedBasin.depthM;
@@ -744,7 +769,11 @@ export const App: React.FC = () => {
         setSelectedEquipmentId(null);
         setSelectedUtilityId(clickedUtility.id);
         sm.syncBasins(gs.customBasins ?? [], null);
-        sm.syncEquipment(gs.processEquipment ?? [], gs.customBasins ?? [], null);
+        sm.syncEquipment(
+          gs.processEquipment ?? [], gs.customBasins ?? [], null,
+          poweredEquipmentIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
+          aeratedDiffuserIds(gs.processEquipment ?? [], gs.utilityConnections ?? [])
+        );
         sm.syncUtilityConnections(gs.utilityConnections ?? [], clickedUtility.id);
         const util = UTILITY_TYPES[clickedUtility.type];
         setToast(`${util.name}: (${clickedUtility.ax},${clickedUtility.ay}) → (${clickedUtility.bx},${clickedUtility.by}) · ${util.blurb} Switch to Demolish to remove.`);
@@ -753,7 +782,11 @@ export const App: React.FC = () => {
         setSelectedEquipmentId(null);
         setSelectedUtilityId(null);
         sm.syncBasins(gs.customBasins ?? [], null);
-        sm.syncEquipment(gs.processEquipment ?? [], gs.customBasins ?? [], null);
+        sm.syncEquipment(
+          gs.processEquipment ?? [], gs.customBasins ?? [], null,
+          poweredEquipmentIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
+          aeratedDiffuserIds(gs.processEquipment ?? [], gs.utilityConnections ?? [])
+        );
         sm.syncUtilityConnections(gs.utilityConnections ?? [], null);
         setGameState(prev => ({ ...prev, selectedUnitId: null }));
       }
@@ -1010,7 +1043,11 @@ export const App: React.FC = () => {
         SoundManager.playPlace();
         pushHistory(gs);
         setGameState(result.newState);
-        sm.syncEquipment(result.newState.processEquipment ?? [], result.newState.customBasins ?? [], selectedEquipmentIdRef.current);
+        sm.syncEquipment(
+          result.newState.processEquipment ?? [], result.newState.customBasins ?? [], selectedEquipmentIdRef.current,
+          poweredEquipmentIds(result.newState.processEquipment ?? [], result.newState.utilityConnections ?? []),
+          aeratedDiffuserIds(result.newState.processEquipment ?? [], result.newState.utilityConnections ?? [])
+        );
         const eq = EQUIPMENT_TYPES[selEquipTypeRef.current];
         const cost = result.charged ?? 0;
         setToast(
@@ -1059,6 +1096,12 @@ export const App: React.FC = () => {
         pushHistory(gs);
         setGameState(result.newState);
         sm.syncUtilityConnections(result.newState.utilityConnections ?? [], result.newState.selectedUtilityId ?? null);
+        // Phase 4: wiring a utility may light up equipment
+        sm.syncEquipment(
+          result.newState.processEquipment ?? [], result.newState.customBasins ?? [], selectedEquipmentIdRef.current,
+          poweredEquipmentIds(result.newState.processEquipment ?? [], result.newState.utilityConnections ?? []),
+          aeratedDiffuserIds(result.newState.processEquipment ?? [], result.newState.utilityConnections ?? [])
+        );
         const util = UTILITY_TYPES[utype];
         const cost = result.charged ?? 0;
         setToast(`${util.name} connected (${src.x},${src.y}) → (${tile.x},${tile.y})${cost > 0 ? ` — $${cost.toLocaleString()}` : ' — $0 (sandbox)'}`);
@@ -1095,6 +1138,11 @@ export const App: React.FC = () => {
           setSelectedUtilityId(null);
           setGameState(res.newState);
           sm.syncUtilityConnections(res.newState.utilityConnections ?? [], null);
+          sm.syncEquipment(
+            res.newState.processEquipment ?? [], res.newState.customBasins ?? [], null,
+            poweredEquipmentIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
+            aeratedDiffuserIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? [])
+          );
           setToast(res.refunded && res.refunded > 0
             ? `${UTILITY_TYPES[clickedUtility.type]?.name ?? 'Utility'} removed — salvage refund $${res.refunded.toLocaleString()}.`
             : `${UTILITY_TYPES[clickedUtility.type]?.name ?? 'Utility'} removed.`);
@@ -1112,7 +1160,11 @@ export const App: React.FC = () => {
           setGameState(res.newState);
           sm.syncBasins(res.newState.customBasins, selectedBasinId);
           sm.syncUtilityConnections(res.newState.utilityConnections ?? [], null);
-          sm.syncEquipment(res.newState.processEquipment ?? [], res.newState.customBasins ?? [], null);
+          sm.syncEquipment(
+            res.newState.processEquipment ?? [], res.newState.customBasins ?? [], null,
+            poweredEquipmentIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
+            aeratedDiffuserIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? [])
+          );
           setToast(res.refunded && res.refunded > 0
             ? `Basin demolished — salvage refund $${res.refunded.toLocaleString()}.`
             : 'Basin demolished.');
@@ -1128,7 +1180,11 @@ export const App: React.FC = () => {
           pushHistory(gs);
           setSelectedEquipmentId(null);
           setGameState(res.newState);
-          sm.syncEquipment(res.newState.processEquipment ?? [], res.newState.customBasins ?? [], null);
+          sm.syncEquipment(
+            res.newState.processEquipment ?? [], res.newState.customBasins ?? [], null,
+            poweredEquipmentIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
+            aeratedDiffuserIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? [])
+          );
           sm.syncUtilityConnections(res.newState.utilityConnections ?? [], null);
           setToast(res.refunded && res.refunded > 0
             ? `${EQUIPMENT_TYPES[clickedEquipment.typeId]?.name ?? 'Equipment'} removed — salvage refund $${res.refunded.toLocaleString()}.`
@@ -1294,6 +1350,17 @@ export const App: React.FC = () => {
             cancelUtilitySelection(true);
             sceneRef.current?.setPipeSourceHighlight(null, gsRef.current.units);
             setGameState(prev => ({ ...prev, selectedUnitId: null }));
+            setSelectedEquipmentId(null);
+            setSelectedBasinId(null);
+            setSelectedUtilityId(null);
+            // clear construction selection hl with Phase 4 powered status
+            sceneRef.current?.syncBasins(gsRef.current.customBasins ?? [], null);
+            sceneRef.current?.syncUtilityConnections(gsRef.current.utilityConnections ?? [], null);
+            sceneRef.current?.syncEquipment(
+              gsRef.current.processEquipment ?? [], gsRef.current.customBasins ?? [], null,
+              poweredEquipmentIds(gsRef.current.processEquipment ?? [], gsRef.current.utilityConnections ?? []),
+              aeratedDiffuserIds(gsRef.current.processEquipment ?? [], gsRef.current.utilityConnections ?? [])
+            );
             setToast('Select mode — click a unit to inspect.');
           }
           break;
@@ -1431,6 +1498,13 @@ export const App: React.FC = () => {
       sceneRef.current.cameraController.resetView(w, d);
       sceneRef.current.syncUnits(next.units);
       sceneRef.current.syncPipes(next.pipes);
+      sceneRef.current.syncBasins(next.customBasins ?? [], null);
+      sceneRef.current.syncEquipment(
+        next.processEquipment ?? [], next.customBasins ?? [], null,
+        poweredEquipmentIds(next.processEquipment ?? [], next.utilityConnections ?? []),
+        aeratedDiffuserIds(next.processEquipment ?? [], next.utilityConnections ?? [])
+      );
+      sceneRef.current.syncUtilityConnections(next.utilityConnections ?? [], null);
       // Clear any stale hover/ghost placement preview from the old level.
       sceneRef.current.terrainGrid.setGhostPreview(0, 0, 1, 1, true, false);
       sceneRef.current.terrainGrid.setHoverTile(0, 0, false);
@@ -1634,6 +1708,9 @@ export const App: React.FC = () => {
         }}
       />
 
+      {/* ── Phase 4: construction status HUD (live power & aeration at a glance) ── */}
+      <ConstructionStatusChip stats={GameManager.constructionStats(gameState)} />
+
       {/* ── Unit Inspector ──────────────────────────────────────────────────── */}
       {selectedUnit && (
         <UnitInspector
@@ -1658,6 +1735,48 @@ export const App: React.FC = () => {
           onOpenDesigner={id => setDesignerModalId(id)}
         />
       )}
+
+      {/* ── Phase 4: installed equipment inspector (power + aeration live status) ── */}
+      {selectedEquipmentId && (() => {
+        const item = gameState.processEquipment?.find(e => e.id === selectedEquipmentId);
+        if (!item) return null;
+        const powered = poweredEquipmentIds(gameState.processEquipment ?? [], gameState.utilityConnections ?? []).has(item.id);
+        const aerated = item.typeId === 'fine_bubble_diffuser'
+          ? aeratedDiffuserIds(gameState.processEquipment ?? [], gameState.utilityConnections ?? []).has(item.id)
+          : null;
+        return (
+          <EquipmentInspector
+            item={item}
+            powered={powered}
+            aerated={aerated}
+            onClose={() => {
+              setSelectedEquipmentId(null);
+              sceneRef.current?.syncEquipment(
+                gameState.processEquipment ?? [], gameState.customBasins ?? [], null,
+                poweredEquipmentIds(gameState.processEquipment ?? [], gameState.utilityConnections ?? []),
+                aeratedDiffuserIds(gameState.processEquipment ?? [], gameState.utilityConnections ?? [])
+              );
+            }}
+            onDemolish={id => {
+              pushHistory(gsRef.current);
+              const res = GameManager.demolishProcessEquipment(gsRef.current, id);
+              if (res.success) {
+                setSelectedEquipmentId(null);
+                setGameState(res.newState);
+                sceneRef.current?.syncEquipment(
+                  res.newState.processEquipment ?? [], res.newState.customBasins ?? [], null,
+                  poweredEquipmentIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
+                  aeratedDiffuserIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? [])
+                );
+                sceneRef.current?.syncUtilityConnections(res.newState.utilityConnections ?? [], null);
+                setToast(res.refunded && res.refunded > 0
+                  ? `${EQUIPMENT_TYPES[item.typeId]?.name ?? 'Equipment'} removed — salvage refund $${res.refunded.toLocaleString()}.`
+                  : `${EQUIPMENT_TYPES[item.typeId]?.name ?? 'Equipment'} removed.`);
+              }
+            }}
+          />
+        );
+      })()}
 
       {/* ── Unit Designer (engineered assets) ─────────────────────────────── */}
       {pfdModal && (

@@ -1,7 +1,7 @@
 # AUTOPILOT STATE — Aquatycoon
 
 STATUS: OK
-Last run: 2026-08-27 (iter 26 — CONSTRUCTION-BUILDER Phase 3: utility connections (water/air/power lines) with domain + cost + 3D rendering + toolbar; gates: build ✅ tsc ✅ sim ALL PASS (+23 U-tests) ✅ ui 70/70 ✅ eng 368/368 ✅)
+Last run: 2026-08-27 (iter 27 — CONSTRUCTION-BUILDER Phase 4 slice 1: construction network — power & aeration live status (domain + 3D visuals + HUD + inspectors; 11 N-tests; gates: build ✅ tsc ✅ sim ALL PASS ✅ ui 70/70+62/62 ✅ eng 368/368 ✅))
 
 Gate policy: `npm run build` + `npx tsc --noEmit` must be clean; suites:
 `npm test` (sim), `npm run test:ui` (= static ui-tests + ui-interaction-tests),
@@ -37,8 +37,19 @@ IMPLEMENTATION PHASES (build top-down, ONE coherent slice per iteration):
   highlight + dashed preview) + toolbar UTILITY group (Water/Air/Power) +
   App connect_utility two-click flow (host-only endpoints, duplicate/length
   guards, cost toasts) + select/demolish/undo support. 23 new domain tests U1–U23.
-- PHASE 4: make components functional (volume→sim, blower+diffuser→aeration,
-  mixer state, pump flow, power on/off) via adapter to existing simulation.
+- PHASE 4 ⏳ SLICE 1 DONE (iter 27): **construction network — power & aeration live status**.
+  NEW `src/design/ConstructionNetwork.ts` pure domain: `poweredEquipmentIds`
+  (powerKw>0 needs incident power_cable, passive diffuser always live),
+  `aeratedDiffuserIds` (air_pipe diffuser↔blower only when blower powered),
+  `constructionStats` (basin volume/area, powered/aerated counts, live kW/opex).
+  `GameManager` wrappers. `SceneManager.syncEquipment` now tints: unpowered
+  machines dim red, aerated diffusers blue shimmer, idle diffusers dark (amber
+  selection still wins). App: `ConstructionStatusChip` HUD (basins · powered ·
+  aerated · utility lines) + `EquipmentInspector` (live status + power/aeration
+  hint + remove) + select-mode toast shows live state + all syncEquipment
+  call-sites pass powered/aerated sets + undo/level-load + Esc clearing.
+  11 new domain tests N1–N9. Remaining Phase 4 work: thin adapter that feeds
+  basin volume / aeration / mixer / pump / power into the legacy simulation.
 - PHASE 5: zones & baffles (compartments, zone-level equipment membership).
 - PHASE 6: membranes / media (MBR-like custom train, no predefined MBR unit).
 - PHASE 7: emergent process recognition (descriptive badges, physics follows
@@ -105,17 +116,11 @@ front-end and back-end improvements beyond the mission after Phase 1.
    - 15: engineering warnings ✅ phase 1+2 (+pipe velocity iter 12); membrane‑flux check lands with the MBR migration
    - 16–17: ✅ RESOLVED (iter 19): updated campaign L1/L2/L3 levels with new objectives (obj_pump, obj_cas_sizing) and revised Test S for staged pump+UV build.
 
-Next goal (iter 27): CONSTRUCTION-BUILDER **PHASE 4 — make components functional**
-via a thin adapter to the existing simulation: basin volume → hydraulic
-volume, blower+diffuser → aeration oxygen transfer, mixer on/off prevents
-septic dead zones, pump station duty-point wiring for inter-basin transfer,
-and power cable on/off gating. Keeps the glimpsed physics honest while the
-builder UI stays the source of truth. Fallback if blast radius looks large:
-zones & baffles pre-slice (compartment dividers) or V2-B story/environment
-polish from the freedom pool.
-RO migration SLICE 1 (src/sim/processes/RO.ts design basis) stays PARKED as
-the post-Phase-4 sim-family work per DIRECTIVE v3 ("do not disappear into
-backend equation work").
+Next goal (iter 28): CONSTRUCTION-BUILDER **PHASE 4 slice 2 — thin adapter into the legacy sim.**
+Blend basin volume into hydraulics, wire blower+diffuser live aeration into DO/oxygen, enforce mixer-powered check to avoid septic dead-zones, and gate pump/mixer power draw through the live-power set. Keep the construction model as source of truth; legacy sim reads it, not the reverse. Fallback: zones & baffles pre-slice or V2-B story polish if adapter blast radius balloons.
+RO migration SLICE 1 stays PARKED as post-Phase-4 work per DIRECTIVE v3.
+- iter 27 (2026-08-27): **CONSTRUCTION-BUILDER PHASE 4 slice 1 — construction network (live power & aeration).**
+  NEW `src/design/ConstructionNetwork.ts` pure domain: `poweredEquipmentIds` (powerKw>0 needs incident power_cable, passive diffuser always live), `aeratedDiffuserIds` (air_pipe diffuser↔blower only when blower powered), `constructionStats` (basin volume/area, powered/aerated counts, live kW). `GameManager` wrappers + `SceneManager.syncEquipment` visual tints (red unpowered, blue aerated) + `ConstructionStatusChip` HUD (basins · powered · aerated · utilities) + `EquipmentInspector` panel (live badge + remove) + App wiring for all sync/undo/level/Esc paths + 11 N-tests. Gates: build ✅ tsc ✅ sim ALL PASS ✅ ui 70/70+62/62 ✅ eng 368/368 ✅.
 - iter 26 (2026-08-27): **CONSTRUCTION-BUILDER PHASE 3 landed — utility connections.**
   NEW `src/design/UtilityConnection.ts`: three utility types (water_pipe $185/m+900
   air_pipe $110/m+600 power_cable $65/m+400) with TYPE-SPECIFIC host rules —

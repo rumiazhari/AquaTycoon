@@ -42,6 +42,12 @@ import {
   WATER_NIGHT,
   waterColorAt,
 } from '../src/graphics/TerrainGrid';
+import {
+  poweredEquipmentIds,
+  aeratedDiffuserIds,
+  isEquipmentPowered,
+  constructionStats,
+} from '../src/design/ConstructionNetwork';
 import * as THREE from 'three';
 
 let failures = 0;
@@ -2026,6 +2032,132 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
     const mx = (conn.ax + conn.bx) / 2 + 0.5, mz = (conn.ay + conn.by) / 2 + 0.5;
     assert(GameManager.utilityAtPoint(r.newState, mx, mz) !== null, 'U22. utilityAtPoint finds midline');
     assert(GameManager.utilityAtPoint(r.newState, 0, 0) === null, 'U23. utilityAtPoint returns null far away');
+  }
+}
+
+// ── Phase 4: CONSTRUCTION NETWORK — power & aeration live status ──────────
+{
+  const mkNState = () => {
+    let st = GameManager.createInitialState(0, true) as any;
+    st.financials.cash = 10_000_000;
+    return st;
+  };
+
+  // N1. Fresh mixer with no cables is unpowered; diffuser without air is not aerated.
+  {
+    let st = mkNState();
+    st = GameManager.placeCustomBasin(st, { x: 5, y: 5, w: 8, h: 8 }).newState;
+    st = GameManager.placeProcessEquipment(st, 'submersible_mixer', 6, 6).newState;
+    st = GameManager.placeProcessEquipment(st, 'fine_bubble_diffuser', 7, 7).newState;
+    st = GameManager.placeProcessEquipment(st, 'rotary_blower', 20, 5).newState;
+    const mix = st.processEquipment.find((e:any)=>e.typeId==='submersible_mixer');
+    const diff = st.processEquipment.find((e:any)=>e.typeId==='fine_bubble_diffuser');
+    assert(!poweredEquipmentIds(st.processEquipment, st.utilityConnections).has(mix.id), 'N1. mixer without power cable is unpowered');
+    assert(!aeratedDiffuserIds(st.processEquipment, st.utilityConnections).has(diff.id), 'N1b. diffuser with no air pipe is not aerated');
+  }
+  // N2. Power cable on mixer's tile powers it; diffuser passive power irrelevant.
+  {
+    let st = mkNState();
+    st = GameManager.placeCustomBasin(st, { x: 5, y: 5, w: 8, h: 8 }).newState;
+    st = GameManager.placeProcessEquipment(st, 'submersible_mixer', 6, 6).newState;
+    st = GameManager.placeProcessEquipment(st, 'process_pump', 20, 5).newState;
+    // Power cable mixer→pump (both powered machines, valid)
+    const rc = GameManager.placeUtilityConnection(st, 'power_cable', 6, 6, 20, 5);
+    assert(rc.success, 'N2a. power cable mixer→pump placed');
+    const mix = rc.newState.processEquipment.find((e:any)=>e.typeId==='submersible_mixer');
+    assert(poweredEquipmentIds(rc.newState.processEquipment, rc.newState.utilityConnections).has(mix.id), 'N2. mixer with incident power cable is powered');
+    const diffC = { id:'d1', typeId:'fine_bubble_diffuser', x:6, y:6, createdAtDay:0 } as any;
+    assert(isEquipmentPowered(diffC, []), 'N2b. passive diffuser power check is true even with no cables');
+  }
+  // N3. Pump without cable stays unpowered.
+  {
+    let st = mkNState();
+    st = GameManager.placeCustomBasin(st, { x: 5, y: 5, w: 6, h: 6 }).newState;
+    st = GameManager.placeProcessEquipment(st, 'process_pump', 20, 5).newState;
+    const pump = st.processEquipment.find((e:any)=>e.typeId==='process_pump');
+    assert(!poweredEquipmentIds(st.processEquipment, st.utilityConnections).has(pump.id), 'N3. pump without cable unpowered');
+  }
+  // N4. Air pipe alone does not aerate if blower unpowered.
+  {
+    let st = mkNState();
+    st = GameManager.placeCustomBasin(st, { x: 5, y: 5, w: 8, h: 8 }).newState;
+    st = GameManager.placeProcessEquipment(st, 'fine_bubble_diffuser', 6, 6).newState;
+    st = GameManager.placeProcessEquipment(st, 'rotary_blower', 20, 5).newState;
+    st = GameManager.placeUtilityConnection(st, 'air_pipe', 20, 5, 6, 6).newState;
+    const diff = st.processEquipment.find((e:any)=>e.typeId==='fine_bubble_diffuser');
+    assert(!aeratedDiffuserIds(st.processEquipment, st.utilityConnections).has(diff.id), 'N4. diffuser with air pipe but UNPOWERED blower is not aerated');
+  }
+  // N5. Air pipe + powered blower → aerated.
+  {
+    let st = mkNState();
+    st = GameManager.placeCustomBasin(st, { x: 5, y: 5, w: 8, h: 8 }).newState;
+    st = GameManager.placeProcessEquipment(st, 'fine_bubble_diffuser', 6, 6).newState;
+    st = GameManager.placeProcessEquipment(st, 'rotary_blower', 20, 5).newState;
+    st = GameManager.placeProcessEquipment(st, 'process_pump', 22, 5).newState;
+    st = GameManager.placeUtilityConnection(st, 'air_pipe', 20, 5, 6, 6).newState;
+    // power the blower via power cable blower→pump
+    st = GameManager.placeUtilityConnection(st, 'power_cable', 20, 5, 22, 5).newState;
+    const diff = st.processEquipment.find((e:any)=>e.typeId==='fine_bubble_diffuser');
+    assert(aeratedDiffuserIds(st.processEquipment, st.utilityConnections).has(diff.id), 'N5. diffuser aerated when air_pipe + blower powered');
+  }
+  // N6. Cutting power to blower de-aerates downstream diffuser.
+  {
+    let st = mkNState();
+    st = GameManager.placeCustomBasin(st, { x: 5, y: 5, w: 8, h: 8 }).newState;
+    st = GameManager.placeProcessEquipment(st, 'fine_bubble_diffuser', 6, 6).newState;
+    st = GameManager.placeProcessEquipment(st, 'rotary_blower', 20, 5).newState;
+    st = GameManager.placeProcessEquipment(st, 'process_pump', 22, 5).newState;
+    st = GameManager.placeUtilityConnection(st, 'air_pipe', 20, 5, 6, 6).newState;
+    const pwrConn = GameManager.placeUtilityConnection(st, 'power_cable', 20, 5, 22, 5);
+    st = pwrConn.newState;
+    // now cut the power cable
+    const powerId = st.utilityConnections.find((u:any)=>u.type==='power_cable').id;
+    st = GameManager.demolishUtilityConnection(st, powerId).newState;
+    const diff = st.processEquipment.find((e:any)=>e.typeId==='fine_bubble_diffuser');
+    assert(!aeratedDiffuserIds(st.processEquipment, st.utilityConnections).has(diff.id), 'N6. cutting blower power de-aerates diffuser');
+  }
+  // N7. constructionStats numbers.
+  {
+    let st = mkNState();
+    st = GameManager.placeCustomBasin(st, { x: 5, y: 5, w: 4, h: 4 }).newState; // 4×4 tiles
+    st = GameManager.placeProcessEquipment(st, 'submersible_mixer', 6, 6).newState;
+    st = GameManager.placeProcessEquipment(st, 'fine_bubble_diffuser', 7, 7).newState;
+    st = GameManager.placeProcessEquipment(st, 'rotary_blower', 20, 5).newState;
+    st = GameManager.placeProcessEquipment(st, 'process_pump', 22, 5).newState;
+    st = GameManager.placeUtilityConnection(st, 'power_cable', 6, 6, 20, 5).newState;
+    st = GameManager.placeUtilityConnection(st, 'air_pipe', 20, 5, 7, 7).newState;
+    // power the blower too
+    st = GameManager.placeUtilityConnection(st, 'power_cable', 20, 5, 22, 5).newState;
+    const s2 = constructionStats(st.customBasins, st.processEquipment, st.utilityConnections);
+    assert(s2.totalBasins === 1, 'N7. stats totalBasins 1 (got '+s2.totalBasins+')');
+    assert(s2.totalBasinVolumeM3 === 4*6 * 4*6 * 4, 'N7b. stats volume '+(4*6*4*6*4)+' m³ (got '+s2.totalBasinVolumeM3+')');
+    assert(s2.totalEquipment === 4, 'N7c. stats totalEquipment 4 (got '+s2.totalEquipment+')');
+    assert(s2.poweredEquipment === 4, 'N7d. stats powered 4/4 inc. passive diffuser (got '+s2.poweredEquipment+')');
+    assert(s2.aeratedDiffusers === 1, 'N7e. stats aerated 1/1 (got '+s2.aeratedDiffusers+')');
+    assert(s2.livePowerKw === 4 + 22 + 11, 'N7f. livePowerKw 37 kW (got '+s2.livePowerKw+')');
+  }
+  // N8. GameManager wrappers mirror pure functions
+  {
+    let st = mkNState();
+    st = GameManager.placeCustomBasin(st, { x: 5, y: 5, w: 6, h: 6 }).newState;
+    st = GameManager.placeProcessEquipment(st, 'submersible_mixer', 6, 6).newState;
+    const pure = poweredEquipmentIds(st.processEquipment, st.utilityConnections);
+    const viaMgr = GameManager.poweredEquipmentIds(st);
+    assert(pure.size === viaMgr.size && [...pure].every(id=>viaMgr.has(id)), 'N8. GameManager.poweredEquipmentIds mirrors pure function');
+    const sStats = GameManager.constructionStats(st);
+    assert(sStats.totalEquipment === 1, 'N8b. GameManager.constructionStats totalEquipment 1');
+  }
+  // N9. Cascade: demolishing powered equipment keeps stats consistent (no throw)
+  {
+    let st = mkNState();
+    st = GameManager.placeCustomBasin(st, { x: 5, y: 5, w: 6, h: 6 }).newState;
+    st = GameManager.placeProcessEquipment(st, 'submersible_mixer', 6, 6).newState;
+    st = GameManager.placeProcessEquipment(st, 'process_pump', 20, 5).newState;
+    st = GameManager.placeUtilityConnection(st, 'power_cable', 6, 6, 20, 5).newState;
+    const mixId = st.processEquipment.find((e:any)=>e.typeId==='submersible_mixer').id;
+    st = GameManager.demolishProcessEquipment(st, mixId).newState;
+    assert(poweredEquipmentIds(st.processEquipment, st.utilityConnections).size === 0, 'N9. after mixer removal, pump loses cable → 0 powered (got '+poweredEquipmentIds(st.processEquipment, st.utilityConnections).size+')');
+    assert(!(() => { try { poweredEquipmentIds(st.processEquipment, st.utilityConnections); return false; } catch { return true; }})(), 'N9b. no throw on powered check after cascade');
   }
 }
 
