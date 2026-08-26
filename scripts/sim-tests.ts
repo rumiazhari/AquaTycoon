@@ -1,5 +1,5 @@
 /* Headless smoke tests for the fixed simulation core (run via `npm test` → tsx) */
-import { GameManager, overdraftFinancingCostPerDay, OVERDRAFT_DAILY_RATE, OVERDRAFT_ANNUAL_RATE } from '../src/gameplay/GameManager';
+import { GameManager, overdraftFinancingCostPerDay, OVERDRAFT_DAILY_RATE, OVERDRAFT_ANNUAL_RATE, trustBonusPerDay, trustBonusRate, TRUST_BONUS_RATE_PER_DAY, TRUST_BONUS_MAX_RATE, TRUST_BONUS_MIN_STREAK_DAYS } from '../src/gameplay/GameManager';
 import { SimulationEngine } from '../src/sim/SimulationEngine';
 import {
   UNIT_DEFINITIONS,
@@ -4675,6 +4675,176 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
 }
 
 
+
+// ═════════════════════════════════════════════════════════════
+// TR — TYCOON TRUST iter 44: municipal trust dividend
+// Sustained compliance streak (≥2d, 1.5%/d, cap 12%) earns tariff premium.
+// Pure + tick + alert lifecycle. Flow-scaled like reclaim, stacks with it.
+// ═════════════════════════════════════════════════════════════
+{
+  // TR01: pure helper guards — 0/1 day, 0 flow, 0 tariff, NaN -> 0
+  {
+    assert(trustBonusPerDay(0, 3500, 0.45) === 0, 'TR01. 0 streak -> 0');
+    assert(trustBonusPerDay(1, 3500, 0.45) === 0, 'TR01b. 1 day (<2 min) -> 0');
+    assert(trustBonusPerDay(1.9, 3500, 0.45) === 0, 'TR01c. 1.9 days floored 1 -> 0');
+    assert(trustBonusPerDay(2, 0, 0.45) === 0, 'TR01d. 2d at 0 flow -> 0');
+    assert(trustBonusPerDay(2, 5, 0.45) === 0, 'TR01e. flow 5 -> 0 (threshold 10)');
+    assert(trustBonusPerDay(2, 3500, 0) === 0, 'TR01f. 0 tariff -> 0');
+    assert(trustBonusPerDay(NaN, 3500, 0.45) === 0, 'TR01g. NaN streak -> 0');
+    assert(trustBonusPerDay(Infinity, 3500, 0.45) === 0 || trustBonusPerDay(Infinity, 3500, 0.45) === 0, 'TR01h. Infinity guard');
+  }
+  // TR02: pure helper — 2d 3%, 4d 6%, 8d 12% cap, 10d still 12%
+  {
+    const b2 = trustBonusPerDay(2, 3500, 0.45);
+    assert(Math.abs(b2 - 3500*0.45*0.03) < 0.01, 'TR02. 2d streak 3pct got '+b2.toFixed(2));
+    assert(Math.abs(b2 - 47.25) < 0.5, 'TR02b. 2d L1 47.25 got '+b2.toFixed(1));
+    const b4 = trustBonusPerDay(4, 3500, 0.45);
+    assert(Math.abs(b4 - 3500*0.45*0.06) < 0.01, 'TR02c. 4d 6pct got '+b4.toFixed(1));
+    assert(Math.abs(b4 - 94.5) < 0.5, 'TR02d. 4d 94.5 got '+b4.toFixed(1));
+    const b8 = trustBonusPerDay(8, 3500, 0.45);
+    assert(Math.abs(b8 - 3500*0.45*0.12) < 0.01, 'TR02e. 8d capped 12pct got '+b8.toFixed(1));
+    assert(Math.abs(b8 - 189) < 0.5, 'TR02f. 8d L1 189 got '+b8.toFixed(1));
+    const b10 = trustBonusPerDay(10, 3500, 0.45);
+    assert(Math.abs(b10 - b8) < 0.01, 'TR02g. 10d same cap as 8d');
+    assert(Math.abs(TRUST_BONUS_MAX_RATE - 0.12) < 0.001, 'TR02h. max rate 0.12');
+    assert(Math.abs(TRUST_BONUS_RATE_PER_DAY - 0.015) < 0.001, 'TR02i. per-day 0.015');
+    assert(TRUST_BONUS_MIN_STREAK_DAYS === 2, 'TR02j. min streak 2');
+  }
+  // TR03: flow/tariff scaling — L4 12k @0.95, L5 18k @2.50
+  {
+    const bL4_8 = trustBonusPerDay(8, 12000, 0.95);
+    assert(Math.abs(bL4_8 - 12000*0.95*0.12) < 0.5, 'TR03. L4 12k 8d got '+bL4_8.toFixed(0));
+    assert(Math.abs(bL4_8 - 1368) < 1, 'TR03b. L4 8d 1368 got '+bL4_8.toFixed(0));
+    const bL5_8 = trustBonusPerDay(8, 18000, 2.50);
+    assert(Math.abs(bL5_8 - 5400) < 1, 'TR03c. L5 18k 8d 5400 got '+bL5_8.toFixed(0));
+    const bL1_8 = trustBonusPerDay(8, 3500, 0.45);
+    assert(bL5_8 > bL4_8 && bL4_8 > bL1_8, 'TR03d. scales L5 '+bL5_8.toFixed(0)+' > L4 '+bL4_8.toFixed(0)+' > L1 '+bL1_8.toFixed(0));
+  }
+  // TR04: floor behavior — 2.9 days still 3%, 3.0 days -> 4.5%
+  {
+    const b2_9 = trustBonusPerDay(2.9, 3500, 0.45);
+    const b2_0 = trustBonusPerDay(2, 3500, 0.45);
+    assert(Math.abs(b2_9 - b2_0) < 0.01, 'TR04. 2.9d floored to 2d');
+    const b3 = trustBonusPerDay(3, 3500, 0.45);
+    assert(Math.abs(b3 - 3500*0.45*0.045) < 0.01, 'TR04b. 3d 4.5pct got '+b3.toFixed(1));
+    assert(b3 > b2_0, 'TR04c. 3d pays more than 2d');
+    assert(Math.abs(trustBonusRate(2) - 0.03) < 0.001, 'TR04d. rate 2d 0.03');
+    assert(Math.abs(trustBonusRate(8) - 0.12) < 0.001, 'TR04e. rate 8d 0.12');
+    assert(trustBonusRate(1) === 0, 'TR04f. rate 1d 0');
+  }
+  // TR05: tick integration — compliant plant with 2-day streak earns trust, 8-day cap
+  {
+    const mkCompliantState = () => {
+      let gs = GameManager.createInitialState(0, true);
+      const scr = { instanceId:'scrTr', typeId:'bar_screen', gridX:5, gridY:10, rotation:0, volume:200, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:0, lastOpexActual:0 };
+      const grt = { ...scr, instanceId:'grtTr', typeId:'grit_chamber' };
+      const pri = { ...scr, instanceId:'priTr', typeId:'primary_clarifier_circular' };
+      const cas = { ...scr, instanceId:'casTr', typeId:'activated_sludge_cas' };
+      const clr2 = { ...scr, instanceId:'clr2Tr', typeId:'secondary_clarifier' };
+      const uv = { ...scr, instanceId:'uvTr', typeId:'uv_disinfection' };
+      gs.units.push(scr, grt, pri, cas, clr2, uv);
+      gs.pipes.push(
+        { id:'t1', fromUnitId:'inlet_0', fromPortId:'outlet', toUnitId:'scrTr', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'},
+        { id:'t2', fromUnitId:'scrTr', fromPortId:'outlet', toUnitId:'grtTr', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'},
+        { id:'t3', fromUnitId:'grtTr', fromPortId:'outlet', toUnitId:'priTr', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'},
+        { id:'t4', fromUnitId:'priTr', fromPortId:'outlet', toUnitId:'casTr', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'},
+        { id:'t5', fromUnitId:'casTr', fromPortId:'outlet', toUnitId:'clr2Tr', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'},
+        { id:'t6', fromUnitId:'clr2Tr', fromPortId:'outlet', toUnitId:'uvTr', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'},
+        { id:'t7', fromUnitId:'uvTr', fromPortId:'outlet', toUnitId:'outfall_0', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'},
+        { id:'tRas', fromUnitId:'clr2Tr', fromPortId:'sludge_outlet', toUnitId:'casTr', toPortId:'ras_inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'ras'}
+      );
+      return gs;
+    };
+    let gs = mkCompliantState();
+    for(let i=0;i<15;i++) gs = GameManager.tick(gs, 0.5);
+    assert(gs.finalEffluent.flowRate > 10 && gs.overallStats.complianceScore >= 90, 'TR05a. precondition flow '+gs.finalEffluent.flowRate.toFixed(0)+' compliance '+gs.overallStats.complianceScore);
+    gs.complianceStreakDays = 2.0;
+    const flowBefore = gs.finalEffluent.flowRate;
+    const expected2 = trustBonusPerDay(2.0 + (0.5/600), flowBefore, gs.currentLevel.tariffPerM3);
+    gs = GameManager.tick(gs, 0.5);
+    assert((gs.financials.dailyTrustBonus ?? 0) > 30, 'TR05b. 2d trust live '+(gs.financials.dailyTrustBonus??0).toFixed(1));
+    assert(Math.abs((gs.financials.dailyTrustBonus ?? 0) - expected2) < 2, 'TR05c. trust matches helper');
+    assert(gs.financials.dailyRevenue > 0 && gs.financials.dailyTrustBonus < gs.financials.dailyRevenue, 'TR05d. trust part of revenue');
+    assert(gs.overallStats.activeAlerts.some((a)=>a.id==='trust_bonus'), 'TR05e. trust alert present');
+    let gs8 = mkCompliantState();
+    for(let i=0;i<15;i++) gs8 = GameManager.tick(gs8, 0.5);
+    gs8.complianceStreakDays = 8.0;
+    gs8 = GameManager.tick(gs8, 0.5);
+    const expected8 = trustBonusPerDay(8.0 + 0.5/600, gs8.finalEffluent.flowRate, gs8.currentLevel.tariffPerM3);
+    assert(Math.abs((gs8.financials.dailyTrustBonus ?? 0) - expected8) < 1, 'TR05f. 8d cap matches');
+    assert(Math.abs((gs8.financials.dailyTrustBonus ?? 0) - trustBonusPerDay(10, gs8.finalEffluent.flowRate, gs8.currentLevel.tariffPerM3)) < 0.01, 'TR05g. 8d equals 10d cap');
+    assert((gs8.financials.dailyTrustBonus ?? 0) > (gs.financials.dailyTrustBonus ?? 0) * 3.5, 'TR05h. 8d > 3.5x 2d');
+    let gsNoTrust = mkCompliantState();
+    for(let i=0;i<15;i++) gsNoTrust = GameManager.tick(gsNoTrust, 0.5);
+    gsNoTrust.complianceStreakDays = 0;
+    gsNoTrust = GameManager.tick(gsNoTrust, 0.5);
+    assert((gsNoTrust.financials.dailyTrustBonus ?? 0) === 0, 'TR05i. 0 streak 0 trust');
+    assert(gs.financials.netDailyProfit > gsNoTrust.financials.netDailyProfit, 'TR05j. trust profit > no-trust');
+  }
+  // TR06: violation resets streak and clears trust + alert
+  {
+    let gs = GameManager.createInitialState(0, true);
+    const scr = { instanceId:'scrTr6', typeId:'bar_screen', gridX:5, gridY:10, rotation:0, volume:200, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:0, lastOpexActual:0 };
+    gs.units.push(scr);
+    gs.pipes.push(
+      { id:'t6a', fromUnitId:'inlet_0', fromPortId:'outlet', toUnitId:'scrTr6', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'},
+      { id:'t6b', fromUnitId:'scrTr6', fromPortId:'outlet', toUnitId:'outfall_0', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'}
+    );
+    gs.complianceStreakDays = 5;
+    gs = GameManager.tick(gs, 0.5);
+    assert(gs.complianceStreakDays === 0, 'TR06. violation resets streak');
+    assert((gs.financials.dailyTrustBonus ?? 0) === 0, 'TR06b. violation 0 trust');
+    assert(!gs.overallStats.activeAlerts.some((a)=>a.id==='trust_bonus'), 'TR06c. alert cleared');
+  }
+  // TR07: no flow -> 0 trust even with streak
+  {
+    let gs = GameManager.createInitialState(0, true);
+    gs.complianceStreakDays = 5;
+    gs = GameManager.tick(gs, 0.5);
+    assert((gs.financials.dailyTrustBonus ?? 0) === 0, 'TR07. no flow 0 trust');
+    assert(!gs.overallStats.activeAlerts.some((a)=>a.id==='trust_bonus'), 'TR07b. no alert no flow');
+  }
+  // TR08: trust stacks with reclaim (both live) - compliant train + 3 RO, basin first
+  {
+    let gs = GameManager.createInitialState(0, true);
+    // Basin first at non-overlapping spot (2,2) to avoid train at 5,10
+    let rr = GameManager.placeCustomBasin(gs, { x:2,y:2,w:8,h:6 }); gs=rr.newState;
+    // Compliant train (same as TR05) - pushed directly to bypass overlap checks
+    const scr = { instanceId:'scrTr8', typeId:'bar_screen', gridX:5, gridY:10, rotation:0, volume:200, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:0, lastOpexActual:0 };
+    const grt = { ...scr, instanceId:'grtTr8', typeId:'grit_chamber' };
+    const pri = { ...scr, instanceId:'priTr8', typeId:'primary_clarifier_circular' };
+    const cas = { ...scr, instanceId:'casTr8', typeId:'activated_sludge_cas' };
+    const clr2 = { ...scr, instanceId:'clr2Tr8', typeId:'secondary_clarifier' };
+    const uv = { ...scr, instanceId:'uvTr8', typeId:'uv_disinfection' };
+    gs.units.push(scr, grt, pri, cas, clr2, uv);
+    gs.pipes.push(
+      { id:'t8a1', fromUnitId:'inlet_0', fromPortId:'outlet', toUnitId:'scrTr8', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'},
+      { id:'t8a2', fromUnitId:'scrTr8', fromPortId:'outlet', toUnitId:'grtTr8', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'},
+      { id:'t8a3', fromUnitId:'grtTr8', fromPortId:'outlet', toUnitId:'priTr8', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'},
+      { id:'t8a4', fromUnitId:'priTr8', fromPortId:'outlet', toUnitId:'casTr8', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'},
+      { id:'t8a5', fromUnitId:'casTr8', fromPortId:'outlet', toUnitId:'clr2Tr8', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'},
+      { id:'t8a6', fromUnitId:'clr2Tr8', fromPortId:'outlet', toUnitId:'uvTr8', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'},
+      { id:'t8a7', fromUnitId:'uvTr8', fromPortId:'outlet', toUnitId:'outfall_0', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'},
+      { id:'t8Ras', fromUnitId:'clr2Tr8', fromPortId:'sludge_outlet', toUnitId:'casTr8', toPortId:'ras_inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'ras'}
+    );
+    rr = GameManager.placeProcessEquipment(gs, 'submersible_mixer', 3,3); gs=rr.newState;
+    rr = GameManager.placeProcessEquipment(gs, 'ro_skid', 22,5); gs=rr.newState;
+    rr = GameManager.placeProcessEquipment(gs, 'ro_skid', 23,5); gs=rr.newState;
+    rr = GameManager.placeProcessEquipment(gs, 'ro_skid', 24,5); gs=rr.newState;
+    gs.utilityConnections.push({ id:'tr_mx8b', type:'power_cable', ax:3, ay:3, bx:22, by:5, createdAtDay:0 });
+    gs.utilityConnections.push({ id:'tr_ro18b', type:'power_cable', ax:22, ay:5, bx:22, by:5, createdAtDay:0 });
+    gs.utilityConnections.push({ id:'tr_ro28b', type:'power_cable', ax:23, ay:5, bx:23, by:5, createdAtDay:0 });
+    gs.utilityConnections.push({ id:'tr_ro38b', type:'power_cable', ax:24, ay:5, bx:24, by:5, createdAtDay:0 });
+    for(let i=0;i<12;i++) gs = GameManager.tick(gs, 0.5);
+    gs.complianceStreakDays = 4;
+    gs = GameManager.tick(gs, 0.5);
+    const trust = gs.financials.dailyTrustBonus ?? 0;
+    const reclaim = gs.financials.dailyReclaimBonus ?? 0;
+    assert(trust > 0 && reclaim > 0, 'TR08. both trust and reclaim live');
+    assert(gs.financials.dailyRevenue >= trust + reclaim, 'TR08b. revenue stacked');
+    assert(gs.overallStats.activeAlerts.some((a)=>a.id==='trust_bonus') && gs.overallStats.activeAlerts.some((a)=>a.id==='reclaim_bonus'), 'TR08c. both alerts');
+  }
+}
 
 console.log(failures === 0 ? "\nALL TESTS PASSED" : `\n${failures} TEST(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);

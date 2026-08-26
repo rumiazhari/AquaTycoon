@@ -71,6 +71,8 @@ export interface GameFinancials {
   dailyFinancingCost: number;
   /** Reclaimed-water tariff premium for RO-polished potable reuse (USD/day) — tycoon iter 43. Optional for legacy saves. */
   dailyReclaimBonus?: number;
+  /** Municipal trust dividend for sustained permit compliance (USD/day) — tycoon iter 44. Optional for legacy saves. */
+  dailyTrustBonus?: number;
   totalTreatedM3: number;
   netDailyProfit: number;
 }

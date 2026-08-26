@@ -72,6 +72,41 @@ export function overdraftFinancingCostPerDay(cash: number, dailyRate: number = O
   return -cash * dailyRate;
 }
 
+/**
+ * TYCOON TRUST — municipal trust dividend iter 44 (reputation pressure).
+ * Sustained permit compliance earns the city's trust: the municipal
+ * tariff authority grants a premium on treated water after a compliance
+ * streak. Rewards building a *reliable* plant, not a one-tick lucky ratio.
+ *
+ *   2-day streak → 3.0% tariff bonus
+ *   4-day streak → 6.0%
+ *   8-day streak → 12%  (cap, 8 × 1.5%)
+ *
+ * Pure domain: trustBonusPerDay(streak, flow, tariff) is headlessly testable.
+ * Flow-gated (>10 m³/d) and tariff-gated, streak floored to whole days.
+ * Needs ≥2 full compliant days to start earning; resets to $0 on any
+ * violation (complianceScore < 90 or no outfall flow).
+ */
+export const TRUST_BONUS_RATE_PER_DAY = 0.015;
+export const TRUST_BONUS_MAX_RATE = 0.12;
+export const TRUST_BONUS_MIN_STREAK_DAYS = 2;
+export function trustBonusPerDay(streakDays: number, flowM3d: number, tariffPerM3: number): number {
+  if (!Number.isFinite(streakDays) || streakDays < TRUST_BONUS_MIN_STREAK_DAYS) return 0;
+  if (!Number.isFinite(flowM3d) || flowM3d <= 10) return 0;
+  if (!Number.isFinite(tariffPerM3) || tariffPerM3 <= 0) return 0;
+  const wholeDays = Math.floor(streakDays);
+  if (wholeDays < TRUST_BONUS_MIN_STREAK_DAYS) return 0;
+  const rate = Math.min(TRUST_BONUS_MAX_RATE, wholeDays * TRUST_BONUS_RATE_PER_DAY);
+  if (rate <= 0) return 0;
+  return flowM3d * tariffPerM3 * rate;
+}
+export function trustBonusRate(streakDays: number): number {
+  if (!Number.isFinite(streakDays) || streakDays < TRUST_BONUS_MIN_STREAK_DAYS) return 0;
+  const wholeDays = Math.floor(streakDays);
+  if (wholeDays < TRUST_BONUS_MIN_STREAK_DAYS) return 0;
+  return Math.min(TRUST_BONUS_MAX_RATE, wholeDays * TRUST_BONUS_RATE_PER_DAY);
+}
+
 export interface NextStepSuggestion {
   unitTypeId: UnitTypeId;
   name: string;
@@ -210,6 +245,7 @@ export class GameManager {
       dailyFines: 0,
       dailyFinancingCost: 0,
       dailyReclaimBonus: 0,
+      dailyTrustBonus: 0,
       totalTreatedM3: 0,
       netDailyProfit: 0
     };
@@ -795,6 +831,39 @@ export class GameManager {
       simResult.financials.dailyFinancingCost = simResult.financials.dailyFinancingCost ?? 0;
     }
 
+    // ── TYCOON TRUST iter 44 — municipal trust dividend (reputation pressure) ──
+    // Sustained permit compliance (≥90 & flow>10) builds municipal trust:
+    // +1.5% tariff premium per whole compliant day, cap 12% at 8 days, min 2 days.
+    // Compliance streak is the authoritative counter (also drives Level 3 3-day
+    // objective). Trust bonus is flow-scaled like reclaim and stacks with it.
+    // No construction gate — any reliable plant earns trust, even Level 1.
+    const compliantNow = simResult.overallStats.complianceScore >= 90 && simResult.finalEffluent.flowRate > 10;
+    const complianceStreakDays = compliantNow ? state.complianceStreakDays + simDeltaDays : 0;
+    {
+      const flowTrusted = simResult.finalEffluent.flowRate;
+      const trustBonus = trustBonusPerDay(complianceStreakDays, flowTrusted, state.currentLevel.tariffPerM3);
+      if (trustBonus > 0.5) {
+        simResult.financials.dailyTrustBonus = trustBonus;
+        simResult.financials.dailyRevenue += trustBonus;
+        simResult.financials.netDailyProfit += trustBonus;
+        const ratePct = Math.round(trustBonusRate(complianceStreakDays) * 100);
+        const streakWhole = Math.floor(complianceStreakDays);
+        if (!simResult.overallStats.activeAlerts.some(a => a.id === 'trust_bonus')) {
+          simResult.overallStats.activeAlerts.push({
+            id: 'trust_bonus',
+            type: 'success' as const,
+            message: `Municipal trust dividend: +$${trustBonus.toFixed(0)}/d tariff premium (${ratePct}% × ${streakWhole}d streak — sustained compliance) — city trusts your plant!`,
+            timestamp: Date.now(),
+          });
+        }
+      } else {
+        simResult.financials.dailyTrustBonus = 0;
+        if (simResult.overallStats.activeAlerts.some(a => a.id === 'trust_bonus')) {
+          simResult.overallStats.activeAlerts = simResult.overallStats.activeAlerts.filter(a => a.id !== 'trust_bonus');
+        }
+      }
+    }
+
     // Apply financial cash flow
     const cashDelta = (simResult.financials.netDailyProfit * simDeltaDays);
     const updatedFinancials: GameFinancials = {
@@ -804,10 +873,6 @@ export class GameManager {
 
     // BUG FIX: accumulate treated volume consistently with simulated days (was ~12x too fast)
     updatedFinancials.totalTreatedM3 = state.financials.totalTreatedM3 + (simResult.finalEffluent.flowRate * simDeltaDays);
-
-    // Track consecutive compliant days (drives obj_compliance on Level 3)
-    const compliantNow = simResult.overallStats.complianceScore >= 90 && simResult.finalEffluent.flowRate > 10;
-    const complianceStreakDays = compliantNow ? state.complianceStreakDays + simDeltaDays : 0;
 
     // Check Level Objectives — evaluated from CURRENT simulation state every
     // tick. Operational objectives reflect live plant performance (no
