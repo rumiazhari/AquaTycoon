@@ -48,8 +48,9 @@ import {
   evaluateMbrRuntime,
   FRESH_MBR_FOULING,
   MBR_CLEANING_THRESHOLD,
+  membraneCipCostUsd,
   performMembraneClean,
-} from '../sim/processes/MBR';
+  } from '../sim/processes/MBR';
 
 export interface UnitDesignerProps {
   unit: PlacedUnit;
@@ -476,7 +477,7 @@ function DiagnosticsTab({ unit, bp, onUpdateFouling }: {
             <button
               onClick={() => { SoundManager.playClick(); onUpdateFouling?.(unit.instanceId, performMembraneClean(foul)); }}
               className="mt-1 px-2.5 py-1.5 rounded-lg text-[11px] font-bold uppercase tracking-wide border border-teal-400/50 bg-teal-500/10 text-teal-200 hover:bg-teal-500/20 transition"
-            >Clean Membranes (CIP)</button>
+            >Clean Membranes (CIP) · {money(membraneCipCostUsd(mem?.materialId ?? 'pvdf_hollow_fiber', installedAreaM2))}</button>
           </>
         );
       })()}

@@ -311,6 +311,26 @@ export function performMembraneClean(prev: MbrFoulingState): MbrFoulingState {
   };
 }
 
+// ── CIP cleaning economics (migration slice 3) ──────────────────────────────
+// A clean is a real maintenance operation: hypochlorite/citric-acid dosing,
+// soak, neutralization and disposal of spent chemicals, plus technician labor.
+// Cost scales with installed membrane area; reagent demand scales with the
+// material's fouling affinity (a heavier-fouling membrane needs stronger or
+// more frequent chemistry).
+
+/** CIP chemical + labor + disposal cost basis ($ per m² of installed area). */
+export const MBR_CIP_COST_USD_PER_M2 = 2.4;
+
+/**
+ * Quoted cost of ONE clean-in-place event for an installation.
+ * Deterministic: area × basis × material reagent factor (0.8 + 0.4·foulCoeff).
+ */
+export function membraneCipCostUsd(materialId: string, installedAreaM2: number): number {
+  const mat = MEMBRANE_MATERIALS[materialId] ?? MEMBRANE_MATERIALS.pvdf_hollow_fiber;
+  const area = Math.max(0, installedAreaM2);
+  return Math.round(area * MBR_CIP_COST_USD_PER_M2 * (0.8 + 0.4 * mat.foulingCoefficient));
+}
+
 export interface MbrRuntimePoint {
   /** Current operating flux (LMH) — drops as resistance climbs at fixed TMP. */
   fluxLmh: number;

@@ -990,6 +990,20 @@ export const App: React.FC = () => {
       return;
     }
 
+    if (fix.kind === 'clean_mbr' && fix.instanceId) {
+      const res = GameManager.cleanMbrMembranes(gs, fix.instanceId);
+      if (!res.success) {
+        if (res.reason) setToast(`🔒 ${res.reason}`);
+        return;
+      }
+      setGameState(res.newState);
+      SoundManager.playClick();
+      setToast(res.cipCostCharged
+        ? `CIP clean complete — $${Math.round(res.cipCostCharged).toLocaleString()} chemicals & labor. Resistance reset.`
+        : 'CIP clean complete — membrane resistance reset.');
+      return;
+    }
+
     if (fix.kind === 'adjust_param' && fix.instanceId && fix.paramKey) {
       const unit = gs.units.find(u => u.instanceId === fix.instanceId);
       if (!unit) return;
@@ -1296,15 +1310,18 @@ export const App: React.FC = () => {
                 setToast(`Seed sludge haul-in purchased — $${Math.round(res.seedCapexCharged).toLocaleString()}.`);
               }
             }}
-            onUpdateFouling={(id, next) => {
-              // Operational membrane cleaning: write the fouling state back to
-              // the placed unit's runtime record (no CAPEX — maintenance action).
-              setGameState(prev => ({
-                ...prev,
-                units: prev.units.map(un =>
-                  un.instanceId === id && next ? { ...un, mbrFouling: next } : un
-                ),
-              }));
+            onUpdateFouling={(id) => {
+              // Operational membrane cleaning goes through the domain layer so
+              // the CIP charge is enforced no matter which UI path fires it.
+              const res = GameManager.cleanMbrMembranes(gsRef.current, id);
+              if (!res.success) {
+                if (res.reason) setToast(`🔒 ${res.reason}`);
+                return;
+              }
+              setGameState(res.newState);
+              if (res.cipCostCharged) {
+                setToast(`CIP clean complete — $${Math.round(res.cipCostCharged).toLocaleString()} chemicals & labor.`);
+              }
             }}
           />
         );

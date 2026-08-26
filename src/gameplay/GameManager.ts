@@ -14,6 +14,7 @@ import { isEngineerable, workingVolumeM3 } from '../design/Geometry';
 import { casDesignPoint } from "../sim/processes/ActivatedSludge";
 import { blueprintFromTemplate, CommissioningState } from '../design/UnitBlueprint';
 import { estimatePipeCAPEX, estimateSeedSludgeCAPEX } from '../design/CostEstimator';
+import { FRESH_MBR_FOULING, membraneCipCostUsd, performMembraneClean } from '../sim/processes/MBR';
 import { pathLengthM } from '../sim/hydraulics/PipeHydraulics';
 
 export interface NextStepSuggestion {
@@ -1017,6 +1018,53 @@ export class GameManager {
       newState,
       success: true,
       ...(charged > 0 ? { seedCapexCharged: charged } : {}),
+    };
+  }
+
+  /**
+   * Operational membrane cleaning (CIP) — migration slice 3 economics.
+   * Domain-layer write so the CIP charge is enforced even if a future UI path
+   * calls this directly (same pattern as setUnitCommissioning). Charges the
+   * quoted chemical/labor cost outside sandbox, then applies
+   * performMembraneClean to the unit's fouling state.
+   */
+  public static cleanMbrMembranes(
+    state: GameState,
+    unitId: string
+  ): { newState: GameState; success: boolean; reason?: string; cipCostCharged?: number } {
+    const unit = state.units.find(u => u.instanceId === unitId);
+    if (!unit) return { newState: state, success: false, reason: 'Unknown unit' };
+    if (unit.typeId !== 'mbr_membrane') {
+      return { newState: state, success: false, reason: 'Unit has no membrane cassettes' };
+    }
+
+    const mem = unit.blueprint?.equipment as
+      { materialId?: string; moduleCount?: number; areaPerModuleM2?: number } | undefined;
+    const cost = membraneCipCostUsd(
+      mem?.materialId ?? 'pvdf_hollow_fiber',
+      (mem?.moduleCount ?? 9) * (mem?.areaPerModuleM2 ?? 850),
+    );
+    const charged = state.gameMode === 'sandbox' ? 0 : cost;
+    if (state.financials.cash < charged) {
+      return {
+        newState: state,
+        success: false,
+        reason: `Insufficient funds for CIP clean ($${cost.toLocaleString()} required)`,
+      };
+    }
+
+    const prevFoul = unit.mbrFouling ?? FRESH_MBR_FOULING;
+    const newState: GameState = {
+      ...state,
+      financials: { ...state.financials, cash: state.financials.cash - charged },
+      units: state.units.map(u =>
+        u.instanceId === unitId ? { ...u, mbrFouling: performMembraneClean(prevFoul) } : u
+      ),
+    };
+    return {
+      newState,
+      success: true,
+      ...(charged > 0 ? { cipCostCharged: charged } : {}),
     };
   }
 

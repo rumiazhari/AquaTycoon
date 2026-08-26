@@ -43,7 +43,10 @@ import {
   performMembraneClean,
   FRESH_MBR_FOULING,
   MBR_CLEANING_THRESHOLD,
+  membraneCipCostUsd,
+  MBR_CIP_COST_USD_PER_M2,
 } from '../src/sim/processes/MBR';
+import { generateAdvisories } from '../src/sim/AdvisoryEngine';
 import {
   pathLengthM,
   evaluatePipeHydraulics,
@@ -1447,6 +1450,91 @@ function wq(over: Partial<WaterQuality>): WaterQuality {
   const freshTemplate = mkBlueprintUnit('mbr_membrane');
   const freshCodes20 = validateUnitDesign(freshTemplate).map(i => i.code);
   assert(freshCodes20.length === 0, `MBR20. fresh MBR template CLEAN with runtime model present [${freshCodes20.join(',') || 'none'}]`);
+}
+
+// ── MBR21–31: CIP cleaning economics + cleaning-due advisory (slice 3) ──────
+{
+  const areaDef = DEFAULT_MEMBRANE_DESIGN.moduleCount * DEFAULT_MEMBRANE_DESIGN.areaPerModuleM2;
+
+  // MBR21: quote = area × basis × material reagent factor (PVDF default).
+  const qPvdf = membraneCipCostUsd('pvdf_hollow_fiber', areaDef);
+  assert(qPvdf === Math.round(areaDef * MBR_CIP_COST_USD_PER_M2 * (0.8 + 0.4 * MEMBRANE_MATERIALS.pvdf_hollow_fiber.foulingCoefficient)),
+    `MBR21. CIP quote = area·basis·reagent factor = $${qPvdf.toLocaleString()}`);
+
+  // MBR22/23: monotone in area; reagent factor orders PES > PVDF > ceramic.
+  assert(membraneCipCostUsd('pvdf_hollow_fiber', areaDef * 2) > qPvdf,
+    'MBR22. quote scales monotonically with installed area');
+  assert(membraneCipCostUsd('pes_hollow_fiber', areaDef) > qPvdf &&
+    membraneCipCostUsd('ceramic_multichannel', areaDef) < qPvdf,
+    'MBR23. reagent factor orders PES > PVDF > ceramic (fouling affinity)');
+
+  // Domain-layer charge path mirrors the seed-sludge pattern exactly.
+  const gsM = GameManager.createInitialState(0, false);
+  const mbrU = mkBlueprintUnit('mbr_membrane', 16, 20);
+  const dirty = advanceMbrFouling({ prev: FRESH_MBR_FOULING, materialId: 'pvdf_hollow_fiber', feedTssMgL: 10000, fluxLmh: 20, airScourNm3hPerM2: 0.3, dtDays: 25 });
+  assert(dirty.cleaningDue, `MBR24. 25 d at reference loading crosses the threshold (ρ=${dirty.resistanceMultiple.toFixed(2)}×)`);
+  const cash0 = 1_000_000;
+  const sM: any = {
+    ...gsM,
+    units: [{ ...mbrU, mbrFouling: { ...dirty } }],
+    financials: { ...gsM.financials, cash: cash0 },
+    simSpeed: 1 as const,
+  };
+
+  const r1 = GameManager.cleanMbrMembranes(sM, mbrU.instanceId);
+  assert(r1.success && r1.cipCostCharged === qPvdf,
+    `MBR25. domain CIP charges exactly the quote ($${qPvdf.toLocaleString()})`);
+  assert(r1.success && r1.newState.financials.cash === cash0 - qPvdf,
+    'MBR25b. CIP charge debited from cash exactly once');
+  const cleaned = r1.newState.units[0].mbrFouling!;
+  assert(cleaned.resistanceMultiple < dirty.resistanceMultiple && cleaned.daysSinceClean === 0 && !cleaned.cleaningDue,
+    `MBR25c. CIP resets resistance (${dirty.resistanceMultiple.toFixed(2)}→${cleaned.resistanceMultiple.toFixed(2)}×) and the clean-day clock`);
+
+  // Insufficient funds: atomic rejection — nothing written.
+  const brokeCash = Math.floor(qPvdf / 2);
+  const broke: any = { ...sM, financials: { ...sM.financials, cash: brokeCash } };
+  const rb = GameManager.cleanMbrMembranes(broke, mbrU.instanceId);
+  assert(!rb.success && !!rb.reason && rb.reason.includes('Insufficient funds') &&
+    rb.newState.financials.cash === brokeCash &&
+    rb.newState.units[0].mbrFouling!.resistanceMultiple === dirty.resistanceMultiple,
+    'MBR26. unaffordable CIP rejected atomically — cash and fouling untouched');
+
+  // Sandbox cleans for free but still writes the state.
+  const sbx: any = { ...broke, gameMode: 'sandbox' as const };
+  const rs = GameManager.cleanMbrMembranes(sbx, mbrU.instanceId);
+  assert(rs.success && rs.cipCostCharged === undefined && rs.newState.financials.cash === brokeCash &&
+    rs.newState.units[0].mbrFouling!.daysSinceClean === 0,
+    'MBR27. sandbox CIP is free yet still resets the fouling state');
+
+  // Non-membrane / unknown ids are refused.
+  const casU3 = mkBlueprintUnit('activated_sludge_cas', 4, 4);
+  const sC: any = { ...sM, units: [...sM.units, casU3] };
+  assert(!GameManager.cleanMbrMembranes(sC, casU3.instanceId).success &&
+    !GameManager.cleanMbrMembranes(sC, 'ghost').success,
+    'MBR28. non-membrane and unknown unit ids are refused');
+
+  // Advisory: a cleaning-due MBR surfaces a one-click affordable CIP fix;
+  // a short-of-cash plant sees it flagged unaffordable; a clean MBR is silent.
+  const flowingIn = wq({ flowRate: 5000 });
+  const gsAdv: any = {
+    ...sM,
+    finalEffluent: wq({ flowRate: 5000 }),
+    units: [{ ...mbrU, mbrFouling: { ...dirty }, lastInletQuality: flowingIn }],
+  };
+  const advDirty = generateAdvisories(gsAdv);
+  const cleanAdv = advDirty.find(a => a.id === `mbr_clean_due_${mbrU.instanceId}`);
+  assert(!!cleanAdv && cleanAdv.fixes.length === 1 && cleanAdv.fixes[0].kind === 'clean_mbr' &&
+    cleanAdv.fixes[0].affordable === true,
+    'MBR29. cleaning-due MBR emits a one-click affordable CIP advisory');
+
+  const gsBroke: any = { ...gsAdv, financials: { ...gsAdv.financials, cash: Math.floor(qPvdf / 2) } };
+  const brokeAdv = generateAdvisories(gsBroke).find(a => a.id === `mbr_clean_due_${mbrU.instanceId}`);
+  assert(!!brokeAdv && brokeAdv.fixes[0].affordable === false,
+    'MBR30. advisory marks the CIP unaffordable when cash is short');
+
+  const gsOk: any = { ...gsAdv, units: [{ ...mbrU, mbrFouling: { ...cleaned }, lastInletQuality: flowingIn }] };
+  assert(!generateAdvisories(gsOk).some(a => a.id.startsWith('mbr_clean_due')),
+    'MBR31. no cleaning-due advisory while membranes are fresh');
 }
 
 // ── summary ─────────────────────────────────────────────────────────────────

@@ -10,6 +10,7 @@ import {
   PermitCriterionKey,
 } from './PermitEngine';
 import { PlacedUnit, TreatmentStandard, UnitTypeId, WaterQuality } from '../types/simulation';
+import { membraneCipCostUsd, MBR_CLEANING_THRESHOLD } from './processes/MBR';
 
 /**
  * Compliance Doctor — turns raw effluent numbers into an actionable,
@@ -19,7 +20,7 @@ import { PlacedUnit, TreatmentStandard, UnitTypeId, WaterQuality } from '../type
  */
 
 export interface FixAction {
-  kind: 'adjust_param' | 'build_unit' | 'start_piping' | 'auto_train';
+  kind: 'adjust_param' | 'build_unit' | 'start_piping' | 'auto_train' | 'clean_mbr';
   label: string;
   detail: string;
   /** predicted parameter outcome for adjust_param actions */
@@ -264,6 +265,32 @@ export function generateAdvisories(gs: GameState): Advisory[] {
   }
 
   for (const u of gs.units) {
+    // Cleaning-due advisory fires regardless of current flow — fouling
+    // persists whether or not the train is wet right now (migration slice 3).
+    if (u.typeId === 'mbr_membrane' && u.mbrFouling?.cleaningDue) {
+      const name = UNIT_DEFINITIONS[u.typeId].name;
+      const mem = u.blueprint?.equipment as
+        { materialId?: string; moduleCount?: number; areaPerModuleM2?: number } | undefined;
+      const cipCost = membraneCipCostUsd(
+        mem?.materialId ?? 'pvdf_hollow_fiber',
+        (mem?.moduleCount ?? 9) * (mem?.areaPerModuleM2 ?? 850),
+      );
+      adv.push({
+        id: `mbr_clean_due_${u.instanceId}`,
+        severity: 'warning',
+        title: `${name} resistance ${u.mbrFouling.resistanceMultiple.toFixed(2)}× clean — chemical clean due`,
+        cause: `Filtration resistance passed the ${MBR_CLEANING_THRESHOLD}× cleaning threshold. TMP, permeate pumping power and opex all scale with it until a clean-in-place strips the foulant layer.`,
+        fixes: [{
+          kind: 'clean_mbr',
+          label: gs.gameMode === 'sandbox'
+            ? 'Run CIP clean (free)'
+            : `Run CIP clean (~$${cipCost.toLocaleString()})`,
+          detail: 'Hypochlorite + citric-acid soak of the cassettes: strips reversible fouling and resets the clean-day clock.',
+          instanceId: u.instanceId,
+          affordable: gs.gameMode === 'sandbox' || gs.financials.cash >= cipCost,
+        }],
+      });
+    }
     const inlet = u.lastInletQuality;
     if (!inlet || inlet.flowRate <= 1) continue;
     const name = UNIT_DEFINITIONS[u.typeId].name;
