@@ -26,12 +26,19 @@ import {
   clarifierPeakExposureIssues,
   eqDiurnalSizingIssue,
 } from '../src/design/DesignValidator';
-import { blueprintFromTemplate } from '../src/design/UnitBlueprint';
+import { blueprintFromTemplate, DEFAULT_MEMBRANE_DESIGN } from '../src/design/UnitBlueprint';
 import { casDesignPoint, stepCasRuntime } from '../src/sim/processes/ActivatedSludge';
 import { evaluateClarifierLoad } from '../src/sim/processes/Clarifier';
 import { SimulationEngine } from '../src/sim/SimulationEngine';
 import { calculateUnitProcess } from '../src/sim/UnitProcessModels';
 import { stepEqualization, initEqStorage, EQ_MIN_POOL_FRACTION } from '../src/sim/processes/Equalization';
+import {
+  evaluateMembraneDesign,
+  MEMBRANE_MATERIALS,
+  requiredMembraneAreaM2,
+  fluxAtArea,
+  classifyFlux,
+} from '../src/sim/processes/MBR';
 import {
   pathLengthM,
   evaluatePipeHydraulics,
@@ -1282,6 +1289,94 @@ function wq(over: Partial<WaterQuality>): WaterQuality {
   const codesDefault = validateUnitDesign(neonested).map(i => i.code);
   assert(!codesDefault.includes('blower_undersized'),
     `PF23b. absent contract flow still falls back to the shared basis (clean) [${codesDefault.join(',') || 'none'}]`);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MBR — membrane design basis (Mission §Q+§R, migration slice 1)
+// ═══════════════════════════════════════════════════════════════════════════
+{
+  // ── MBR01: required-area formula and its round trip ──
+  const am = requiredMembraneAreaM2(3500, 22);
+  assert(Math.abs(am - (3500 * 1000) / (24 * 22)) < 1e-6,
+    `MBR01a. Am = Qp·1000/(24·J) = ${am.toFixed(1)} m² at 3500 m³/d, 22 LMH`);
+  const jBack = fluxAtArea(3500, am);
+  assert(Math.abs(jBack - 22) < 1e-9,
+    `MBR01b. J = Qp·1000/(24·Am) inverts exactly (${jBack.toFixed(3)} LMH)`);
+
+  // ── MBR02: §R catalog carries comparative engineering behavior ──
+  const pvdf = MEMBRANE_MATERIALS.pvdf_hollow_fiber;
+  const pes = MEMBRANE_MATERIALS.pes_hollow_fiber;
+  const cer = MEMBRANE_MATERIALS.ceramic_multichannel;
+  assert(cer.maxTmpKpa > pvdf.maxTmpKpa && pvdf.maxTmpKpa > pes.maxTmpKpa,
+    `MBR02a. TMP rating ceramic > PVDF > PES (${cer.maxTmpKpa}/${pvdf.maxTmpKpa}/${pes.maxTmpKpa} kPa)`);
+  assert(cer.capexUsdPerM2 > pvdf.capexUsdPerM2 && pvdf.capexUsdPerM2 > pes.capexUsdPerM2,
+    `MBR02b. CAPEX/m² ceramic > PVDF > PES ($${cer.capexUsdPerM2}/$${pvdf.capexUsdPerM2}/$${pes.capexUsdPerM2})`);
+  assert(pes.foulingCoefficient > pvdf.foulingCoefficient && pes.foulingCoefficient > cer.foulingCoefficient,
+    `MBR02c. PES fouls most readily (kF ${pes.foulingCoefficient})`);
+  assert(cer.lifetimeYears > pvdf.lifetimeYears && pvdf.lifetimeYears > pes.lifetimeYears,
+    `MBR02d. service life ceramic > PVDF > PES (${cer.lifetimeYears}/${pvdf.lifetimeYears}/${pes.lifetimeYears} y)`);
+  assert(pes.chlorineToleranceMgL < pvdf.chlorineToleranceMgL &&
+    pvdf.chlorineToleranceMgL < cer.chlorineToleranceMgL,
+    `MBR02e. chlorine tolerance PES < PVDF < ceramic (${pes.chlorineToleranceMgL}/${pvdf.chlorineToleranceMgL}/${cer.chlorineToleranceMgL} mg/L)`);
+
+  // ── MBR03–05: TMP basis — clean linear, fouling and scour raise it ──
+  const mkDesign = (over: Partial<Parameters<typeof evaluateMembraneDesign>[0]> = {}) => ({
+    materialId: 'pvdf_hollow_fiber', installedAreaM2: 7650,
+    designFluxLmh: 20, airScourNm3hPerM2: 0.30, ...over,
+  });
+  const ptClean = evaluateMembraneDesign(mkDesign(), { designFlowM3d: 3500 });
+  const expectedClean = ptClean.actualFluxLmh / pvdf.permeabilityLmhPerKpa;
+  assert(Math.abs(ptClean.cleanTmpKpa - expectedClean) < 1e-9,
+    `MBR03. clean TMP₀ = J/permeability = ${ptClean.cleanTmpKpa.toFixed(2)} kPa`);
+  // MBR04: the fouling term drives TMP up with foulant load — same material,
+  // higher feed solids → higher design-basis TMP (resistance ∝ TSS).
+  const ptDirty = evaluateMembraneDesign(mkDesign(), { designFlowM3d: 3500, feedTssMgL: 20000 });
+  assert(ptDirty.tmpEstimateKpa > ptClean.tmpEstimateKpa,
+    `MBR04. doubling feed TSS raises design-basis TMP (${ptDirty.tmpEstimateKpa.toFixed(1)} > ${ptClean.tmpEstimateKpa.toFixed(1)} kPa)`);
+  // Higher flux (smaller area) also raises both clean AND fouling TMP.
+  const ptHighFlux = evaluateMembraneDesign(mkDesign({ installedAreaM2: 3825 }), { designFlowM3d: 3500 });
+  assert(ptHighFlux.tmpEstimateKpa > ptClean.tmpEstimateKpa && ptHighFlux.fluxClass !== 'normal',
+    `MBR04b. half the area doubles flux and TMP (${ptHighFlux.actualFluxLmh.toFixed(1)} LMH, ${ptHighFlux.tmpEstimateKpa.toFixed(1)} kPa)`);
+  const ptWeakScour = evaluateMembraneDesign(mkDesign({ airScourNm3hPerM2: 0.10 }), { designFlowM3d: 3500 });
+  assert(!ptWeakScour.scourAdequate && ptWeakScour.tmpEstimateKpa > ptClean.tmpEstimateKpa,
+    `MBR05. sub-minimum air scour flags inadequate AND raises TMP (${ptWeakScour.tmpEstimateKpa.toFixed(1)} vs ${ptClean.tmpEstimateKpa.toFixed(1)} kPa)`);
+
+  // ── MBR06: flux classification bands sit at 18/25/30 LMH ──
+  assert(classifyFlux(18) === 'conservative' && classifyFlux(22) === 'normal' &&
+    classifyFlux(27) === 'aggressive' && classifyFlux(31) === 'critical',
+    `MBR06. flux bands conservative≤18 < normal≤25 < aggressive≤30 < critical`);
+
+  // ── MBR07: fresh municipal template validates CLEAN ──
+  const fresh = mkBlueprintUnit('mbr_membrane');
+  const freshCodes = validateUnitDesign(fresh).map(i => i.code);
+  assert(freshCodes.length === 0,
+    `MBR07. fresh MBR template placement is clean [${freshCodes.join(',') || 'none'}]`);
+
+  // ── MBR08: undersized cassette bank → aggressive-flux critical ──
+  const small = mkBlueprintUnit('mbr_membrane');
+  (small.blueprint!.equipment as { moduleCount: number }).moduleCount = 4;
+  const smallCodes = validateUnitDesign(small).map(i => i.code);
+  assert(smallCodes.includes('mbr_flux_aggressive'),
+    `MBR08. quartered membrane area trips mbr_flux_aggressive [${smallCodes.join(',')}]`);
+
+  // ── MBR09: extreme under-sizing exceeds the material TMP rating too ──
+  const tiny = mkBlueprintUnit('mbr_membrane');
+  tiny.blueprint!.equipment = {
+    ...DEFAULT_MEMBRANE_DESIGN,
+    materialId: 'pes_hollow_fiber',
+    moduleCount: 2,
+  };
+  const tinyCodes = validateUnitDesign(tiny).map(i => i.code);
+  assert(tinyCodes.includes('mbr_tmp_exceeded') && tinyCodes.includes('mbr_flux_aggressive'),
+    `MBR09. starved membrane reports BOTH flux and TMP-rating violations [${tinyCodes.join(',')}]`);
+
+  // ── MBR10: blueprint factory + legacy-volume geometry ──
+  const bp = blueprintFromTemplate('mbr_membrane')!;
+  const eq = bp.equipment as { materialId?: string } | undefined;
+  assert(!!bp && eq?.materialId === 'pvdf_hollow_fiber',
+    'MBR10a. blueprintFromTemplate(mbr_membrane) carries the default PVDF design');
+  assert(Math.abs(workingVolumeM3(bp.design.geometry) - 1728) < 1e-6,
+    `MBR10b. MBR template geometry preserves the legacy nominal volume (${workingVolumeM3(bp.design.geometry).toFixed(0)} m³)`);
 }
 
 // ── summary ─────────────────────────────────────────────────────────────────

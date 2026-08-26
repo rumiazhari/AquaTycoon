@@ -14,8 +14,12 @@ import {
   systemCurveK,
 } from '../sim/hydraulics/PipeHydraulics';
 import { PUMP_MODELS, REDUNDANCY_CONFIGS, type PumpModel } from './catalogs/Equipment';
-import type { PumpingDesign } from './UnitBlueprint';
+import type { PumpingDesign, MembraneDesign } from './UnitBlueprint';
 import type { CASDesignPoint } from '../sim/processes/ActivatedSludge';
+import {
+  evaluateMembraneDesign,
+  MEMBRANE_MATERIALS,
+} from '../sim/processes/MBR';
 import { EQ_MIN_POOL_FRACTION } from '../sim/processes/Equalization';
 import {
   PEAK_FLOW_FACTOR,
@@ -198,6 +202,55 @@ export function validateUnitDesign(unit: PlacedUnit): DesignIssue[] {
     case 'equalization_basin':
       issues.push(...validateEqualizationDesign(unit));
       break;
+
+    case 'mbr_membrane': {
+      // Mission §Q / §AK item 15 — real membrane engineering warnings
+      // (migration slice 1: design-basis flux/TMP/area/scour). Legacy MBR
+      // placements carry no membrane design yet and are skipped quietly.
+      const mem = bp.equipment as MembraneDesign | undefined;
+      if (!mem || !MEMBRANE_MATERIALS[mem.materialId]) break;
+      const pt = evaluateMembraneDesign({
+        materialId: mem.materialId,
+        installedAreaM2: Math.max(0, mem.moduleCount * mem.areaPerModuleM2),
+        designFluxLmh: mem.designFluxLmh,
+        airScourNm3hPerM2: mem.airScourNm3hPerM2,
+      }, { designFlowM3d: estimateDesignFlow(unit) });
+
+      if (pt.fluxClass === 'critical' || pt.fluxClass === 'aggressive') {
+        issues.push({
+          severity: pt.fluxClass === 'critical' ? 'critical' : 'warning',
+          code: pt.fluxClass === 'critical' ? 'mbr_flux_aggressive' : 'mbr_flux_high',
+          message: `Actual flux ${pt.actualFluxLmh.toFixed(1)} LMH is ${pt.fluxClass === 'critical' ? 'above the ~30 LMH sustainability ceiling' : 'above the recommended ~25 LMH band'} at design flow.`,
+          detail: `Add membrane area — ${Math.round(pt.requiredAreaM2)} m² required at the ${mem.designFluxLmh} LMH target, ${Math.round(pt.installedAreaM2)} m² installed. High flux buys CAPEX with fouling, TMP and cleaning cost.`,
+        });
+      } else if (pt.fluxClass === 'conservative') {
+        issues.push({
+          severity: 'info', code: 'mbr_flux_conservative',
+          message: `Conservative flux ${pt.actualFluxLmh.toFixed(1)} LMH — resilient to peak days, but extra membrane area is capital sitting idle.`,
+        });
+      }
+
+      if (pt.tmpHeadroomRatio > 1) {
+        issues.push({
+          severity: 'critical', code: 'mbr_tmp_exceeded',
+          message: `Design-basis TMP ${pt.tmpEstimateKpa.toFixed(0)} kPa exceeds the ${pt.material.name} rating of ${pt.material.maxTmpKpa} kPa.`,
+          detail: 'More area or a higher-permeability/lower-fouling material lowers operating TMP.',
+        });
+      } else if (pt.tmpHeadroomRatio > 0.85) {
+        issues.push({
+          severity: 'warning', code: 'mbr_tmp_high',
+          message: `TMP headroom thin: design basis ${pt.tmpEstimateKpa.toFixed(0)} kPa vs ${pt.material.maxTmpKpa} kPa material rating (${Math.round(pt.tmpHeadroomRatio * 100)}%).`,
+        });
+      }
+
+      if (!pt.scourAdequate) {
+        issues.push({
+          severity: 'warning', code: 'mbr_scour_low',
+          message: `Air scour ${mem.airScourNm3hPerM2.toFixed(2)} Nm³/h·m² is below the ~${0.15.toFixed(2)} minimum — fouling resistance climbs without cake control.`,
+        });
+      }
+      break;
+    }
   }
 
   return issues;

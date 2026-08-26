@@ -41,7 +41,18 @@ export interface PumpingDesign {
   staticLiftM: number;
 }
 
-export type EquipmentSpec = CASDesign | PumpingDesign;
+/** MBR membrane installation (Mission §Q) — migration slice 1 data model. */
+export interface MembraneDesign {
+  materialId: string;        // MEMBRANE_MATERIALS key (src/sim/processes/MBR.ts)
+  moduleCount: number;
+  areaPerModuleM2: number;   // installed total = count × per-module
+  /** Operator's target design flux (LMH); sizes the required-area check. */
+  designFluxLmh: number;
+  /** Specific air-scour demand (Nm³/h per m² of membrane area). */
+  airScourNm3hPerM2: number;
+}
+
+export type EquipmentSpec = CASDesign | PumpingDesign | MembraneDesign;
 
 // ── Layer 4: operator controls ───────────────────────────────────────────────
 
@@ -118,6 +129,17 @@ export const DEFAULT_PUMPING_DESIGN: PumpingDesign = {
   staticLiftM: 3.5,
 };
 
+/** Municipal default MBR cassette bank: 9 × 850 m² = 7,650 m² installed,
+ *  sized to pass the Level-1 reference flow (3,500 m³/d) at ≤ 20 LMH with
+ *  headroom — a fresh template must validate CLEAN (§AK item 5/6 doctrine). */
+export const DEFAULT_MEMBRANE_DESIGN: MembraneDesign = {
+  materialId: 'pvdf_hollow_fiber',
+  moduleCount: 9,
+  areaPerModuleM2: 850,
+  designFluxLmh: 20,
+  airScourNm3hPerM2: 0.30,
+};
+
 /** Blueprint factory from an existing template id (Prompt §C). */
 export function blueprintFromTemplate(typeId: string): UnitBlueprint | null {
   const geometry = defaultGeometryFor(typeId);
@@ -151,6 +173,13 @@ export function blueprintFromTemplate(typeId: string): UnitBlueprint | null {
         design: { geometry, materialId: 'reinforced_concrete' },
         equipment: { ...DEFAULT_PUMPING_DESIGN },
         controls: { pumpSpeedCommand: 1.0 },
+      };
+    case 'mbr_membrane':
+      return {
+        processType: typeId, label: 'Membrane Bioreactor — Municipal Default',
+        design: { geometry, materialId: 'reinforced_concrete' },
+        equipment: { ...DEFAULT_MEMBRANE_DESIGN },
+        controls: {},
       };
     default:
       return null;

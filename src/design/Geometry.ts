@@ -204,6 +204,15 @@ export function defaultGeometryFor(typeId: string): BasinGeometry | null {
         freeboardM: 0.5, wallThicknessM: 0.25, floorThicknessM: 0.25,
         numberOfParallelTrains: 1,
       };
+    case 'mbr_membrane':
+      // Legacy template footprint (4×3 cells) at 4 m SWD ≈ 1728 m³ working
+      // volume — same nominal volume as the CAS default so Level economics
+      // and HRT checks stay balanced under the blueprint architecture.
+      return {
+        shape: 'rect', lengthM: 24, widthM: 18, waterDepthM: 4,
+        freeboardM: 0.6, wallThicknessM: 0.3, floorThicknessM: 0.25,
+        numberOfParallelTrains: 1,
+      };
     default:
       return null;
   }
