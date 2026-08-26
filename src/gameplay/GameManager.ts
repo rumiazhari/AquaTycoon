@@ -582,14 +582,16 @@ export class GameManager {
       new Set(state.techTree.filter(t => t.unlocked).map(t => t.id))
     );
 
-    // ── CONSTRUCTION-BUILDER Phase 4 slice 2: thin adapter — live construction
-    //    network (basin volume / aeration / mixer / power) into the legacy sim.
+    // ── CONSTRUCTION-BUILDER Phase 4 slice 2 + Phase 5 slice 2: thin adapter
+    //    — live construction network (basin volume / aeration / mixer / power)
+    //    + zone-aware septic (each baffled zone needs its own powered mixer).
     //    Zero construction = zero effect (100% backward compatible).
     {
       const ce = evaluateConstructionEffects(
         state.customBasins ?? [],
         state.processEquipment ?? [],
         state.utilityConnections ?? [],
+        state.customBaffles ?? [],
       );
       const hasFlow = simResult.finalEffluent.flowRate > 10;
       let effChanged = false;
@@ -648,9 +650,12 @@ export class GameManager {
         if (violations.length > 0 && hasEffFlow) {
           nextAlerts.unshift({ id: 'viol_alert', type: 'error', message: `Regulatory Standard Exceeded: ${violations.join(', ')}`, timestamp: Date.now() });
         }
-        // Septic warning when adapter flags dead zones
-        if (ce.septicBasins > 0 && hasEffFlow) {
-          nextAlerts.push({ id: 'construction_septic', type: 'warning' as const, message: `Septic dead zone: ${ce.septicBasins} basin${ce.septicBasins>1?'s':''} without a powered mixer — add a mixer + power cable to prevent anaerobic decay.`, timestamp: Date.now() });
+        // Septic warning when adapter flags dead zones (zone-aware when baffled)
+        if ((ce.septicZones > 0 || ce.septicBasins > 0) && hasEffFlow) {
+          const zoneScoped = (state.customBaffles?.length ?? 0) > 0 && ce.totalZones !== (state.customBasins?.length ?? 0);
+          const n = zoneScoped ? ce.septicZones : ce.septicBasins;
+          const label = zoneScoped ? `zone${n>1?'s':''}` : `basin${n>1?'s':''}`;
+          nextAlerts.push({ id: 'construction_septic', type: 'warning' as const, message: `Septic dead zone: ${n} ${label} without a powered mixer — add a mixer + power cable to prevent anaerobic decay.`, timestamp: Date.now() });
         }
         if (simResult.overallStats.energySelfSufficiencyPercent > 50 && !nextAlerts.some(a => a.id === 'green_energy_alert')) {
           // Preserve existing logic already pushed green alert earlier if applicable; re-add if needed
@@ -660,12 +665,15 @@ export class GameManager {
           }
         }
         simResult.overallStats.activeAlerts = nextAlerts;
-      } else if (ce.septicBasins > 0 && simResult.finalEffluent.flowRate > 10) {
-        // Even without effluent shift (no flow? septic already handled), surface the warning
+      } else if ((ce.septicZones > 0 || ce.septicBasins > 0) && simResult.finalEffluent.flowRate > 10) {
+        // Even without effluent shift, surface the warning (zone-aware)
         if (!simResult.overallStats.activeAlerts.some(a => a.id === 'construction_septic')) {
+          const zoneScoped = (state.customBaffles?.length ?? 0) > 0 && ce.totalZones !== (state.customBasins?.length ?? 0);
+          const n = zoneScoped ? ce.septicZones : ce.septicBasins;
+          const label = zoneScoped ? `zone${n>1?'s':''}` : `basin${n>1?'s':''}`;
           simResult.overallStats.activeAlerts = [
             ...simResult.overallStats.activeAlerts,
-            { id: 'construction_septic', type: 'warning' as const, message: `Septic dead zone: ${ce.septicBasins} basin${ce.septicBasins>1?'s':''} without a powered mixer — add a mixer + power cable to prevent anaerobic decay.`, timestamp: Date.now() },
+            { id: 'construction_septic', type: 'warning' as const, message: `Septic dead zone: ${n} ${label} without a powered mixer — add a mixer + power cable to prevent anaerobic decay.`, timestamp: Date.now() },
           ];
         }
       }

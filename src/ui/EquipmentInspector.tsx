@@ -1,7 +1,8 @@
 import React from 'react';
-import { X, Wind, Trash2, Droplets, Fan, Cog, Waves, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { X, Wind, Trash2, Droplets, Fan, Cog, Waves, AlertTriangle, CheckCircle2, Columns3 } from 'lucide-react';
 import { EQUIPMENT_TYPES } from '../design/ProcessEquipment';
 import type { ProcessEquipmentItem } from '../design/ProcessEquipment';
+import type { BasinZone } from '../design/BasinZone';
 import { SoundManager } from '../audio/SoundManager';
 
 const ICONS: Record<string, React.ComponentType<{ size?: number; className?: string }>> = {
@@ -15,11 +16,19 @@ interface EquipmentInspectorProps {
   item: ProcessEquipmentItem;
   powered: boolean;
   aerated?: boolean | null;
+  zone?: BasinZone | null;
   onClose: () => void;
   onDemolish: (id: string) => void;
 }
 
-export const EquipmentInspector: React.FC<EquipmentInspectorProps> = ({ item, powered, aerated, onClose, onDemolish }) => {
+const ROLE_TONE: Record<string, string> = {
+  anoxic: 'bg-sky-950/40 border-sky-500/30 text-sky-300',
+  aerobic: 'bg-emerald-950/40 border-emerald-500/30 text-emerald-300',
+  settling: 'bg-amber-950/40 border-amber-500/30 text-amber-300',
+  buffer: 'bg-slate-800 border-slate-600 text-slate-300',
+};
+
+export const EquipmentInspector: React.FC<EquipmentInspectorProps> = ({ item, powered, aerated, zone, onClose, onDemolish }) => {
   const def = EQUIPMENT_TYPES[item.typeId];
   if (!def) return null;
   const Icon = ICONS[item.typeId] ?? Cog;
@@ -52,6 +61,16 @@ export const EquipmentInspector: React.FC<EquipmentInspectorProps> = ({ item, po
       </div>
 
       <div className="p-4 flex flex-col gap-3">
+        {/* Zone membership (Phase 5 slice 2) */}
+        {zone && (
+          <div className={`px-3 py-2 rounded-xl border flex items-center gap-2 text-xs font-mono ${ROLE_TONE[zone.role] ?? ROLE_TONE.buffer}`}>
+            <Columns3 size={12} />
+            <span className="font-bold capitalize">{zone.role}</span>
+            <span className="opacity-70">zone {zone.gridI}–{zone.gridJ}</span>
+            <span className="opacity-60">· {zone.w}×{zone.h} tiles</span>
+          </div>
+        )}
+
         {/* Functional status */}
         <div className={`p-3 rounded-xl border flex items-start gap-2 ${live ? 'bg-emerald-950/30 border-emerald-500/30' : 'bg-amber-950/30 border-amber-500/40'}`}>
           {live
@@ -85,6 +104,11 @@ export const EquipmentInspector: React.FC<EquipmentInspectorProps> = ({ item, po
               )
             ) : (
               <span className="text-xs font-bold text-slate-300">Passive — needs no power</span>
+            )}
+            {zone && def.mounting === 'in_basin' && (
+              <span className="text-[10px] text-slate-400 mt-1">
+                {powered || isDiffuser ? 'This compartment\'s health depends on a powered mixer in the same zone.' : 'Place a powered mixer in this zone to keep it aerobic.'}
+              </span>
             )}
           </div>
         </div>

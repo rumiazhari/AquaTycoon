@@ -1,12 +1,18 @@
 /**
- * ConstructionAdapter — Phase 4 slice 2 of the CONSTRUCTION-BUILDER mission
+ * ConstructionAdapter — Phase 4 slice 2 + Phase 5 slice 2 of the CONSTRUCTION-BUILDER mission
  * ("Build the process, do not select the process").
  *
  * The player has drawn basins, installed machines, and wired utilities
  * (Phases 1–3). Phase 4 slice 1 made that network *visible* (powered/aerated
- * tints + HUD). This module makes it *functional*: a thin, pure domain
+ * tints + HUD). Slice 2 made it *functional*: a thin, pure domain
  * adapter that translates the live construction network into adjustments
  * applied once per GameManager.tick AFTER the legacy pipe/unit simulation.
+ *
+ * Phase 5 slice 1 added interior baffle walls → derived zones (BasinZone.ts).
+ * Slice 2 (this iteration) makes the adapter ZONE-AWARE: each derived zone
+ * must hold its own powered mixer; otherwise it is a septic dead pocket.
+ * A baffled basin with 4 zones and only one mixer is now 75% septic —
+ * the player learns to place mixers per compartment, not per basin.
  *
  * Design constraints:
  *  - Pure, headless-testable. No three.js, no React.
@@ -17,13 +23,14 @@
  *  - Power/OPEX is charged honestly via the live-power set (blower/mixer/pump
  *    only count when a power_cable touches their tile; passive diffusers always live).
  *
- * Effects modeled (one coherent slice):
+ * Effects modeled:
  *  - Hydraulic buffer: total excavated basin volume gives passive settling /
  *    equalization (up to ~4% BOD/TSS credit for a big plant).
  *  - Aeration: each aerated fine-bubble diffuser (blower→diffuser air_pipe
  *    with a powered blower) adds oxygen and biologically polishes BOD/TSS/TN.
- *  - Mixing / septic: a basin that holds NO powered mixer is a septic dead
- *    zone — solids settle anaerobically, releasing BOD/NH4 and consuming DO.
+ *  - Mixing / septic: per-ZONE when baffle walls exist (each zone needs a
+ *    powered mixer), per-BASIN otherwise — the fallback keeps all legacy
+ *    tests green when baffles=[].
  *  - Power & OPEX: live-powered machines are summed from ConstructionStats
  *    (the single source of truth for what is actually energized).
  */
@@ -31,6 +38,8 @@
 import type { CustomBasin } from './CustomBasin';
 import type { ProcessEquipmentItem } from './ProcessEquipment';
 import type { UtilityConnection } from './UtilityConnection';
+import type { BaffleWall } from './BasinZone';
+import { allZones } from './BasinZone';
 import {
   aeratedDiffuserIds,
   constructionStats,
@@ -42,6 +51,10 @@ export interface ConstructionTickEffect {
   healthyBasins: number;
   /** Number of basins with NO powered mixer inside (septic). */
   septicBasins: number;
+  /** Derived-zone counts (Phase 5 slice 2). When no baffles, equals basins. */
+  totalZones: number;
+  healthyZones: number;
+  septicZones: number;
   /** Aerated diffuser grids (air_pipe to a powered blower). */
   aeratedDiffusers: number;
   /** Powered mixers (need power_cable). */
@@ -73,17 +86,32 @@ function mixerInBasin(
       && mixer.y >= basin.y && mixer.y < basin.y + basin.h;
 }
 
+function mixerInZone(
+  mixer: ProcessEquipmentItem,
+  zone: { x: number; y: number; w: number; h: number },
+): boolean {
+  return mixer.x >= zone.x && mixer.x < zone.x + zone.w
+      && mixer.y >= zone.y && mixer.y < zone.y + zone.h;
+}
+
 /**
  * Pure evaluation of the thin adapter. No mutation.
+ * @param baffles optional Phase-5 interior walls — when supplied, septic is
+ * evaluated PER ZONE (each derived cell needs its own powered mixer).
+ * Empty/undefined falls back to the legacy per-basin check so every existing
+ * 3-arg call (and 100% of old tests) keeps its exact numbers.
  */
 export function evaluateConstructionEffects(
   basins: CustomBasin[],
   equipment: ProcessEquipmentItem[],
   utilityConnections: Pick<UtilityConnection, 'type' | 'ax' | 'ay' | 'bx' | 'by'>[],
+  baffles: BaffleWall[] = [],
 ): ConstructionTickEffect {
   const bs = basins ?? [];
   const eq = equipment ?? [];
   const uc = utilityConnections ?? [];
+  const bfs = baffles ?? [];
+  const hasBaffles = bfs.length > 0 && bs.length > 0;
   const stats = constructionStats(
     bs as (CustomBasin & { depthM: number })[],
     eq,
@@ -137,7 +165,7 @@ export function evaluateConstructionEffects(
     }
   }
 
-  // ── Septic penalty: basins without a powered mixer ───────────────────────
+  // ── Septic bookkeeping: basin-level (legacy compat) + zone-level (Phase 5) ─
   let septicBasins = 0;
   let healthyBasins = 0;
   if (bs.length > 0) {
@@ -150,8 +178,55 @@ export function evaluateConstructionEffects(
       if (hasPoweredMixer) healthyBasins++;
       else septicBasins++;
     }
-    if (septicBasins > 0) {
-      const n = Math.min(septicBasins, 3); // cap at 3 dead zones
+  }
+
+  let totalZones: number;
+  let healthyZones: number;
+  let septicZones: number;
+  if (hasBaffles) {
+    const zones = allZones(bs as unknown as CustomBasin[], bfs);
+    totalZones = zones.length;
+    healthyZones = 0;
+    septicZones = 0;
+    for (const z of zones) {
+      const hasMixer = eq.some(e =>
+        e.typeId === 'submersible_mixer'
+        && poweredMixerIds.has(e.id)
+        && mixerInZone(e, z)
+      );
+      if (hasMixer) healthyZones++;
+      else septicZones++;
+    }
+  } else {
+    totalZones = bs.length;
+    healthyZones = healthyBasins;
+    septicZones = septicBasins;
+  }
+
+  // ── Apply septic penalty (zone-aware when baffles exist) ─────────────────
+  const septicForPenalty = hasBaffles ? septicZones : septicBasins;
+  if (septicForPenalty > 0) {
+    if (hasBaffles) {
+      // Per-zone penalties are half the per-basin hit — a 4-zone basin with
+      // one mixer (3 septic zones) is penalised ~14% not 26%, so baffles are
+      // not a trap and teaching is "one mixer per compartment".
+      const n = Math.min(septicForPenalty, 6); // cap at 6 dead zones
+      const bodPenalty = Math.pow(1.045, n);
+      const tnPenalty  = Math.pow(1.028, n);
+      const tssPenalty = Math.pow(1.035, n);
+      const codPenalty = Math.pow(1.035, n);
+      bodMul *= bodPenalty;
+      tnMul  *= tnPenalty;
+      tssMul *= tssPenalty;
+      codMul *= codPenalty;
+      doBoost -= Math.min(1.2, 0.22 * n);
+      // Hard caps
+      bodMul = Math.min(1.35, bodMul);
+      tnMul  = Math.min(1.25, tnMul);
+      tssMul = Math.min(1.30, tssMul);
+      codMul = Math.min(1.30, codMul);
+    } else {
+      const n = Math.min(septicBasins, 3); // cap at 3 dead basins (legacy)
       const bodPenalty = Math.pow(1.08, n);
       const tnPenalty  = Math.pow(1.05, n);
       const tssPenalty = Math.pow(1.06, n);
@@ -161,7 +236,6 @@ export function evaluateConstructionEffects(
       tssMul *= tssPenalty;
       codMul *= codPenalty;
       doBoost -= Math.min(1.0, 0.40 * n);
-      // Hard caps: septic never dominates by more than ~35%
       bodMul = Math.min(1.35, bodMul);
       tnMul  = Math.min(1.25, tnMul);
       tssMul = Math.min(1.30, tssMul);
@@ -177,8 +251,13 @@ export function evaluateConstructionEffects(
   const parts: string[] = [];
   if (bs.length === 0) parts.push('no custom basins');
   else {
-    if (septicBasins === 0) parts.push(`${healthyBasins}/${bs.length} basins mixed`);
-    else parts.push(`${septicBasins} basin${septicBasins>1?'s':''} septic`);
+    if (hasBaffles) {
+      if (septicZones === 0) parts.push(`${healthyZones}/${totalZones} zones mixed`);
+      else parts.push(`${septicZones} zone${septicZones>1?'s':''} septic`);
+    } else {
+      if (septicBasins === 0) parts.push(`${healthyBasins}/${bs.length} basins mixed`);
+      else parts.push(`${septicBasins} basin${septicBasins>1?'s':''} septic`);
+    }
   }
   if (aerated > 0) parts.push(`${aerated} diffuser${aerated>1?'s':''} aerated`);
   if (extraPowerKw > 0) parts.push(`${extraPowerKw} kW live`);
@@ -188,6 +267,9 @@ export function evaluateConstructionEffects(
   return {
     healthyBasins,
     septicBasins,
+    totalZones,
+    healthyZones,
+    septicZones,
     aeratedDiffusers: aerated,
     poweredMixers,
     totalMixers,

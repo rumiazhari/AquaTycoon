@@ -2529,6 +2529,167 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
     assert(z1 !== null && z2 !== null && z1.id !== z2.id, 'Z11b. diffusers map to distinct zones ('+z1?.id+' vs '+z2?.id+')');
     assert(z1!.w===4 && z2!.w===4, 'Z11c. zone widths 4 each after split (got '+z1?.w+'/'+z2?.w+')');
   }
+  // ── PHASE 5 SLICE 2 — zone-scoped adapter (per-zone septic) ─────────────
+  // Z12: 2-zone basin with one mixer → 1 septic zone, 1 healthy
+  {
+    const basin = { x:5,y:5,w:8,h:4, depthM:4, id:'bz12', createdAtDay:0 } as any;
+    const baffles: any[] = [{ id:'bf1', basinId:'bz12', orientation:'vertical', offsetTiles:4, createdAtDay:0 }];
+    const ceHalf = evaluateConstructionEffects(
+      [basin],
+      [
+        { id:'mx1', typeId:'submersible_mixer', x:6,y:6, createdAtDay:0 } as any,
+        { id:'pu1', typeId:'process_pump', x:20,y:5, createdAtDay:0 } as any,
+      ],
+      [{ id:'c1', type:'power_cable', ax:6,ay:6,bx:20,by:5, createdAtDay:0 } as any],
+      baffles,
+    );
+    assert(ceHalf.totalZones===2, 'Z12. 1V split → totalZones 2 (got '+ceHalf.totalZones+')');
+    assert(ceHalf.healthyZones===1 && ceHalf.septicZones===1, 'Z12b. one mixer in left zone → 1 healthy 1 septic (got '+ceHalf.healthyZones+'/'+ceHalf.septicZones+')');
+    // legacy basin count stays 0 septic because the basin as a whole DOES have a mixer
+    assert(ceHalf.septicBasins===0 && ceHalf.healthyBasins===1, 'Z12c. legacy basin still healthy (basin has a mixer) but zones split health');
+    // 1 septic zone: volume credit (0.97) × 1.045 ≈1.014 — less than legacy 1.08, teaching per-zone risk is smaller but still real
+    assert(ceHalf.bodMultiplier > 1.00 && ceHalf.bodMultiplier < 1.06, 'Z12d. 1 septic zone BOD× '+ceHalf.bodMultiplier.toFixed(3)+' ~1.01 (volume-credit × 1.045)');
+  }
+  // Z13: 2-zone basin with mixers in BOTH zones → 0 septic, penalty gone
+  {
+    const basin = { x:5,y:5,w:8,h:4, depthM:4, id:'bz13', createdAtDay:0 } as any;
+    const baffles: any[] = [{ id:'bf1', basinId:'bz13', orientation:'vertical', offsetTiles:4, createdAtDay:0 }];
+    const ceFull = evaluateConstructionEffects(
+      [basin],
+      [
+        { id:'mx1', typeId:'submersible_mixer', x:6,y:6, createdAtDay:0 } as any,
+        { id:'mx2', typeId:'submersible_mixer', x:10,y:6, createdAtDay:0 } as any,
+        { id:'pu1', typeId:'process_pump', x:20,y:5, createdAtDay:0 } as any,
+        { id:'pu2', typeId:'process_pump', x:21,y:5, createdAtDay:0 } as any,
+      ],
+      [
+        { id:'c1', type:'power_cable', ax:6,ay:6,bx:20,by:5, createdAtDay:0 } as any,
+        { id:'c2', type:'power_cable', ax:10,ay:6,bx:21,by:5, createdAtDay:0 } as any,
+      ],
+      baffles,
+    );
+    assert(ceFull.septicZones===0 && ceFull.healthyZones===2, 'Z13. two mixers → 0 septic zones (got '+ceFull.septicZones+')');
+    assert(ceFull.bodMultiplier < 1.01, 'Z13b. fully mixed 2-zone basin BOD× '+ceFull.bodMultiplier.toFixed(3)+' ≈ 1.00 (no septic penalty)');
+  }
+  // Z14: single zone (no baffles) fallback — septicZones mirrors septicBasins
+  {
+    const basin = { x:5,y:5,w:8,h:4, depthM:4, id:'bz14', createdAtDay:0 } as any;
+    const ceNoBaff = evaluateConstructionEffects(
+      [basin],
+      [{ id:'mx1', typeId:'submersible_mixer', x:6,y:6, createdAtDay:0 } as any],
+      [], // mixer unpowered
+    );
+    const ceNoBaffWith = evaluateConstructionEffects(
+      [basin],
+      [{ id:'mx1', typeId:'submersible_mixer', x:6,y:6, createdAtDay:0 } as any],
+      [],
+      [], // explicit empty baffles
+    );
+    assert(ceNoBaff.septicZones===1 && ceNoBaff.septicBasins===1, 'Z14. no baffles → septicZones mirrors basins (got Z'+ceNoBaff.septicZones+'/B'+ceNoBaff.septicBasins+')');
+    assert(ceNoBaffWith.totalZones===1 && ceNoBaffWith.septicZones===1, 'Z14b. explicit [] baffles → 1 zone 1 septic');
+    // volume credit (4608 m³ → 0.97) × 1.08 ≈1.048 — legacy per-basin math still holds with volume bonus
+    assert(Math.abs(ceNoBaff.bodMultiplier - 0.97*1.08) < 0.002, 'Z14c. legacy BOD× '+ceNoBaff.bodMultiplier.toFixed(3)+' ≈ 0.97×1.08 (volume × septic)');
+  }
+  // Z15: 6-zone grid (2V+1H) with 2 mixers → 4 septic zones, penalty capped <1.35
+  {
+    const basin = { x:2,y:2,w:6,h:6, depthM:4, id:'bz15', createdAtDay:0 } as any;
+    const baffles: any[] = [
+      { id:'bf1', basinId:'bz15', orientation:'vertical', offsetTiles:2, createdAtDay:0 },
+      { id:'bf2', basinId:'bz15', orientation:'vertical', offsetTiles:4, createdAtDay:0 },
+      { id:'bf3', basinId:'bz15', orientation:'horizontal', offsetTiles:3, createdAtDay:0 },
+    ];
+    const ce6 = evaluateConstructionEffects(
+      [basin],
+      [
+        { id:'mx1', typeId:'submersible_mixer', x:3,y:3, createdAtDay:0 } as any,
+        { id:'mx2', typeId:'submersible_mixer', x:3,y:6, createdAtDay:0 } as any,
+        { id:'pu1', typeId:'process_pump', x:20,y:5, createdAtDay:0 } as any,
+        { id:'pu2', typeId:'process_pump', x:21,y:5, createdAtDay:0 } as any,
+      ],
+      [
+        { id:'c1', type:'power_cable', ax:3,ay:3,bx:20,by:5, createdAtDay:0 } as any,
+        { id:'c2', type:'power_cable', ax:3,ay:6,bx:21,by:5, createdAtDay:0 } as any,
+      ],
+      baffles,
+    );
+    assert(ce6.totalZones===6, 'Z15. 2V+1H → 6 zones (got '+ce6.totalZones+')');
+    assert(ce6.septicZones===4 && ce6.healthyZones===2, 'Z15b. 2 mixers in 6 zones → 4 septic (got '+ce6.septicZones+')');
+    assert(ce6.bodMultiplier < 1.35 && ce6.bodMultiplier > 1.1, 'Z15c. 4 septic zones BOD× '+ce6.bodMultiplier.toFixed(3)+' inside cap');
+    assert(ce6.doBoostMgL < 0, 'Z15d. 4 septic zones DO boost '+ce6.doBoostMgL.toFixed(2)+' negative');
+  }
+  // Z16: zone-aware tick — baffled basin with unmixed compartment surfaces "zone" warning
+  {
+    let s: any = GameManager.createInitialState(0, true);
+    s.financials.cash = 10_000_000;
+    // Build a minimal conventional train so tick has flow
+    const inletId = s.units.find((u:any)=>u.typeId==='influent_inlet').instanceId;
+    const outId = s.units.find((u:any)=>u.typeId==='effluent_outfall').instanceId;
+    const trainUnits = [
+      s.units.find((u:any)=>u.typeId==='influent_inlet'),
+      s.units.find((u:any)=>u.typeId==='effluent_outfall'),
+      { instanceId:'scr', typeId:'bar_screen', gridX:5, gridY:10, rotation:0, volume:100, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:emptyW(), lastOutletQuality:emptyW(), lastPowerKwActual:0, lastOpexActual:0 },
+      { instanceId:'clr2', typeId:'secondary_clarifier', gridX:17, gridY:13, rotation:0, volume:100, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:emptyW(), lastOutletQuality:emptyW(), lastPowerKwActual:0, lastOpexActual:0 },
+    ];
+    const trainPipes: any[] = [
+      { id:'tp1', fromUnitId:inletId, fromPortId:'outlet', toUnitId:'scr', toPortId:'inlet', pathPoints:[], flowRate:0, quality:emptyW(), pipeType:'liquid' },
+      { id:'tp2', fromUnitId:'scr', fromPortId:'outlet', toUnitId:'clr2', toPortId:'inlet', pathPoints:[], flowRate:0, quality:emptyW(), pipeType:'liquid' },
+      { id:'tp3', fromUnitId:'clr2', fromPortId:'outlet', toUnitId:outId, toPortId:'inlet', pathPoints:[], flowRate:0, quality:emptyW(), pipeType:'liquid' },
+    ];
+    s = { ...s, units: trainUnits, pipes: trainPipes };
+    let rB = GameManager.placeCustomBasin(s, { x:24, y:18, w:8, h:4 });
+    assert(rB.success, 'Z16-pre. basin for zone tick');
+    s = rB.newState;
+    const basinId = s.customBasins[0].id;
+    let rBf = GameManager.placeBaffle(s, basinId, 'vertical', 4);
+    assert(rBf.success, 'Z16-pre. baffle at 4');
+    s = rBf.newState;
+    // One mixer only in left zone (24-27)
+    let rM1 = GameManager.placeProcessEquipment(s, 'submersible_mixer', 25, 19);
+    assert(rM1.success, 'Z16-pre. mixer left zone');
+    s = rM1.newState;
+    let rPu = GameManager.placeProcessEquipment(s, 'process_pump', 30, 2);
+    s = rPu.newState;
+    let rC1 = GameManager.placeUtilityConnection(s, 'power_cable', 25, 19, 30, 2);
+    assert(rC1.success, 'Z16-pre. power left mixer');
+    s = rC1.newState;
+    for (let i=0;i<20;i++) s = GameManager.tick(s, 0.5);
+    const hasZoneAlert = s.overallStats.activeAlerts.some((a:any)=>a.id==='construction_septic' && /zone/.test(a.message));
+    assert(hasZoneAlert, 'Z16. baffled basin with 1 mixed zone → zone-aware septic alert ('+(s.overallStats.activeAlerts.find((a:any)=>a.id==='construction_septic')?.message?.slice(0,60) ?? 'none')+')');
+    // Now mixer in the right zone → alert clears
+    let rM2 = GameManager.placeProcessEquipment(s, 'submersible_mixer', 29, 19);
+    assert(rM2.success, 'Z16-pre. mixer right zone');
+    s = rM2.newState;
+    let rC2 = GameManager.placeUtilityConnection(s, 'power_cable', 29, 19, 30, 2);
+    assert(rC2.success, 'Z16-pre. power right mixer');
+    s = rC2.newState;
+    for (let i=0;i<15;i++) s = GameManager.tick(s, 0.5);
+    const stillSeptic = s.overallStats.activeAlerts.some((a:any)=>a.id==='construction_septic');
+    assert(!stillSeptic, 'Z16b. both zones mixed → septic warning cleared');
+  }
+  // Z17: equipment zoneForEquipmentItem returns correct zone after baffling
+  {
+    let s: any = GameManager.createInitialState(0, true);
+    s.financials.cash = 10_000_000;
+    let rB = GameManager.placeCustomBasin(s, { x:5,y:5,w:8,h:4 });
+    s = rB.newState;
+    const basinId = s.customBasins[0].id;
+    let rBf = GameManager.placeBaffle(s, basinId, 'vertical', 4);
+    s = rBf.newState;
+    let rM = GameManager.placeProcessEquipment(s, 'submersible_mixer', 6, 6);
+    let rM2 = GameManager.placeProcessEquipment(rM.newState, 'submersible_mixer', 10, 6);
+    s = rM2.newState;
+    const mxLeft = s.processEquipment.find((e:any)=>e.x===6);
+    const mxRight = s.processEquipment.find((e:any)=>e.x===10);
+    const zLeft = GameManager.zoneForEquipmentItem(s, mxLeft.id);
+    const zRight = GameManager.zoneForEquipmentItem(s, mxRight.id);
+    assert(zLeft !== null && zRight !== null && zLeft.id !== zRight.id, 'Z17. left/right mixers map to distinct zones');
+    assert(zLeft.gridI===0 && zRight.gridI===1, 'Z17b. gridI 0 vs 1 (got '+zLeft.gridI+'/'+zRight.gridI+')');
+  }
+  // Z18: CA0 identity still holds with explicit empty baffles array
+  {
+    const ce = evaluateConstructionEffects([], [], [], []);
+    assert(ce.bodMultiplier===1 && ce.septicZones===0 && ce.totalZones===0, 'Z18. empty world with [] baffles still identity (bod×'+ce.bodMultiplier+')');
+  }
 }
 
 console.log(failures === 0 ? "\nALL TESTS PASSED" : `\n${failures} TEST(S) FAILED`);

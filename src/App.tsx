@@ -820,7 +820,15 @@ export const App: React.FC = () => {
         const area = clickedBasin.w * clickedBasin.h;
         const vol = area * clickedBasin.depthM;
         const zones = GameManager.zonesForBasin(gs, clickedBasin.id);
-        setToast(`Custom Basin: ${clickedBasin.w}×${clickedBasin.h} (${area}m², ${vol.toLocaleString()}m³, depth ${clickedBasin.depthM}m) · ${zones.length} zone${zones.length>1?'s':''}. Switch to Demolish to remove.`);
+        // Phase 5 slice 2: show zone mixing health (each zone needs a powered mixer)
+        let zoneHealth = '';
+        if (zones.length > 1) {
+          const poweredMixers = poweredEquipmentIds(gs.processEquipment ?? [], gs.utilityConnections ?? []);
+          const septicZones = zones.filter(z => !gs.processEquipment?.some((e:any) => e.typeId==='submersible_mixer' && poweredMixers.has(e.id) && e.x >= z.x && e.x < z.x+z.w && e.y >= z.y && e.y < z.y+z.h)).length;
+          const healthy = zones.length - septicZones;
+          zoneHealth = septicZones>0 ? ` — ${healthy}/${zones.length} zones mixed, ${septicZones} septic` : ` — ${zones.length} zones, all mixed`;
+        }
+        setToast(`Custom Basin: ${clickedBasin.w}×${clickedBasin.h} (${area}m², ${vol.toLocaleString()}m³, depth ${clickedBasin.depthM}m) · ${zones.length} zone${zones.length>1?'s':''}${zoneHealth}. Switch to Demolish to remove.`);
       } else if (clickedUtility) {
         SoundManager.playClick();
         setSelectedBasinId(null);
@@ -1873,11 +1881,13 @@ export const App: React.FC = () => {
         const aerated = item.typeId === 'fine_bubble_diffuser'
           ? aeratedDiffuserIds(gameState.processEquipment ?? [], gameState.utilityConnections ?? []).has(item.id)
           : null;
+        const zone = GameManager.zoneForEquipmentItem(gameState, item.id);
         return (
           <EquipmentInspector
             item={item}
             powered={powered}
             aerated={aerated}
+            zone={zone}
             onClose={() => {
               setSelectedEquipmentId(null);
               sceneRef.current?.syncEquipment(
