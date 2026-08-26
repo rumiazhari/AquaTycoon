@@ -24,6 +24,7 @@ front-end and back-end improvements beyond the mission after Phase 1.
 ## Iteration log
 - iter 17 (2026-08-26): §AK items 5/6 CLOSED — ONE authoritative peak-flow
   basis everywhere. (a) NEW PeakFlow.VALIDATOR_REFERENCE_FLOW_M3D = 3500 (the
+- iter 18 (2026-08-26): Updated Level 1 briefing to reference VALIDATOR_REFERENCE_FLOW_M3D design basis. Gates: build ✅ tsc ✅ sim ✅ ui ✅.
   L1 contract flow every PF template pin uses); DesignValidator.
   estimateDesignFlow returns it instead of magic 5000 — before this, a FRESH
   default CAS placement tripped blower_no_peak_headroom under the validator's
