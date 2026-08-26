@@ -186,6 +186,12 @@ export interface PipeConnection {
   /** true = diameter chosen by the auto-sizer and may be re-picked as observed
    *  flow evolves; false/undefined = player-locked (never overridden). */
   autoSized?: boolean;
+  /** CAPEX actually charged for this pipe when built / last player-upgraded
+   *  (USD). Auto-sizer re-picks are included in the original design-build lump
+   *  sum and never re-billed. Undefined = legacy pipe from before pipe billing:
+   *  never refunded, and its first engineering edit is priced as a delta from
+   *  the current configuration's estimate. */
+  capexPaid?: number;
   /** Derived/cached: path length (m), headloss (m), velocity (m/s). */
   cachedHydraulics?: {
     lengthM: number;

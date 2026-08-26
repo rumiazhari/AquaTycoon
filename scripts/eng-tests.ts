@@ -1036,6 +1036,129 @@ function wq(over: Partial<WaterQuality>): WaterQuality {
     'PIPE2. unsized legacy pipes stay untouched');
 }
 
+// ── PBILL: quantity-based pipe CAPEX billing (§AK item 11) ──────────────────
+{
+  // Path waypoints are in WORLD CELLS: pathLengthM = hypot(cells) × 6 m/cell.
+  const mkDraft = (lenCells: number, dn?: number, materialId?: string): PipeConnection => ({
+    id: `pbill_${Math.random().toString(36).slice(2, 8)}`,
+    fromUnitId: 'u_src', fromPortId: 'outlet',
+    toUnitId: 'u_dst', toPortId: 'inlet',
+    pathPoints: [[0, 0, 0], [0, 0, lenCells]],
+    flowRate: 0,
+    quality: emptyWater(),
+    pipeType: 'liquid',
+    ...(dn !== undefined ? { diameterM: dn } : {}),
+    ...(materialId !== undefined ? { materialId } : {}),
+    autoSized: true,
+  });
+  /** Quote exactly as GameManager prices it (incl. the DN80 floor). */
+  const quoteOf = (dn: number | undefined, mat: string | undefined, p: PipeConnection) =>
+    estimatePipeCAPEX(dn ?? 0.1, mat ?? 'pvc', pathLengthM(p.pathPoints));
+
+  const gsB = GameManager.createInitialState(0, false);
+  const cashStart = 500000;
+  const base: any = {
+    ...gsB,
+    financials: { ...gsB.financials, cash: cashStart },
+    simSpeed: 1 as const,
+  };
+
+  // Bundle quote = sum of the per-pipe estimates the PFD panel displays (§AM CAPEX).
+  const d1 = mkDraft(7, 0.1, 'pvc');           // 42 m run
+  const d2 = mkDraft(20, 0.3, 'ductile_iron'); // 120 m run
+  const expectTotal = quoteOf(0.1, 'pvc', d1) + quoteOf(0.3, 'ductile_iron', d2);
+
+  const rBuy = GameManager.purchasePipes(base, [d1, d2]);
+  assert(rBuy.success && rBuy.charged === expectTotal,
+    `PBILL. bundle charge equals the sum of per-pipe estimates ($${expectTotal.toLocaleString()})`);
+  assert(rBuy.success && rBuy.newState.financials.cash === cashStart - expectTotal,
+    'PBILL. purchase debits cash exactly once');
+  assert(rBuy.newState.pipes.length === 2 &&
+    rBuy.newState.pipes.every(p => p.capexPaid !== undefined),
+    'PBILL. purchased pipes carry their capexPaid basis');
+
+  // §AM: pipe length alters CAPEX through the billing path too.
+  const longOnly = GameManager.purchasePipes(base, [mkDraft(67, 0.1, 'pvc')]);
+  const shortOnly = GameManager.purchasePipes(base, [mkDraft(2, 0.1, 'pvc')]);
+  assert((longOnly.charged ?? 0) > (shortOnly.charged ?? 0),
+    'PBILL. longer runs bill more at equal DN/material');
+
+  // Unaffordable bundle rejected atomically — no pipes, no partial debit.
+  const broke: any = { ...base, financials: { ...gsB.financials, cash: 50 } };
+  const rBroke = GameManager.purchasePipes(broke, [d1]);
+  assert(!rBroke.success && (rBroke.reason ?? '').includes('Insufficient funds') &&
+    rBroke.newState.pipes.length === 0 && rBroke.newState.financials.cash === 50,
+    'PBILL. unaffordable bundle rejected atomically');
+
+  // Sandbox builds free but still records a basis for later change orders.
+  const sbx: any = { ...base, gameMode: 'sandbox' };
+  const rSbx = GameManager.purchasePipes(sbx, [d1]);
+  assert(rSbx.success && rSbx.charged === undefined &&
+    rSbx.newState.financials.cash === cashStart && rSbx.newState.pipes[0].capexPaid === 0,
+    'PBILL. sandbox piping is free yet tags capexPaid=0');
+
+  // Change order: DN upsize bills only the delta vs what was paid.
+  const bought = rBuy.newState;
+  const target = bought.pipes[0];
+  const oldPaid = target.capexPaid!;
+  const newQuote = quoteOf(0.3, target.materialId, target);
+  const rUp = GameManager.updatePipeEngineering(bought, target.id, { diameterM: 0.3, autoSized: false });
+  assert(rUp.success && rUp.charged === newQuote - oldPaid &&
+    rUp.newState.pipes[0].diameterM === 0.3 && rUp.newState.pipes[0].autoSized === false &&
+    rUp.newState.pipes[0].capexPaid === newQuote,
+    'PBILL. DN upsize bills the exact delta, writes the pick, locks autoSized=false');
+  assert(rUp.newState.financials.cash === bought.financials.cash - (newQuote - oldPaid),
+    'PBILL. change-order delta debited once');
+
+  // Downsizing refunds nothing and keeps the paid high-water mark.
+  const rDown = GameManager.updatePipeEngineering(rUp.newState, target.id, { diameterM: 0.1 });
+  assert(rDown.success && rDown.charged === undefined &&
+    rDown.newState.pipes[0].capexPaid === newQuote &&
+    rDown.newState.financials.cash === rUp.newState.financials.cash,
+    'PBILL. downsize refunds nothing, basis stays at the high-water mark');
+
+  // Legacy save (no capexPaid): first edit bills delta vs the DN80-floor estimate.
+  const legacyPipe: PipeConnection = { ...mkDraft(10), diameterM: undefined, autoSized: undefined };
+  delete legacyPipe.materialId;
+  const gsLegacy: any = { ...base, pipes: [legacyPipe] };
+  const legacyEst = quoteOf(undefined, undefined, legacyPipe);
+  const rLeg = GameManager.updatePipeEngineering(gsLegacy, legacyPipe.id, { diameterM: 0.2 });
+  assert(rLeg.success && rLeg.charged === quoteOf(0.2, undefined, legacyPipe) - legacyEst,
+    'PBILL. legacy unsized pipe first edit bills delta vs its DN80-floor estimate');
+
+  // Removal pays 70% salvage of billed pipes, nothing for legacy.
+  const rRem = GameManager.removePipes(bought, new Set([target.id]));
+  assert(rRem.refunded === Math.round(target.capexPaid! * GameManager.PIPE_SALVAGE_RATE) &&
+    rRem.newState.pipes.length === 1,
+    'PBILL. removal refunds 70% salvage of the billed CAPEX');
+  const rRemLegacy = GameManager.removePipes(gsLegacy, new Set([legacyPipe.id]));
+  assert(rRemLegacy.refunded === 0 && rRemLegacy.newState.pipes.length === 0,
+    'PBILL. never-billed legacy pipes salvage $0');
+
+  // Demolishing a unit folds its attached pipes' salvage into the payout.
+  const casU = mkBlueprintUnit('activated_sludge_cas', 16, 20);
+  const gsDemo: any = {
+    ...bought,
+    units: [{ ...casU }],
+    selectedUnitId: casU.instanceId,
+  };
+  gsDemo.pipes = gsDemo.pipes.map((p: PipeConnection) => ({ ...p, fromUnitId: casU.instanceId }));
+  const paidSum = gsDemo.pipes.reduce((s: number, p: PipeConnection) => s + (p.capexPaid ?? 0), 0);
+  const afterNoPipes = GameManager.demolishUnit({ ...gsDemo, pipes: [] }, casU.instanceId);
+  const afterWithPipes = GameManager.demolishUnit(gsDemo, casU.instanceId);
+  assert(afterWithPipes.pipes.length === 0 &&
+    afterWithPipes.financials.cash - afterNoPipes.financials.cash === Math.round(paidSum * GameManager.PIPE_SALVAGE_RATE),
+    'PBILL. demolish pays attached-pipe salvage on top of the unit refund');
+
+  // Tutorial training grant mirrors placeUnit: free build, zero refund.
+  const tut: any = { ...base, tutorialActive: true };
+  const rTutBuy = GameManager.purchasePipes(tut, [d1]);
+  const rTutRem = GameManager.removePipes(rTutBuy.newState, new Set([rTutBuy.newState.pipes[0].id]));
+  assert(rTutBuy.success && rTutBuy.charged === undefined &&
+    rTutBuy.newState.financials.cash === cashStart && rTutRem.refunded === 0,
+    'PBILL. tutorial grant builds free and refunds nothing on removal');
+}
+
 // ── summary ─────────────────────────────────────────────────────────────────
 console.log(`\n${failed === 0 ? 'ALL ENGINEERING TESTS PASSED' : 'ENGINEERING TESTS FAILED'} (${passed} passed, ${failed} failed)`);
 if (failed > 0) {

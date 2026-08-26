@@ -484,7 +484,6 @@ export const App: React.FC = () => {
       return;
     }
 
-    SoundManager.playConnect();
     const newPipeType = resolvePipeType(fpDef, tpDef);
     const newPipe: PipeConnection = {
       id: `pipe_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
@@ -501,24 +500,42 @@ export const App: React.FC = () => {
       autoSized: true,
       pipeType: newPipeType
     };
+    // §AK item 11: piping is billed on quantity (material × DN × length).
+    const purchase = GameManager.purchasePipes(gs, [newPipe]);
+    if (!purchase.success) {
+      SoundManager.playWarning();
+      setToast(`⛔ ${purchase.reason}`);
+      setPortPicker(null);
+      pendingTargetRef.current = null;
+      cancelPipeSelection(false);
+      return;
+    }
+    SoundManager.playConnect();
     pushHistory(gs);
-    const updatedPipes = [...gs.pipes, newPipe];
-    setGameState(prev => ({ ...prev, pipes: updatedPipes }));
-    sm.syncPipes(updatedPipes);
-    setToast(`Connected: ${unitName(fromUnit)} [${fpDef.name}] ➔ ${unitName(unit)} [${tpDef.name}].  (Ctrl+Z to undo)`);
+    setGameState(purchase.newState);
+    sm.syncPipes(purchase.newState.pipes);
+    setToast(`Connected: ${unitName(fromUnit)} [${fpDef.name}] ➔ ${unitName(unit)} [${tpDef.name}].` +
+      (purchase.charged ? ` Piping: $${purchase.charged.toLocaleString()} (Ctrl+Z to undo)` : '  (Ctrl+Z to undo)'));
     setPortPicker(null);
     pendingTargetRef.current = null;
     cancelPipeSelection(true);
   }, [portPicker, armPipeSource, cancelPipeSelection, pushHistory]);
 
   /** Player edit of one pipe's engineering (DN / material) from the PFD panel.
-   *  Explicit DN choices set autoSized=false so the sim never overrides them. */
+   *  Explicit DN choices set autoSized=false so the sim never overrides them.
+   *  Upsizes are billed as a change order (delta vs capexPaid, §AK item 11). */
   const handleUpdatePipe = useCallback((pipeId: string, patch: Partial<PipeConnection>) => {
     const gs = gsRef.current;
+    const result = GameManager.updatePipeEngineering(gs, pipeId, patch);
+    if (!result.success) {
+      SoundManager.playWarning();
+      setToast(`⛔ ${result.reason}`);
+      return;
+    }
     pushHistory(gs);
-    const updatedPipes = gs.pipes.map(p => (p.id === pipeId ? { ...p, ...patch } : p));
-    setGameState(prev => ({ ...prev, pipes: updatedPipes }));
-    sceneRef.current?.syncPipes(updatedPipes);
+    setGameState(result.newState);
+    sceneRef.current?.syncPipes(result.newState.pipes);
+    if (result.charged) setToast(`Pipe change order: +$${result.charged.toLocaleString()}.`);
   }, [pushHistory]);
 
   const handleCanvasClick = (clientX: number, clientY: number) => {
@@ -650,15 +667,22 @@ export const App: React.FC = () => {
         // This check MUST precede validateConnection, which rejects duplicate
         // connections and would otherwise make removal unreachable.
         if (isConnectionExisting(gs.pipes, fromUnit.instanceId, fp.id, toUnit.instanceId, tp.id)) {
-          const remaining = gs.pipes.filter(p =>
-            !(p.fromUnitId === fromUnit.instanceId && p.fromPortId === fp.id &&
-              p.toUnitId === toUnit.instanceId && p.toPortId === tp.id)
+          const removedIds = new Set(
+            gs.pipes
+              .filter(p =>
+                p.fromUnitId === fromUnit.instanceId && p.fromPortId === fp.id &&
+                p.toUnitId === toUnit.instanceId && p.toPortId === tp.id)
+              .map(p => p.id)
           );
+          // §AK item 11: removing billed pipe pays out salvage (legacy = $0).
+          const removal = GameManager.removePipes(gs, removedIds);
           pushHistory(gs);
           SoundManager.playDemolish();
-          setGameState(prev => ({ ...prev, pipes: remaining }));
-          sm.syncPipes(remaining);
-          setToast(`Pipe removed: ${unitName(fromUnit)} [${fp.name}] ➔ ${unitName(toUnit)}. Re-route as needed. (Ctrl+Z to undo)`);
+          setGameState(removal.newState);
+          sm.syncPipes(removal.newState.pipes);
+          setToast(`Pipe removed: ${unitName(fromUnit)} [${fp.name}] ➔ ${unitName(toUnit)}.` +
+            (removal.refunded > 0 ? ` Salvage: $${removal.refunded.toLocaleString()}.` : '') +
+            ' Re-route as needed. (Ctrl+Z to undo)');
           cancelPipeSelection(true);
           return;
         }
@@ -687,12 +711,20 @@ export const App: React.FC = () => {
           autoSized: true,
           pipeType,
         };
+        // §AK item 11: piping is billed on quantity (material × DN × length).
+        const purchase = GameManager.purchasePipes(gs, [newPipe]);
+        if (!purchase.success) {
+          SoundManager.playWarning();
+          setToast(`⛔ ${purchase.reason}`);
+          cancelPipeSelection(false);
+          return;
+        }
         pushHistory(gs);
         SoundManager.playConnect();
-        const updatedPipes = [...gs.pipes, newPipe];
-        setGameState(prev => ({ ...prev, pipes: updatedPipes }));
-        sm.syncPipes(updatedPipes);
-        setToast(`Connected: ${unitName(fromUnit)} [${fp.name}] ➔ ${unitName(toUnit)} [${tp.name}].  (Ctrl+Z to undo)`);
+        setGameState(purchase.newState);
+        sm.syncPipes(purchase.newState.pipes);
+        setToast(`Connected: ${unitName(fromUnit)} [${fp.name}] ➔ ${unitName(toUnit)} [${tp.name}].` +
+          (purchase.charged ? ` Piping: $${purchase.charged.toLocaleString()} (Ctrl+Z to undo)` : '  (Ctrl+Z to undo)'));
         cancelPipeSelection(true);
       };
 
@@ -790,12 +822,20 @@ export const App: React.FC = () => {
       setToast('Auto-train: no unconnected main-line units found (sludge/gas/recycle lines are always manual).');
       return;
     }
+    // §AK item 11: the whole bundle is one atomic purchase — all links or none.
+    const purchase = GameManager.purchasePipes(gs, created);
+    if (!purchase.success) {
+      SoundManager.playWarning();
+      setToast(`⛔ Auto-train aborted — ${purchase.reason}`);
+      return;
+    }
     pushHistory(gs);
-    const updatedPipes = [...gs.pipes, ...created];
-    setGameState(prev => ({ ...prev, pipes: updatedPipes }));
-    sm.syncPipes(updatedPipes);
+    setGameState(purchase.newState);
+    sm.syncPipes(purchase.newState.pipes);
     SoundManager.playConnect();
-    setToast(`Auto-connected ${created.length} main liquid treatment link${created.length > 1 ? 's' : ''}. Sludge, RAS & gas lines stay manual — pipe them by port.`);
+    setToast(`Auto-connected ${created.length} main liquid treatment link${created.length > 1 ? 's' : ''}` +
+      (purchase.charged ? ` for $${purchase.charged.toLocaleString()}` : '') +
+      '. Sludge, RAS & gas lines stay manual — pipe them by port.');
   }, [cancelPipeSelection, pushHistory]);
 
   // ─────────────────────────────────────────────────────────────────────────────

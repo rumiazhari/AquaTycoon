@@ -12,7 +12,8 @@ import { applyDiurnalInfluent, DIURNAL_DEFAULT_STRENGTH } from '../sim/InfluentP
 import { resolveFootprint } from '../sim/UnitDimensions';
 import { isEngineerable, workingVolumeM3 } from '../design/Geometry';
 import { blueprintFromTemplate, CommissioningState } from '../design/UnitBlueprint';
-import { estimateSeedSludgeCAPEX } from '../design/CostEstimator';
+import { estimatePipeCAPEX, estimateSeedSludgeCAPEX } from '../design/CostEstimator';
+import { pathLengthM } from '../sim/hydraulics/PipeHydraulics';
 
 export interface NextStepSuggestion {
   unitTypeId: UnitTypeId;
@@ -803,6 +804,12 @@ export class GameManager {
     const def = UNIT_DEFINITIONS[unit.typeId];
     // Tutorial-granted units were never paid for — no refund exploit allowed
     const refund = (def && !state.tutorialActive) ? Math.round(def.capex * 0.7) : 0;
+    // Attached pipes go down with the unit — pay out their salvage too (§AK 11).
+    const attachedPipeSalvage = (!state.tutorialActive && state.gameMode !== 'sandbox')
+      ? Math.round(state.pipes
+          .filter(p => p.fromUnitId === instanceId || p.toUnitId === instanceId)
+          .reduce((s, p) => s + (p.capexPaid ?? 0) * GameManager.PIPE_SALVAGE_RATE, 0))
+      : 0;
     const updatedUnits = state.units.filter(u => u.instanceId !== instanceId);
     const newSuggestion = GameManager.computeNextSuggestion(updatedUnits, state.currentLevel);
 
@@ -810,12 +817,119 @@ export class GameManager {
       ...state,
       financials: {
         ...state.financials,
-        cash: state.gameMode === 'sandbox' ? state.financials.cash : state.financials.cash + refund
+        cash: state.gameMode === 'sandbox' ? state.financials.cash : state.financials.cash + refund + attachedPipeSalvage
       },
       units: updatedUnits,
       pipes: state.pipes.filter(p => p.fromUnitId !== instanceId && p.toUnitId !== instanceId),
       selectedUnitId: state.selectedUnitId === instanceId ? null : state.selectedUnitId,
       suggestion: newSuggestion
+    };
+  }
+
+  // ── Pipe CAPEX billing (§AK item 11 — quantity-based CAPEX) ────────────────
+
+  /** Salvage fraction recovered when demolishing billed pipe — matches the
+   *  70% unit-demolition refund policy. Never-billed legacy pipes return $0. */
+  public static readonly PIPE_SALVAGE_RATE = 0.7;
+
+  /** Installation quote for one pipe: material × DN-equivalent × path length —
+   *  exactly the number the PFD panel shows as its estimate. Unsized drafts
+   *  (an auto-sized pipe exists before its first DN pick) price at the bottom
+   *  of the ladder, DN80. */
+  private static pipeQuote(diameterM: number | undefined, materialId: string | undefined, lengthM: number): number {
+    return estimatePipeCAPEX(diameterM ?? 0.1, materialId, lengthM);
+  }
+
+  /**
+   * Bills and installs player-built pipe connections ATOMICALLY (§AK item 11).
+   * Quote = Σ estimatePipeCAPEX over the drafts at their polyline path length;
+   * rejected wholesale when cash can't cover it. Sandbox and the tutorial
+   * training grant (mirroring placeUnit) build for free, but still record
+   * capexPaid so later change orders price from a real basis. Auto-sizer re-picks
+   * never route through purchase/update, so they stay inside this lump sum.
+   */
+  public static purchasePipes(
+    state: GameState,
+    drafts: PipeConnection[]
+  ): { newState: GameState; success: boolean; reason?: string; charged?: number } {
+    if (drafts.length === 0) return { newState: state, success: true };
+    const quotes = drafts.map(p => GameManager.pipeQuote(p.diameterM, p.materialId, pathLengthM(p.pathPoints)));
+    const total = quotes.reduce((a, b) => a + b, 0);
+    const free = state.gameMode === 'sandbox' || state.tutorialActive;
+    if (!free && state.financials.cash < total) {
+      return { newState: state, success: false, reason: `Insufficient funds for piping ($${total.toLocaleString()} required)` };
+    }
+    const priced = drafts.map((p, i) => ({ ...p, capexPaid: free ? 0 : quotes[i] }));
+    return {
+      newState: {
+        ...state,
+        financials: { ...state.financials, cash: free ? state.financials.cash : state.financials.cash - total },
+        pipes: [...state.pipes, ...priced],
+      },
+      success: true,
+      ...(free || total === 0 ? {} : { charged: total }),
+    };
+  }
+
+  /**
+   * Player change order on one pipe's engineering (DN / material) from the PFD
+   * panel. Upsizes charge only the positive delta vs what was already paid
+   * (capexPaid); downsizes refund nothing — installed pipe doesn't un-weld.
+   * A pipe with no capexPaid (legacy save) prices its first edit as a delta
+   * from the current configuration's estimate.
+   */
+  public static updatePipeEngineering(
+    state: GameState,
+    pipeId: string,
+    patch: Partial<PipeConnection>
+  ): { newState: GameState; success: boolean; reason?: string; charged?: number } {
+    const pipe = state.pipes.find(p => p.id === pipeId);
+    if (!pipe) return { newState: state, success: false, reason: 'Unknown pipe' };
+    const length = pathLengthM(pipe.pathPoints);
+    const oldBasis = pipe.capexPaid ?? GameManager.pipeQuote(pipe.diameterM, pipe.materialId, length);
+    const newQuote = GameManager.pipeQuote(
+      patch.diameterM !== undefined ? patch.diameterM : pipe.diameterM,
+      patch.materialId !== undefined ? patch.materialId : pipe.materialId,
+      length
+    );
+    const charged = Math.max(0, newQuote - oldBasis);
+    const free = state.gameMode === 'sandbox' || state.tutorialActive;
+    if (!free && state.financials.cash < charged) {
+      return { newState: state, success: false, reason: `Insufficient funds for pipe upgrade ($${charged.toLocaleString()} required)` };
+    }
+    return {
+      newState: {
+        ...state,
+        financials: { ...state.financials, cash: free ? state.financials.cash : state.financials.cash - charged },
+        pipes: state.pipes.map(p =>
+          p.id === pipeId ? { ...p, ...patch, capexPaid: oldBasis + (free ? 0 : charged) } : p
+        ),
+      },
+      success: true,
+      ...(free || charged === 0 ? {} : { charged }),
+    };
+  }
+
+  /**
+   * Removes pipes by id and credits PIPE_SALVAGE_RATE of anything actually
+   * billed. Tutorial pipes refund nothing (training grant); sandbox never
+   * moves cash.
+   */
+  public static removePipes(state: GameState, pipeIds: ReadonlySet<string>): { newState: GameState; refunded: number } {
+    const removed = state.pipes.filter(p => pipeIds.has(p.id));
+    const refunded = (!state.tutorialActive && state.gameMode !== 'sandbox')
+      ? Math.round(removed.reduce((s, p) => s + (p.capexPaid ?? 0) * GameManager.PIPE_SALVAGE_RATE, 0))
+      : 0;
+    return {
+      newState: {
+        ...state,
+        financials: {
+          ...state.financials,
+          cash: state.gameMode === 'sandbox' ? state.financials.cash : state.financials.cash + refunded,
+        },
+        pipes: state.pipes.filter(p => !pipeIds.has(p.id)),
+      },
+      refunded,
     };
   }
 

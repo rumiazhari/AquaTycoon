@@ -1,7 +1,7 @@
 # AUTOPILOT STATE — Aquatycoon
 
 STATUS: OK
-Last run: 2026-08-26 (cron, iter 13 — wired stepPumpStation into runtime pump_station, §AK item 9 runtime half)
+Last run: 2026-08-26 (cron, iter 14 — quantity-based pipe CAPEX billing, §AK item 11 complete)
 Gate policy: `npm run build` + `npx tsc --noEmit` must be clean; suites:
 `npm test` (sim), `npm run test:ui` (= static ui-tests + ui-interaction-tests),
 `npm run test:eng`.
@@ -22,6 +22,21 @@ Never regress §AL. Respect §AI performance limits. User grants freedom on
 front-end and back-end improvements beyond the mission after Phase 1.
 
 ## Iteration log
+- iter 14 (2026-08-26): Quantity-based pipe CAPEX billing end-to-end (§AK item 11 —
+  the "billing still open" half of iter 12's display work). NEW GameManager pure
+  statics: purchasePipes() bills Σ estimatePipeCAPEX over drafts at pathLengthM and
+  installs ATOMICALLY (reject = no pipes, no debit); updatePipeEngineering() prices
+  PFD DN/material change orders as the positive DELTA vs capexPaid (downsizes refund
+  nothing; legacy no-capexPaid pipes price first edit vs their DN80-floor estimate);
+  removePipes()/demolishUnit pay 70% salvage (PIPE_SALVAGE_RATE) on actually-billed
+  pipe, $0 for legacy/tutorial. PipeConnection.capexPaid records the paid basis;
+  auto-sizer re-picks stay inside the original lump sum by design. App.tsx: both
+  creation sites + auto-train bundle + toggle-remove + DN/material edit route through
+  billing with ⛔ toasts; undo/redo already snapshots financials so Ctrl+Z
+  self-refunds. Sandbox & tutorial training grant build free (placeUnit parity).
+  14 new PBILL eng tests (255→269). GOTCHA: pathLengthM takes WORLD CELLS (×6 m),
+  not metres — test drafts must be built in cells.
+  Gates: build ✅ tsc ✅ sim ALL PASS ✅ ui 70+26 ✅ eng 269/269 ✅.
 - iter 13 (2026-08-26): Wired stepPumpStation into runtime pump_station (§AK item 9 runtime half). pump_station units now use the real duty-point solver (intersect pump curve with static lift + downstream pipe headloss) instead of the legacy pass-through. NEW: SimulationEngine computes discharge headloss from cachedHydraulics and passes it via ctx to calculateUnitProcess; UnitProcessModels.replace legacy pump_station case with stepPumpStation call (honors VFD speedCommand, clog penalty stacks on duty-point power/opex, returns PumpRuntimeTelemetry {status, dutyFlowM3h, dutyHeadM, bepFraction, cavitating, failedUnitCount, electricalPowerKw}). ProcessResult and PlacedUnitRuntimeState extended with optional pumpRuntime. UnitDesigner DiagnosticsTab shows live pump station telemetry (status, duty flow/head, BEP%, power, cavitation/failed-unit badges). 12 new PUMP_RT eng tests added (242→255) covering normal delivery, undersized clamp, VFD scaling, clog penalty stacking, legacy save compat. All gates: build ✅ tsc ✅ sim 118/118 ✅ ui 96/96 ✅ eng 255/255 ✅.
 - iter 12 (2026-08-26): Engineered pipes end-to-end (§AK items 7/8 + backlog #5)...
   NEW `src/design/PipeSizing.ts`: STANDARD_DIAMETERS_M ladder (DN80–DN1200),
@@ -170,10 +185,10 @@ front-end and back-end improvements beyond the mission after Phase 1.
      (NOTE iter 12 audit: item 5 blower physics + validator + tests already
      green; remaining 5/6 work is template/peak-flow resizing)
    - 7–10: custom pipe diameter/material ✅, pipe headloss ✅ (iter 12),
-     pump duty point ✅, equalization dynamic storage ✅ — NEXT: wire
-     stepPumpStation into runtime pump_station (item 9 runtime half)
-   - 11–13: quantity-based CAPEX (pipe CAPEX display ✅ iter 12; billing
-     still open), Unit Designer UI, Show Calculation (partial)
+     pump duty point ✅ runtime-wired iter 13, equalization dynamic storage ✅ —
+     §AK items 7–10 CLOSED (NEXT slice candidates: items 5/6 template peak-flow resize → diurnal 1.0, or 16/17 campaign)
+   - 11–13: quantity-based CAPEX ✅ FULLY RESOLVED iter 14 (billing charged on
+     build/edit/remove + 70% salvage; display ✅ iter 12), Unit Designer UI, Show Calculation (partial)
    - 14: dynamic influent ✅ (strength 0.4; full 1.0 after 5/6)
    - 15: engineering warnings ✅ phase 1+2 (+pipe velocity iter 12);
      membrane-flux check lands with the MBR migration
