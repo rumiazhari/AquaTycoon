@@ -35,6 +35,7 @@ front-end and back-end improvements beyond the mission after Phase 1.
   tip (iters 15–16 had been stranded there); iteration committed on main.
   Gates: build ✅ tsc ✅ sim ALL PASS ✅ ui 26/26 ✅ eng 298/298 ✅.
 - iter 18 (2026-08-26): Updated Level 1 briefing to reference VALIDATOR_REFERENCE_FLOW_M3D design basis. Gates: build ✅ tsc ✅ sim ✅ ui ✅.
+- iter 19 (2026-08-26): §AK items 16/17 CLOSED — campaign L1/L2/L3 levels updated with new objectives (obj_pump, obj_cas_sizing) and Test S revised for staged pump+UV build. Gates: build ✅ tsc ✅ sim ALL PASS ✅ ui ✅.
 - iter 19 (2026-08-26): §AK item 13 ✅ Show Calculation panel rolled out across all four engineerable unit types (CAS, clarifier, equalization basin, pump station) — each DiagnosticsTab now renders per‑process CalcBlock derivations with honest substituted equations and live numbers. §AK items 16/17 remain: updated campaign L1/L2/L3 levels with tests. New ui‑interaction-tests.tsx section added verifying every CalcBlock's equation string and EconomicsTab civil‑derivation math.
 
 ## Backlog (work top-down)
@@ -54,7 +55,7 @@ front-end and back-end improvements beyond the mission after Phase 1.
    - 13: Show Calculation ✅ (rolled out across all four engineerable units in iter 19)
    - 14: dynamic influent ✅ (full strength 1.0 default since iter 15)
    - 15: engineering warnings ✅ phase 1+2 (+pipe velocity iter 12); membrane‑flux check lands with the MBR migration
-   - 16–17: updated campaign L1/L2/L3, tests.
+   - 16–17: ✅ RESOLVED (iter 19): updated campaign L1/L2/L3 levels with new objectives (obj_pump, obj_cas_sizing) and revised Test S for staged pump+UV build.
 
 Next goal (iter 19): §AK items 16/17 — updated campaign L1/L2/L3 levels that exercise the engineered systems (+tests). Documented follow‑up: wire per‑contract design flow through placement context into DesignValidator, retiring the VALIDATOR_REFERENCE_FLOW_M3D heuristic (its stated exit condition).
 
