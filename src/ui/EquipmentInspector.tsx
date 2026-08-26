@@ -31,6 +31,7 @@ interface EquipmentInspectorProps {
   dosingActive?: boolean | null;
   dosingPowered?: boolean | null;
   storagePowered?: boolean | null;
+  flowM3d?: number;
   onClose: () => void;
   onDemolish: (id: string) => void;
 }
@@ -42,7 +43,7 @@ const ROLE_TONE: Record<string, string> = {
   buffer: 'bg-slate-800 border-slate-600 text-slate-300',
 };
 
-export const EquipmentInspector: React.FC<EquipmentInspectorProps> = ({ item, powered, aerated, zone, filtrationLive, filtrationDegraded, carrierActive, carrierAerated, dosingActive, dosingPowered, storagePowered: _storagePowered, onClose, onDemolish }) => {
+export const EquipmentInspector: React.FC<EquipmentInspectorProps> = ({ item, powered, aerated, zone, filtrationLive, filtrationDegraded, carrierActive, carrierAerated, dosingActive, dosingPowered, storagePowered: _storagePowered, flowM3d, onClose, onDemolish }) => {
   const def = EQUIPMENT_TYPES[item.typeId];
   if (!def) return null;
   const Icon = ICONS[item.typeId] ?? Cog;
@@ -172,6 +173,12 @@ export const EquipmentInspector: React.FC<EquipmentInspectorProps> = ({ item, po
                 <>
                   <span className="text-xs font-bold text-lime-300">Dosing active — injecting coagulant (lime shimmer)</span>
                   <span className="text-[11px] text-slate-400">Coagulant precipitates TP in this mixed zone. Keep the zone mixed and powered for full 22% TP removal per pump.</span>
+                  {flowM3d != null && flowM3d > 10 && (
+                    <span className="text-[10px] font-mono text-lime-400 mt-1">Reagent {Math.round(flowM3d * 0.033).toLocaleString()} $/d at {Math.round(flowM3d).toLocaleString()} m³/d (60 mg/L × $0.55/kg) — scales with flow & pumps</span>
+                  )}
+                  {(!flowM3d || flowM3d <= 10) && (
+                    <span className="text-[10px] font-mono text-slate-500 mt-1">Reagent cost scales with flow — connect influent to start dosing ($0.033/m³ per active pump)</span>
+                  )}
                 </>
               ) : dosingPowered ? (
                 <>

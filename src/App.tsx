@@ -1916,6 +1916,7 @@ export const App: React.FC = () => {
             dosingActive={chem.activeDosingIds.has(item.id)}
             dosingPowered={chem.poweredDosingIds.has(item.id)}
             storagePowered={chem.poweredStorageIds.has(item.id)}
+            flowM3d={gameState.finalEffluent.flowRate}
             onClose={() => {
               setSelectedEquipmentId(null);
               sceneRef.current?.syncEquipment(

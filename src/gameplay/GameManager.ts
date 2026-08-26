@@ -586,12 +586,16 @@ export class GameManager {
     //    — live construction network (basin volume / aeration / mixer / power)
     //    + zone-aware septic (each baffled zone needs its own powered mixer).
     //    Zero construction = zero effect (100% backward compatible).
+    //    Phase 7 slice 4: reagent consumable scales with treated flow (tycoon pressure).
     {
+      // Reagent cost is flow-scaled — solve the plant first, then ask what it really costs to treat that flow
+      const flowForReagent = simResult.finalEffluent.flowRate;
       const ce = evaluateConstructionEffects(
         state.customBasins ?? [],
         state.processEquipment ?? [],
         state.utilityConnections ?? [],
         state.customBaffles ?? [],
+        flowForReagent,
       );
       const hasFlow = simResult.finalEffluent.flowRate > 10;
       let effChanged = false;
@@ -615,15 +619,18 @@ export class GameManager {
         effChanged = true;
       }
       // Power / OPEX: live-powered machines are summed honestly (blower/mixer/pump
-      // only count with a power_cable; passive diffuser always live).
-      if (ce.extraPowerKw !== 0 || ce.extraOpexPerDay !== 0) {
+      // only count with a power_cable; passive diffuser always live). Phase 7 slice 4
+      // adds flow-scaled reagent consumable on top (active dosing pumps only).
+      const reagentCost = (ce as any).reagentOpexPerDay ?? 0;
+      if (ce.extraPowerKw !== 0 || ce.extraOpexPerDay !== 0 || reagentCost !== 0) {
         const powerCostPerKwh = 0.15;
         const extraPowerCost = ce.extraPowerKw * 24 * powerCostPerKwh;
-        // DailyOpex is power + chemicals/opex. Construction OPEX is treated like
-        // unit OPEX (40% chemical, 60% other) — sum = extraPowerCost + extraOpex
+        // DailyOpex is power + chemicals/opex. Construction static OPEX is treated like
+        // unit OPEX (40% chemical, 60% other) — sum = extraPowerCost + extraOpex.
+        // Reagent consumable is 100% chemical on top (ferric/alum).
         simResult.financials.dailyPowerCost += extraPowerCost;
-        simResult.financials.dailyChemicalCost += ce.extraOpexPerDay * 0.4;
-        simResult.financials.dailyOpex += extraPowerCost + ce.extraOpexPerDay;
+        simResult.financials.dailyChemicalCost += ce.extraOpexPerDay * 0.4 + reagentCost;
+        simResult.financials.dailyOpex += extraPowerCost + ce.extraOpexPerDay + reagentCost;
         simResult.financials.netDailyProfit = simResult.financials.dailyRevenue - simResult.financials.dailyOpex - simResult.financials.dailyFines;
         // Power demand and self-sufficiency
         simResult.overallStats.totalPowerDemandKw += ce.extraPowerKw;

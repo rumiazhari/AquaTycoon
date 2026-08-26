@@ -49,7 +49,7 @@ import {
   constructionStats,
   constructionSummaryLine,
 } from '../src/design/ConstructionNetwork';
-import { evaluateConstructionEffects, filtrationLiveSets } from '../src/design/ConstructionAdapter';
+import { evaluateConstructionEffects, filtrationLiveSets, chemicalReagentOpexPerDay, CHEMICAL_REAGENT_COST_PER_M3_PER_PUMP } from '../src/design/ConstructionAdapter';
 import {
   estimateBaffleCAPEX,
   validateBafflePlacement,
@@ -3725,6 +3725,141 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
     } else {
       assert(!gs.isLevelComplete, 'CC08c. not complete until BOD also satisfied (bod '+gs.finalEffluent.bod.toFixed(1)+') — construction alone insufficient');
     }
+  }
+}
+
+// ═════════════════════════════════════════════════════════════
+// TYCOON POLISH iter 37: Reagent OPEX — flow-scaled chemical consumption
+// ═════════════════════════════════════════════════════════════
+{
+  const mkBasinR = (x=5,y=5,w=8,h=6,id='bR1') => ({ x, y, w, h, depthM:4, id, createdAtDay:0 } as any);
+  const mkMixerR = (id:string,x:number,y:number) => ({ id, typeId:'submersible_mixer', x, y, createdAtDay:0 } as any);
+  const mkDosingR = (id:string,x:number,y:number) => ({ id, typeId:'chemical_dosing_pump', x, y, createdAtDay:0 } as any);
+  const mkStorageR = (id:string,x:number,y:number) => ({ id, typeId:'chemical_storage_tank', x, y, createdAtDay:0 } as any);
+  const cableR = (ax:number,ay:number,bx:number,by:number) => ({ id:'c_'+ax+'_'+ay+'_'+bx+'_'+by, type:'power_cable', ax, ay, bx, by, createdAtDay:0 } as any);
+
+  // RE01: pure reagent cost — linear in pumps × flow
+  {
+    assert(chemicalReagentOpexPerDay(0, 3500) === 0, 'RE01. 0 pumps → $0 reagent even at 3500 m³/d');
+    assert(chemicalReagentOpexPerDay(1, 0) === 0, 'RE01b. 1 pump at 0 flow → $0');
+    const oneAt3500 = chemicalReagentOpexPerDay(1, 3500);
+    assert(Math.abs(oneAt3500 - 3500*CHEMICAL_REAGENT_COST_PER_M3_PER_PUMP) < 0.01, 'RE01c. 1 pump at 3500 m³/d = $'+oneAt3500.toFixed(2)+' ≈ $115.5 (60 mg/L × $0.55/kg)');
+    assert(Math.abs(oneAt3500 - 115.5) < 1, 'RE01d. one pump at L1 flow ~115.5 got '+oneAt3500.toFixed(1));
+    const twoAt3500 = chemicalReagentOpexPerDay(2, 3500);
+    assert(Math.abs(twoAt3500 - oneAt3500*2) < 0.01, 'RE01e. 2 pumps double: '+twoAt3500.toFixed(1)+' ≈ 2×'+oneAt3500.toFixed(1));
+    const oneAt12000 = chemicalReagentOpexPerDay(1, 12000);
+    assert(Math.abs(oneAt12000 - 396) < 1, 'RE01f. 1 pump at L4 12000 m³/d ~$396 got '+oneAt12000.toFixed(1));
+    assert(oneAt12000 > oneAt3500, 'RE01g. reagent scales with flow: 12000 > 3500');
+  }
+  // RE02: evaluateConstructionEffects — active dosing with flow yields reagent, without flow yields 0
+  {
+    const basin = mkBasinR();
+    const mixer = mkMixerR('mx1',6,6);
+    const dosing = mkDosingR('dp1',6,6);
+    const ceNoFlow = evaluateConstructionEffects([basin] as any, [mixer, dosing] as any, [cableR(6,6,22,5), cableR(7,6,22,5)] as any, [] as any, 0);
+    assert(ceNoFlow.activeDosingPumps === 1, 'RE02. activeDosing 1 even with 0 flow');
+    assert(Math.abs(ceNoFlow.reagentOpexPerDay - 0) < 0.01, 'RE02b. reagent 0 when flow 0 (got '+ceNoFlow.reagentOpexPerDay+')');
+    const ceWithFlow = evaluateConstructionEffects([basin] as any, [mixer, dosing] as any, [cableR(6,6,22,5), cableR(7,6,22,5)] as any, [] as any, 3500);
+    assert(ceWithFlow.reagentOpexPerDay > 100 && ceWithFlow.reagentOpexPerDay < 130, 'RE02c. reagent ~115 at 3500 with active dosing (got '+ceWithFlow.reagentOpexPerDay.toFixed(1)+')');
+    assert(Math.abs(ceWithFlow.reagentOpexPerDay - 115.5) < 1, 'RE02d. reagent matches pure func: '+ceWithFlow.reagentOpexPerDay.toFixed(1));
+  }
+  // RE03: dormant dosing (no powered mixer → septic) never consumes reagent even with flow
+  {
+    const basin = mkBasinR();
+    const dosing = mkDosingR('dp1',6,6);
+    // mixer present but unpowered (no cable on mixer tile)
+    const mixerUnpowered = mkMixerR('mx1',7,6);
+    const ceDormant = evaluateConstructionEffects([basin] as any, [mixerUnpowered, dosing] as any, [cableR(6,6,22,5)] as any, [] as any, 3500);
+    assert(ceDormant.activeDosingPumps === 0, 'RE03. dosing dormant when zone septic (active '+ceDormant.activeDosingPumps+')');
+    assert(ceDormant.reagentOpexPerDay === 0, 'RE03b. dormant reagent stays 0 even at flow 3500');
+  }
+  // RE04: storage tank alone never consumes reagent (only dosing pumps do)
+  {
+    const basin = mkBasinR();
+    const storage = mkStorageR('st1',22,5);
+    const ceStorage = evaluateConstructionEffects([basin] as any, [storage] as any, [cableR(22,5,22,5)] as any, [] as any, 3500);
+    assert(ceStorage.activeDosingPumps === 0, 'RE04. storage alone → 0 active dosing');
+    assert(ceStorage.reagentOpexPerDay === 0, 'RE04b. storage alone → $0 reagent even with flow');
+  }
+  // RE05: baffled — only active pumps in healthy zones count toward reagent
+  {
+    const basin = { x:5,y:5,w:8,h:6, depthM:4, id:'bR5', createdAtDay:0 } as any;
+    const baffles:any[] = [{ id:'bf1', basinId:'bR5', orientation:'vertical', offsetTiles:4, createdAtDay:0 }];
+    const mx1 = mkMixerR('mx1',6,6); // healthy left zone
+    const dp1 = mkDosingR('dp1',6,6); // same healthy zone → active
+    const dp2 = mkDosingR('dp2',10,6); // right zone septic (no mixer) → dormant
+    const ceBaffled = evaluateConstructionEffects([basin] as any, [mx1, dp1, dp2] as any, [cableR(6,6,22,5), cableR(7,6,22,5), cableR(10,6,22,5)] as any, baffles as any, 3500);
+    assert(ceBaffled.activeDosingPumps === 1, 'RE05. baffled active dosing 1/2 (got '+ceBaffled.activeDosingPumps+')');
+    assert(Math.abs(ceBaffled.reagentOpexPerDay - 115.5) < 1, 'RE05b. baffled reagent counts only 1 active pump: '+ceBaffled.reagentOpexPerDay.toFixed(1));
+  }
+  // RE06: summary line includes reagent when active with flow
+  {
+    const basin = mkBasinR();
+    const mixer = mkMixerR('mx1',6,6);
+    const dosing = mkDosingR('dp1',6,6);
+    const ce = evaluateConstructionEffects([basin] as any, [mixer, dosing] as any, [cableR(6,6,22,5), cableR(7,6,22,5)] as any, [] as any, 3500);
+    assert(ce.summary.includes('reagent'), 'RE06. summary includes reagent when active with flow: '+ce.summary);
+    const ceNoFlow = evaluateConstructionEffects([basin] as any, [mixer, dosing] as any, [cableR(6,6,22,5), cableR(7,6,22,5)] as any, [] as any, 0);
+    assert(!ceNoFlow.summary.includes('reagent'), 'RE06b. summary omits reagent when flow 0: '+ceNoFlow.summary);
+  }
+  // RE07: tick financials — reagent added to dailyChemicalCost & dailyOpex, netProfit reduced
+  {
+    // Build a minimal flowing train with chemical dosing to observe tick economics
+    let gs:any = GameManager.createInitialState(0, true);
+    let r = GameManager.placeCustomBasin(gs, { x:5, y:5, w:4, h:4 }); gs=r.newState;
+    r = GameManager.placeProcessEquipment(gs, 'submersible_mixer', 6,6); gs=r.newState;
+    r = GameManager.placeProcessEquipment(gs, 'chemical_dosing_pump', 5,5); gs=r.newState;
+    r = GameManager.placeUtilityConnection(gs, 'power_cable', 6,6,5,5); gs=r.newState;
+    // Legacy train for flow: inlet → bar_screen → outfall
+    const scr = { instanceId:'scrRE', typeId:'bar_screen', gridX:10, gridY:10, rotation:0, volume:200, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:0, lastOpexActual:0 } as any;
+    gs.units.push(scr);
+    gs.pipes.push(
+      { id:'pR1', fromUnitId:'inlet_0', fromPortId:'outlet', toUnitId:'scrRE', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'} as any,
+      { id:'pR2', fromUnitId:'scrRE', fromPortId:'outlet', toUnitId:'outfall_0', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'} as any
+    );
+    // Warm up to reach steady flow
+    for(let i=0;i<10;i++) gs = GameManager.tick(gs, 0.5);
+    assert(gs.finalEffluent.flowRate > 10, 'RE07a. precondition: flow established '+gs.finalEffluent.flowRate.toFixed(0));
+    const flow = gs.finalEffluent.flowRate;
+    const baseChem = gs.financials.dailyChemicalCost;
+    const baseOpex = gs.financials.dailyOpex;
+    const baseRev = gs.financials.dailyRevenue;
+    const expectedReagent = chemicalReagentOpexPerDay(1, flow);
+    assert(expectedReagent > 90, 'RE07b. expected reagent at this flow ~'+expectedReagent.toFixed(1)+' ($0.033/m³)');
+    // Compare against a twin plant WITHOUT chemical dosing but same flow
+    let gsNoChem:any = GameManager.createInitialState(0, true);
+    const scr2 = { instanceId:'scrRE2', typeId:'bar_screen', gridX:10, gridY:10, rotation:0, volume:200, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:0, lastOpexActual:0 } as any;
+    gsNoChem.units.push(scr2);
+    gsNoChem.pipes.push(
+      { id:'pR1', fromUnitId:'inlet_0', fromPortId:'outlet', toUnitId:'scrRE2', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'} as any,
+      { id:'pR2', fromUnitId:'scrRE2', fromPortId:'outlet', toUnitId:'outfall_0', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'} as any
+    );
+    for(let i=0;i<10;i++) gsNoChem = GameManager.tick(gsNoChem, 0.5);
+    const chemDiff = gs.financials.dailyChemicalCost - gsNoChem.financials.dailyChemicalCost;
+    const opexDiff = gs.financials.dailyOpex - gsNoChem.financials.dailyOpex;
+    // dailyChemicalCost diff = static 0.4*11 (dosing+mixer? no mixer? 
+    // Our dosing plant has mixer+ dosing static; comparison plant has none, so static diff includes mixer
+    // Isolate reagent: opexDiff = staticOpex + power + reagent; chemicalDiff = 0.4*static + reagent
+    assert(chemDiff > expectedReagent * 0.9 && chemDiff < expectedReagent + 15, 'RE07c. chemicalCost uplift ≈ reagent $'+chemDiff.toFixed(1)+' (expected ~'+expectedReagent.toFixed(1)+'+static)');
+    assert(opexDiff >= expectedReagent, 'RE07d. opex uplift ≥ reagent $'+opexDiff.toFixed(1)+' ≥ '+expectedReagent.toFixed(1));
+    assert(gs.financials.netDailyProfit < gsNoChem.financials.netDailyProfit, 'RE07e. reagent pressure reduces net profit '+gs.financials.netDailyProfit.toFixed(0)+' < '+gsNoChem.financials.netDailyProfit.toFixed(0));
+  }
+  // RE08: no flow → reagent not charged even with active dosing rigged via flow param
+  {
+    let gs:any = GameManager.createInitialState(0, true);
+    let rr = GameManager.placeCustomBasin(gs, { x:5,y:5,w:4,h:4 }); gs=rr.newState;
+    rr = GameManager.placeProcessEquipment(gs, 'submersible_mixer', 6,6); gs=rr.newState;
+    rr = GameManager.placeProcessEquipment(gs, 'chemical_dosing_pump', 5,5); gs=rr.newState;
+    rr = GameManager.placeUtilityConnection(gs, 'power_cable', 6,6,5,5); gs=rr.newState;
+    // No pipes → no flow
+    const ce = evaluateConstructionEffects(gs.customBasins, gs.processEquipment, gs.utilityConnections, gs.customBaffles, gs.finalEffluent.flowRate);
+    assert(ce.reagentOpexPerDay === 0, 'RE08. evaluate with 0 flow → $0 reagent (got '+ce.reagentOpexPerDay+')');
+    // Tick also sees 0 flow
+    const beforeChem = gs.financials.dailyChemicalCost;
+    gs = GameManager.tick(gs, 0.5);
+    // With no flow, tick still runs but reagent stays 0 — only static opex adds chemical cost, not flow-scaled
+    // So just verify no blow-up: dailyChemicalCost stays bounded
+    assert(gs.financials.dailyChemicalCost < 1000, 'RE08b. no-flow tick chemical cost stays bounded '+gs.financials.dailyChemicalCost.toFixed(1));
   }
 }
 

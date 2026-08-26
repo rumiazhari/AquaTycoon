@@ -47,6 +47,23 @@ import {
   poweredEquipmentIds,
 } from './ConstructionNetwork';
 
+/**
+ * Phase 7 slice 4 — reagent consumable OPEX (tycoon pressure).
+ * Ferric/alum dosing at 60 mg/L × $0.55/kg = $0.033 per m³ per active
+ * dosing pump. At 3500 m³/d one pump costs ~$115/d; at 12000 ~$396/d.
+ * Storage tanks do not consume reagent — only the dosing pump that
+ * injects in a healthy zone.
+ */
+export const CHEMICAL_DOSE_MG_PER_L = 60;
+export const CHEMICAL_REAGENT_PRICE_PER_KG = 0.55;
+export const CHEMICAL_REAGENT_COST_PER_M3_PER_PUMP =
+  (CHEMICAL_DOSE_MG_PER_L / 1000) * CHEMICAL_REAGENT_PRICE_PER_KG; // 0.06 kg/m³ × $0.55 = $0.033/m³
+
+export function chemicalReagentOpexPerDay(activeDosingPumps: number, flowM3d: number): number {
+  if (activeDosingPumps <= 0 || flowM3d <= 0) return 0;
+  return activeDosingPumps * flowM3d * CHEMICAL_REAGENT_COST_PER_M3_PER_PUMP;
+}
+
 export interface ConstructionTickEffect {
   /** Number of basins that actually hold a powered mixer (healthy). */
   healthyBasins: number;
@@ -84,6 +101,8 @@ export interface ConstructionTickEffect {
   totalDosingPumps: number;
   poweredDosingPumps: number;
   activeDosingPumps: number;
+  /** Phase 7 slice 4: flow-scaled reagent consumable cost (USD/day, 100% chemical). */
+  reagentOpexPerDay: number;
   /** Effluent multipliers (<1 = improvement, >1 = penalty). */
   bodMultiplier: number;
   tnMultiplier: number;
@@ -118,12 +137,15 @@ function mixerInZone(
  * evaluated PER ZONE (each derived cell needs its own powered mixer).
  * Empty/undefined falls back to the legacy per-basin check so every existing
  * 3-arg call (and 100% of old tests) keeps its exact numbers.
+ * @param flowM3d optional Phase-7 slice 4 — treated flow (m³/d) for flow-scaled
+ * reagent consumable cost. Default 0 keeps backward compat (no reagent).
  */
 export function evaluateConstructionEffects(
   basins: CustomBasin[],
   equipment: ProcessEquipmentItem[],
   utilityConnections: Pick<UtilityConnection, 'type' | 'ax' | 'ay' | 'bx' | 'by'>[],
   baffles: BaffleWall[] = [],
+  flowM3d: number = 0,
 ): ConstructionTickEffect {
   const bs = basins ?? [];
   const eq = equipment ?? [];
@@ -442,6 +464,10 @@ export function evaluateConstructionEffects(
 
   const extraPowerKw = stats.livePowerKw;
   const extraOpexPerDay = stats.liveOpexPerDay;
+  // Phase 7 slice 4: flow-scaled reagent consumable — only active dosing pumps in healthy zones consume reagent, scaled by treated flow.
+  const reagentOpexPerDay = bs.length > 0 && activeDosingPumps > 0 && flowM3d > 10
+    ? chemicalReagentOpexPerDay(activeDosingPumps, flowM3d)
+    : 0;
 
   const parts: string[] = [];
   if (bs.length === 0) parts.push('no custom basins');
@@ -465,6 +491,7 @@ export function evaluateConstructionEffects(
     parts.push(chemDetail);
   }
   if (extraPowerKw > 0) parts.push(`${extraPowerKw} kW live`);
+  if (reagentOpexPerDay > 0) parts.push(`$${Math.round(reagentOpexPerDay)}/d reagent`);
   if (parts.length === 0) parts.push('no construction effect');
   const summary = parts.join(' · ');
 
@@ -494,6 +521,7 @@ export function evaluateConstructionEffects(
     totalDosingPumps,
     poweredDosingPumps,
     activeDosingPumps,
+    reagentOpexPerDay,
     bodMultiplier: bodMul,
     tnMultiplier: tnMul,
     tssMultiplier: tssMul,
