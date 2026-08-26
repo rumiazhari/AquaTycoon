@@ -11,6 +11,7 @@ import { REAL_SECONDS_PER_GAME_DAY, INITIAL_GAME_TIME_DAYS, getDayNightFactor } 
 import { applyDiurnalInfluent, DIURNAL_DEFAULT_STRENGTH } from '../sim/InfluentProfile';
 import { resolveFootprint } from '../sim/UnitDimensions';
 import { isEngineerable, workingVolumeM3 } from '../design/Geometry';
+import { casDesignPoint } from "../sim/processes/ActivatedSludge";
 import { blueprintFromTemplate, CommissioningState } from '../design/UnitBlueprint';
 import { estimatePipeCAPEX, estimateSeedSludgeCAPEX } from '../design/CostEstimator';
 import { pathLengthM } from '../sim/hydraulics/PipeHydraulics';
@@ -594,6 +595,45 @@ export class GameManager {
               eff.bod <= 1.5 && eff.tss <= 0.5 && eff.toxicIndex <= 2 &&
               eff.pathogens <= Math.max(1, target * 10);
             currentlyMet = roActive && ultraPure && topology.influentToOutfall;
+            break;
+          }
+          case 'obj_pump': {
+            // Pump station integrated on the active liquid train AND actually
+            // delivering flow at its duty point (real intersection of pump curve
+            // with system curve). Accept 'ok' or "oversized" — both mean the
+            // pump is running and pushing flow.
+            currentlyMet = simResult.updatedUnits.some(u =>
+              topology.activeUnitIds.has(u.instanceId) &&
+              u.typeId === 'pump_station' &&
+              u.pumpRuntime?.status !== 'failed_unit' &&
+              (u.pumpRuntime?.dutyFlowM3h ?? 0) > 0
+            );
+            break;
+          }
+          case 'obj_cas_sizing': {
+            // CAS sized for sufficient HRT at the level's contract design flow.
+            const hrtCandidates = simResult.updatedUnits
+              .filter(u => topology.activeUnitIds.has(u.instanceId) &&
+                (u.typeId === 'activated_sludge_cas' || u.typeId === 'a2o_bardenpho'))
+              .map(u => casDesignPoint(u,
+                state.currentLevel.influentSpec.bod,
+                state.currentLevel.influentSpec.nh4,
+                state.currentLevel.influentSpec.flowRate))
+              .filter(dp => dp && dp.hrtHoursAtDesignFlow >= target);
+            currentlyMet = hrtCandidates.length > 0;
+            break;
+          }
+          case 'obj_eq_sizing': {
+            // Equalization Basin sized with sufficient working volume for the
+            // level's contract design flow. Check blueprint geometry volume.
+            const eqCandidates = simResult.updatedUnits
+              .filter(u =>
+                topology.activeUnitIds.has(u.instanceId) &&
+                u.typeId === 'equalization_basin' &&
+                u.blueprint &&
+                workingVolumeM3(u.blueprint.design.geometry) >= target
+              );
+            currentlyMet = eqCandidates.length > 0;
             break;
           }
           case 'obj_compliance':

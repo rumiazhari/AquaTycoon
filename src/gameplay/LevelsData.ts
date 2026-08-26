@@ -49,7 +49,9 @@ export const CAMPAIGN_LEVELS: CampaignLevel[] = [
       { id: 'obj_bod', description: 'Reduce Effluent BOD < 25 mg/L', type: 'effluent_standard', targetValue: 25, achieved: false },
       { id: 'obj_tss', description: 'Reduce Effluent TSS < 30 mg/L', type: 'effluent_standard', targetValue: 30, achieved: false },
       { id: 'obj_pathogen', description: 'Disinfect Pathogens < 1,000 CFU/100mL (UV / Chlorination)', type: 'effluent_standard', targetValue: 1000, achieved: false },
-      { id: 'obj_profit', description: 'Achieve Positive Daily Operating Cash Flow', type: 'budget_target', achieved: false }
+      { id: 'obj_profit', description: 'Achieve Positive Daily Operating Cash Flow', type: 'budget_target', achieved: false },
+      { id: 'obj_pump', description: 'Deliver full contract flow through a Pump Station at its duty point', type: 'construction', achieved: false },
+      { id: 'obj_cas_sizing', description: 'Size the CAS reactor for ≥ 6 h HRT at contract flow', type: 'engineering', targetValue: 6, achieved: false }
     ],
     availableUnits: [
       'influent_inlet',
@@ -113,7 +115,8 @@ export const CAMPAIGN_LEVELS: CampaignLevel[] = [
       { id: 'obj_eq', description: 'Install Equalization Basin to dampen shock loads', type: 'zero_spill', achieved: false },
       { id: 'obj_bod', description: 'Reduce Influent BOD from 1,100 to < 30 mg/L (97% removal)', type: 'effluent_standard', targetValue: 30, achieved: false },
       { id: 'obj_cod', description: 'Reduce Effluent COD < 120 mg/L', type: 'effluent_standard', targetValue: 120, achieved: false },
-      { id: 'obj_aeration', description: 'Maintain Aeration DO > 2.0 mg/L without sludge bulking', type: 'effluent_standard', achieved: false }
+      { id: 'obj_aeration', description: 'Maintain Aeration DO > 2.0 mg/L without sludge bulking', type: 'effluent_standard', achieved: false },
+      { id: 'obj_eq_sizing', description: 'Size the Equalization Basin for ≥ 500 m³ working volume', type: 'engineering', targetValue: 500, achieved: false }
     ],
     availableUnits: [
       'influent_inlet',

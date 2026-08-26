@@ -15,7 +15,7 @@ export type LevelBiome =
 export interface LevelObjective {
   id: string;
   description: string;
-  type: 'effluent_standard' | 'power_neutrality' | 'budget_target' | 'zero_spill' | 'treat_volume';
+  type: 'effluent_standard' | 'power_neutrality' | 'budget_target' | 'zero_spill' | 'treat_volume' | 'construction' | 'engineering';
   targetValue?: number;
   achieved: boolean;
 }

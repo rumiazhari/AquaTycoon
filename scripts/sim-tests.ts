@@ -1070,43 +1070,46 @@ const obj = (state: any, id: string) => state.currentLevel.objectives.find((o: a
     if (params) Object.assign(u.customParams, params);
     return u as PlacedUnit;
   };
-  // Stage A: core liquid train within starting budget (350k)
-  const scr = place('bar_screen', 5, 20)!;
-  const grt = place('grit_chamber', 8, 20)!;
-  const pri = place('primary_clarifier_circular', 11, 20)!;
-  const cas = place('activated_sludge_cas', 16, 20, { doSetpoint: 2.5 })!;
-  const cl = place('secondary_clarifier', 22, 23)!;
-  s.pipes = [
-    mkPipe('sp1', 'inlet_0', 'outlet', scr.instanceId, 'inlet'),
-    mkPipe('sp2', scr.instanceId, 'outlet', grt.instanceId, 'inlet'),
-    mkPipe('sp3', grt.instanceId, 'outlet', pri.instanceId, 'inlet'),
-    mkPipe('sp4', pri.instanceId, 'outlet', cas.instanceId, 'inlet'),
-    mkPipe('sp5', cas.instanceId, 'outlet', cl.instanceId, 'inlet'),
-    mkPipe('sp6', cl.instanceId, 'outlet', 'outfall_0', 'inlet'),
-    mkPipe('sp7', cl.instanceId, 'sludge_outlet', cas.instanceId, 'ras_inlet', 'ras')
-  ];
-  for (let i = 0; i < 300; i++) s = GameManager.tick(s, 1);
-  // Stage B: add UV disinfection once earned revenue covers it. The wait is
-  // bounded and honest: corrected clarifier physics (iter 7) shifted the
-  // revenue curve, so a fixed tick count made affordability flaky.
-  const uvCapex = UNIT_DEFINITIONS.uv_disinfection.capex;
-  let waitTicks = 0;
-  while (s.financials.cash < uvCapex && waitTicks < 1200) {
-    s = GameManager.tick(s, 1);
-    waitTicks++;
+  // Stage A: core liquid train + pump station (obj_pump needs on-train pump
+    // delivering at duty point from the start). obj_cas_sizing is already
+    // satisfied by the fresh CAS template (1728 m³ → ≈11.9 h HRT at 3500 m³/d).
+    const scr = place('bar_screen', 5, 20)!;
+    const grt = place('grit_chamber', 8, 20)!;
+    const pri = place('primary_clarifier_circular', 11, 20)!;
+    const cas = place('activated_sludge_cas', 16, 20, { doSetpoint: 2.5 })!;
+    const cl = place('secondary_clarifier', 22, 23)!;
+    const pmp = place('pump_station', 26, 20)!;
+    s.pipes = [
+      mkPipe('sp1', 'inlet_0', 'outlet', scr.instanceId, 'inlet'),
+      mkPipe('sp2', scr.instanceId, 'outlet', grt.instanceId, 'inlet'),
+      mkPipe('sp3', grt.instanceId, 'outlet', pri.instanceId, 'inlet'),
+      mkPipe('sp4', pri.instanceId, 'outlet', cas.instanceId, 'inlet'),
+      mkPipe('sp5', cas.instanceId, 'outlet', cl.instanceId, 'inlet'),
+      mkPipe('sp6', cl.instanceId, 'outlet', pmp.instanceId, 'inlet'),
+      mkPipe('sp7', pmp.instanceId, 'outlet', 'outfall_0', 'inlet'),
+      mkPipe('sp8', cl.instanceId, 'sludge_outlet', cas.instanceId, 'ras_inlet', 'ras')
+    ];
+    for (let i = 0; i < 300; i++) s = GameManager.tick(s, 1);
+
+    // Stage B: add UV disinfection once earned revenue covers it.
+    const uvCapex = UNIT_DEFINITIONS.uv_disinfection.capex;
+    let waitTicks = 0;
+    while (s.financials.cash < uvCapex && waitTicks < 1200) {
+      s = GameManager.tick(s, 1);
+      waitTicks++;
+    }
+    const uv = place('uv_disinfection', 29, 20);
+    if (uv) {
+      s.pipes = s.pipes.filter((p: PipeConnection) => !(p.fromUnitId === pmp.instanceId && p.toUnitId === 'outfall_0'));
+      s.pipes.push(
+        mkPipe('sp9', pmp.instanceId, 'outlet', uv.instanceId, 'inlet'),
+        mkPipe('sp10', uv.instanceId, 'outlet', 'outfall_0', 'inlet')
+      );
+      for (let i = 0; i < 600; i++) s = GameManager.tick(s, 1);
+    }
+    assert(uv !== null && s.isLevelComplete && s.currentLevel.objectives.every((o: any) => o.achieved),
+      `S. Level 1 canonical staged build COMPLETES (score ${s.overallStats.complianceScore}%, cash $${s.financials.cash.toFixed(0)})`);
   }
-  const uv = place('uv_disinfection', 26, 20);
-  if (uv) {
-    s.pipes = s.pipes.filter((p: PipeConnection) => !(p.fromUnitId === cl.instanceId && p.toUnitId === 'outfall_0'));
-    s.pipes.push(
-      mkPipe('sp8', cl.instanceId, 'outlet', uv.instanceId, 'inlet'),
-      mkPipe('sp9', uv.instanceId, 'outlet', 'outfall_0', 'inlet')
-    );
-    for (let i = 0; i < 600; i++) s = GameManager.tick(s, 1);
-  }
-  assert(uv !== null && s.isLevelComplete && s.currentLevel.objectives.every((o: any) => o.achieved),
-    `S. Level 1 canonical staged build COMPLETES (score ${s.overallStats.complianceScore}%, cash $${s.financials.cash.toFixed(0)})`);
-}
 
 // ── Tests T–W: advisor behavior per level ─────────────────────────────────────
 {
@@ -1203,6 +1206,7 @@ const obj = (state: any, id: string) => state.currentLevel.objectives.find((o: a
   const cas = place('activated_sludge_cas', 15, 9, { doSetpoint: 2.5 })!;
   const clr = place('secondary_clarifier', 18, 12)!;
   const uv = place('uv_disinfection', 21, 10)!;
+  const pmp = place('pump_station', 24, 10)!;
   const outfall = s.units.find((u: any) => u.typeId === 'effluent_outfall')!.instanceId;
   s.pipes = [
     mkPipe('z1', 'inlet_0', 'outlet', scr.instanceId, 'inlet'),
@@ -1211,7 +1215,8 @@ const obj = (state: any, id: string) => state.currentLevel.objectives.find((o: a
     mkPipe('z4', pri.instanceId, 'outlet', cas.instanceId, 'inlet'),
     mkPipe('z5', cas.instanceId, 'outlet', clr.instanceId, 'inlet'),
     mkPipe('z6', clr.instanceId, 'outlet', uv.instanceId, 'inlet'),
-    mkPipe('z7', uv.instanceId, 'outlet', outfall, 'inlet'),
+    mkPipe('z7', uv.instanceId, 'outlet', pmp.instanceId, 'inlet'),
+    mkPipe('z9', pmp.instanceId, 'outlet', outfall, 'inlet'),
     mkPipe('z8', clr.instanceId, 'sludge_outlet', cas.instanceId, 'ras_inlet', 'ras')
   ];
   // Run to steady state — the conventional train should hit BOD < 25.
@@ -1251,6 +1256,7 @@ const obj = (state: any, id: string) => state.currentLevel.objectives.find((o: a
   const casC = placeC('activated_sludge_cas', 15, 9, { doSetpoint: 2.5 })!;
   const clrC = placeC('secondary_clarifier', 18, 12)!;
   const uvC = placeC('uv_disinfection', 21, 10)!;
+  const pmpC = placeC('pump_station', 24, 10)!;
   const outfallC = sC.units.find((u: any) => u.typeId === 'effluent_outfall')!.instanceId;
   sC.pipes = [
     mkPipe('zC1', 'inlet_0', 'outlet', scrC.instanceId, 'inlet'),
@@ -1259,7 +1265,8 @@ const obj = (state: any, id: string) => state.currentLevel.objectives.find((o: a
     mkPipe('zC4', priC.instanceId, 'outlet', casC.instanceId, 'inlet'),
     mkPipe('zC5', casC.instanceId, 'outlet', clrC.instanceId, 'inlet'),
     mkPipe('zC6', clrC.instanceId, 'outlet', uvC.instanceId, 'inlet'),
-    mkPipe('zC7', uvC.instanceId, 'outlet', outfallC, 'inlet'),
+    mkPipe('zC7', uvC.instanceId, 'outlet', pmpC.instanceId, 'inlet'),
+    mkPipe('zC9', pmpC.instanceId, 'outlet', outfallC, 'inlet'),
     mkPipe('zC8', clrC.instanceId, 'sludge_outlet', casC.instanceId, 'ras_inlet', 'ras')
   ];
   for (let i = 0; i < 400; i++) sC = GameManager.tick(sC, 0.5);
