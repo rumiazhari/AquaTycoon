@@ -1,10 +1,39 @@
 # AUTOPILOT STATE — Aquatycoon
 
 STATUS: OK
-Last run: 2026-08-26 (cron, iter 14 — quantity-based pipe CAPEX billing, §AK item 11 complete)
+Last run: 2026-08-26 (cron, iter 16 — MBBR denitrification (SND) for Test K TN compliance at full diurnal peak)
 Gate policy: `npm run build` + `npx tsc --noEmit` must be clean; suites:
 `npm test` (sim), `npm run test:ui` (= static ui-tests + ui-interaction-tests),
 `npm run test:eng`.
+
+## ⭐ MISSION DIRECTIVE (user, 2026-08-26)
+`MISSION_REDESIGN.md` (repo root) is the authoritative roadmap: full
+architectural redesign into a wastewater-engineering tycoon / process-design
+simulator. Work it TOP-DOWN:
+1. ✅ Legacy backlog #1 cleared in iter 1.
+2. Section A bug fixes: A1 terrain decals ✅, A2 tool invariant ✅, A3 permit
+   single-source verification ✅, A4 CI gating ✅, A5 UI interaction tests ✅
+   (landed iter 2), A6 PFD branching ✅, A7 junk cleanup ✅.
+3. Then §AK PHASE 1 vertical slice: AUDIT each of the 17 items against the
+   actual code, finish/strengthen what is partial, one coherent slice per
+   iteration, tests per §AM.
+4. After Phase 1 stabilizes: migrate MBR/RO/A2O/DAF/sludge/disinfection.
+Never regress §AL. Respect §AI performance limits. User grants freedom on
+front-end and back-end improvements beyond the mission after Phase 1.
+
+## Iteration log
+- iter 16 (2026-08-26): Fixed sim Test K (compliance streak) — TN/NH₄ violations
+  under full municipal diurnal peak (strength 1.0). Root cause: MBBR only
+  nitrified (NH₄→NO₃) with NO denitrification; TN accumulated at ~68 mg/L vs
+  Level 3 standard 15 mg/L. Fix: added Simultaneous Nitrification-Denitrification
+  (SND) to MBBR model — anoxic biofilm interior denitrifies a fraction of TOTAL
+  NO₃ (upstream + newly nitrified) using biodegradable COD diffusing from bulk.
+  SND fraction scales with carrier fill ratio (up to 90% at 100% fill).
+  Also fixed Test K plumbing bug (missing m2→m3 pipe, p4b typo) and added EQ
+  basin to test plant for diurnal dampening. 3 MBBRs at 100% fill + EQ now
+  achieve complianceScore ≥ 90% at full diurnal strength. streakBefore = 2.9d
+  → streakAfter = 0.0d on bypass. All gates: build ✅ tsc ✅ sim 29/29 ✅
+  ui 96/96 ✅ eng 294/294 ✅.
 
 ## ⭐ MISSION DIRECTIVE (user, 2026-08-26)
 `MISSION_REDESIGN.md` (repo root) is the authoritative roadmap: full
@@ -165,25 +194,26 @@ front-end and back-end improvements beyond the mission after Phase 1.
 
 ## Backlog (work top-down)
 1. ✅ RESOLVED (iter 9): Fix Level-1 completion economy — SLR unit mismatch fixed; all 5 sim tests pass.
-2. Idea pool (post-mission freedom): blower VFD upgrade tree; sludge
+2. ✅ RESOLVED (iter 16): Fix sim Test K — TN/NH₄ violations under full diurnal peak. MBBR SND model added; compliance streak test passes.
+3. Idea pool (post-mission freedom): blower VFD upgrade tree; sludge
    treatment line objectives; sound effects for placement.
-3. ✅ RESOLVED (iter 10): Pump runout/service-factor clamping in
+4. ✅ RESOLVED (iter 10): Pump runout/service-factor clamping in
    `findPumpDutyPoint` — analytic intersections beyond the curve end now cap
    at runout (1.25×BEP default, affinity-scaled); `pump_at_runout` validator
    warning added.
-4. ✅ RESOLVED (iter 11): EQ API returns `constituentMassKg` snapshot +
+5. ✅ RESOLVED (iter 11): EQ API returns `constituentMassKg` snapshot +
    `inflowM3d` in `EqStepResult`; validator EQ audit + live DiagnosticsTab
    readout landed with it (§AK item 10 telemetry half).
-5. ✅ RESOLVED (iter 12): validatePipeVelocity wired into the PFD Pipe
+6. ✅ RESOLVED (iter 12): validatePipeVelocity wired into the PFD Pipe
    Engineering panel (live per-pipe warnings); §AK items 7/8 landed with it
    (auto-sizing ladder, materials UI, cached hydraulics, CAPEX display).
-6. ✅ RESOLVED (iter 13): Wired stepPumpStation into runtime pump_station (§AK item 9 runtime half). Pump stations now use real duty-point solver (static lift + downstream headloss → system curve intersect), return PumpRuntimeTelemetry (status, duty point, power, BEP%, cavitation, failed units). VFD speedCommand honored, clog penalty stacks on duty-point power/opex. Live telemetry panel in UnitDesigner DiagnosticsTab. 12 new PUMP_RT eng tests. All gates clean.
-7. §AK Phase-1 audit of remaining vertical-slice items:
+7. ✅ RESOLVED (iter 13): Wired stepPumpStation into runtime pump_station (§AK item 9 runtime half). Pump stations now use real duty-point solver (static lift + downstream headloss → system curve intersect), return PumpRuntimeTelemetry (status, duty point, power, BEP%, cavitation, failed units). VFD speedCommand honored, clog penalty stacks on duty-point power/opex. Live telemetry panel in UnitDesigner DiagnosticsTab. 12 new PUMP_RT eng tests. All gates clean.
+8. §AK Phase-1 audit of remaining vertical-slice items:
    - 1–3: design/runtime data model, custom geometry, CAS sizing (partial)
    - 5–6: blower/equipment capacity, clarifier custom sizing (templates need
      peak-flow resize before raising diurnal strength to 1.0)
      (NOTE iter 12 audit: item 5 blower physics + validator + tests already
-     green; remaining 5/6 work is template/peak-flow resizing)
+     green; remaining 5/6 work is template/peak-flow resize)
    - 7–10: custom pipe diameter/material ✅, pipe headloss ✅ (iter 12),
      pump duty point ✅ runtime-wired iter 13, equalization dynamic storage ✅ —
      §AK items 7–10 CLOSED (NEXT slice candidates: items 5/6 template peak-flow resize → diurnal 1.0, or 16/17 campaign)
@@ -193,6 +223,8 @@ front-end and back-end improvements beyond the mission after Phase 1.
    - 15: engineering warnings ✅ phase 1+2 (+pipe velocity iter 12);
      membrane-flux check lands with the MBR migration
    - 16–17: updated campaign L1/L2/L3, tests.
+
+Next goal (iter 17): §AK items 5/6 — resize CAS/clarifier templates for peak diurnal flow, then raise municipal diurnal strength to 1.0 for new games. This unlocks the full campaign realism and validates template sizing against the now-passing MBBR SND model.
 
 ## Notes
 - Never delete files — move into junk/. Probes live in junk/autopilot-20260826/
