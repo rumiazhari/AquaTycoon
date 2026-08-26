@@ -25,12 +25,14 @@ import { createRoot } from 'react-dom/client';
 import { BuildToolbar } from '../src/ui/BuildToolbar';
 import { UnitInspector } from '../src/ui/UnitInspector';
 import { PortSelector } from '../src/ui/PortSelector';
+import { UnitDesigner } from '../src/ui/UnitDesigner';
 import type { ToolMode } from '../src/types/graphics';
 import type {
   PlacedUnit,
   UnitPort,
 } from '../src/types/simulation';
 import { emptyWater } from '../src/sim/WaterStream';
+import { blueprintFromTemplate } from '../src/design/UnitBlueprint';
 
 // ── happy-dom bootstrap ────────────────────────────────────────────────────
 const win = new Window({ url: 'https://localhost/' });
@@ -334,10 +336,99 @@ console.log('\n── N. BuildToolbar: seed-sludge placement toggle ──');
   await act(async () => { offBtn!.dispatchEvent(new win.MouseEvent('click', { bubbles: true })); });
   assert(togOff.calls.length === 1, 'OFF-state toggle click also fires the callback');
   await mOn.unmount();
-  await mOff.unmount();
-}
+    await mOff.unmount();
+  }
 
-// ── summary ────────────────────────────────────────────────────────────────
+  // ═══ O. UnitDesigner — Show Calculation blocks (§AK item 13) ═════════════════
+  console.log('\n── O. UnitDesigner: Show Calculation blocks ──');
+  {
+    const spyClose = spy<[]>();
+    const spyUpdate = spy<[string, any]>();
+    const types = [
+      { id: 'activated_sludge_cas', name: 'CAS', hasPumpRuntime: false },
+      { id: 'secondary_clarifier', name: 'Clarifier', hasPumpRuntime: false },
+      { id: 'equalization_basin', name: 'EQ', hasPumpRuntime: false },
+      { id: 'pump_station', name: 'Pump', hasPumpRuntime: true },
+    ] as const;
+
+    for (const t of types) {
+      const bp = blueprintFromTemplate(t.id)!;
+      const u: PlacedUnit = {
+        instanceId: 'eng-' + t.id,
+        typeId: t.id,
+        gridX: 3,
+        gridY: 2,
+        rotation: 0,
+        volume: 1728,
+        customParams: {},
+        active: true,
+        efficiencyRating: 10,
+        lastInletQuality: emptyWater(),
+        lastOutletQuality: emptyWater(),
+        lastPowerKwActual: 5,
+        lastOpexActual: 30,
+        blueprint: bp,
+        ...(t.hasPumpRuntime ? {
+          pumpRuntime: {
+            status: 'ok',
+            dutyFlowM3h: 380,
+            dutyHeadM: 6.2,
+            bepFraction: 0.95,
+            cavitating: false,
+            failedUnitCount: 0,
+            electricalPowerKw: 11,
+          }
+        } : {}),
+      } as PlacedUnit;
+
+      const m = await mount(
+        <UnitDesigner
+          unit={u}
+          onClose={spyClose}
+          onUpdateBlueprint={spyUpdate}
+          playerCash={500000}
+        />
+      );
+
+      // Click "Diag" tab
+      const diagBtn = buttonWithText(m.el, 'Diag');
+      assert(diagBtn !== null, `${t.name}: DIAG tab button exists`);
+      await act(async () => { diagBtn!.dispatchEvent(new win.MouseEvent('click', { bubbles: true })); });
+
+      // Check CalcBlocks present (teal bordered boxes)
+      const blocks = Array.from(m.el.querySelectorAll('div')).filter(d =>
+        d.className.includes('bg-teal-950/20') && d.className.includes('border-teal-700/40')
+      );
+      assert(blocks.length >= 1, `${t.name}: at least one CalcBlock rendered in Diagnostics`);
+
+      // Content-specific assertions
+      const text = m.el.textContent ?? '';
+      if (t.id === 'activated_sludge_cas') {
+        assert(text.includes('HRT ='), 'CAS: HRT CalcBlock equation present');
+        assert(text.includes('F/M ='), 'CAS: F/M CalcBlock equation present');
+      } else if (t.id === 'secondary_clarifier') {
+        assert(text.includes('SOR ='), 'Clarifier: SOR CalcBlock equation present');
+        assert(text.includes('SLR ='), 'Clarifier: SLR CalcBlock equation present');
+      } else if (t.id === 'equalization_basin') {
+        assert(text.includes("V′ =") || text.includes("V' ="), 'EQ: Storage balance equation present');
+      } else if (t.id === 'pump_station') {
+        assert(text.includes('P_hyd'), 'Pump: wire-to-water equation present');
+      }
+
+      // Click "Econ" tab
+      const econBtn = buttonWithText(m.el, 'Econ');
+      assert(econBtn !== null, `${t.name}: ECON tab button exists`);
+      await act(async () => { econBtn!.dispatchEvent(new win.MouseEvent('click', { bubbles: true })); });
+
+      const econText = m.el.textContent ?? '';
+      assert(econText.includes('m³ × $'), 'Econ: civil derivation shows concrete volume math');
+      assert(econText.includes('TOTAL ='), 'Econ: total composition equation present');
+
+      await m.unmount();
+    }
+  }
+
+  // ── summary ────────────────────────────────────────────────────────────────
 console.log('');
 if (failures === 0) console.log(`ALL UI INTERACTION TESTS PASSED (${passes})`);
 else { console.error(`${failures} UI INTERACTION TEST(S) FAILED (${passes} passed)`); process.exit(1); }

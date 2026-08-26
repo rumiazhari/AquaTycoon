@@ -23,13 +23,16 @@ import {
   BasinGeometry,
   workingVolumeM3,
   planAreaM2,
+  civilQuantities,
 } from '../design/Geometry';
 import {
   CONCRETE_MATERIALS_LIST,
+  CONSTRUCTION_MATERIALS,
   BLOWER_MODELS,
   DIFFUSER_MODELS,
   REDUNDANCY_CONFIGS,
 } from '../design/catalogs/Equipment';
+import { PEAK_FLOW_FACTOR } from '../design/PeakFlow';
 import {
   estimateStructureCAPEX,
   estimateBlowerCAPEX,
@@ -331,11 +334,30 @@ function DiagnosticsTab({ unit, bp }: { unit: PlacedUnit; bp: PlacedUnit['bluepr
     <div className="flex flex-col gap-2 text-[11px] font-mono">
       <Row k="Working volume" v={`${fmt(workingVolumeM3(geo), 0)} m³`} />
       <Row k="Plan area" v={`${fmt(planAreaM2(geo), 0)} m²`} />
+      {geo.shape === 'rect' ? (
+        <CalcBlock title="Working Volume"
+          eq="V = L × W × h_water × n_trains"
+          sub={`${fmt(geo.lengthM, 1)} × ${fmt(geo.widthM, 1)} × ${fmt(geo.waterDepthM, 1)} m × ${Math.max(1, geo.numberOfParallelTrains)} train(s)`}
+          result={`${fmt(workingVolumeM3(geo), 0)} m³`} />
+      ) : (
+        <CalcBlock title="Working Volume"
+          eq="V = π·D²/4 × hSWD × n_trains"
+          sub={`π·${fmt(geo.diameterM, 1)}²/4 × ${fmt(geo.sideWaterDepthM, 1)} m × ${Math.max(1, geo.numberOfParallelTrains)} train(s)`}
+          result={`${fmt(workingVolumeM3(geo), 0)} m³`} />
+      )}
       {cas && (
         <>
           <Divider />
           <Row k="HRT @ design flow" v={`${fmt(cas.hrtHoursAtDesignFlow, 1)} h`} />
           <Row k="F/M" v={`${fmt(cas.fmRatioDay, 3)} d⁻¹`} />
+          <CalcBlock title="Hydraulic Retention Time"
+            eq="HRT = 24·V / Q_design"
+            sub={`24 × ${fmt(cas.volumeM3, 0)} m³ / ${fmt(qForward, 0)} m³/d`}
+            result={`${fmt(cas.hrtHoursAtDesignFlow, 1)} h`} />
+          <CalcBlock title="Food-to-Microorganism Ratio"
+            eq="F/M = Q·S₀ / (V · X_MLSS)"
+            sub={`(${fmt(qForward, 0)} m³/d × ${fmt(unit.lastInletQuality?.bod ?? 250, 0)} mg/L) ÷ (${fmt(cas.volumeM3, 0)} m³ × ${fmt((bp!.equipment as { designMlssMgL?: number }).designMlssMgL ?? 3200, 0)} mg/L)`}
+            result={`${fmt(cas.fmRatioDay, 3)} d⁻¹`} />
           <Row k="O₂ demand" v={`${fmt(cas.netDemandKgDay, 0)} kg O₂/d`} />
           <Row k="O₂ capacity (field)" v={`${fmt(cas.fieldTransferCapacityKgDay, 0)} kg O₂/d`} />
           <Row k="Capacity margin" v={`${fmt(cas.capacityMarginRatio * 100, 0)} %`} good={cas.capacityMarginRatio >= 1} bad={cas.capacityMarginRatio < 1} />
@@ -355,6 +377,20 @@ function DiagnosticsTab({ unit, bp }: { unit: PlacedUnit; bp: PlacedUnit['bluepr
           <Divider />
           <Row k="Surface overflow rate" v={`${fmt(clar.sorM3M2Day, 1)} m/d`} good={clar.sorM3M2Day < 24} bad={clar.sorM3M2Day > 33} />
           <Row k="Solids loading" v={`${fmt(clar.slrKgM2Day, 2)} kg/m²·d`} bad={clar.slrKgM2Day > 144} />
+          <CalcBlock title="Surface Overflow Rate"
+            eq="SOR = Q_forward / A_plan"
+            sub={`${fmt(qForward, 0)} m³/d ÷ ${fmt(clar.planAreaM2, 0)} m²`}
+            result={`${fmt(clar.sorM3M2Day, 1)} m/d`}
+            note="Overload thresholds: caution >24 m/d, washout >33 m/d (Metcalf & Eddy)." />
+          <CalcBlock title="Peak-Diurnal SOR"
+            eq={`SOR_peak = SOR × ${fmt(PEAK_FLOW_FACTOR, 3)} (shared peak basis)`}
+            sub={`${fmt(clar.sorM3M2Day, 1)} m/d × ${fmt(PEAK_FLOW_FACTOR, 3)}`}
+            result={`${fmt(clar.peakSorM3M2Day, 1)} m/d`} />
+          <CalcBlock title="Solids Loading Rate"
+            eq="SLR = Q_total · X_MLSS / (1000·A)"
+            sub={`(${fmt(qForward * 1.75, 0)} m³/d feed × ${fmt(unit.mlssActual ?? 3200, 0)} mg/L) ÷ (1000 × ${fmt(clar.planAreaM2, 0)} m²)`}
+            result={`${fmt(clar.slrKgM2Day, 1)} kg/m²·d`}
+            note="Feed = forward flow + RAS recycle; overload ≈144 kg/m²·d (=6 kg/m²·h)." />
           <Row k="Blanket level" v={`${fmt(clar.blanketLevelFraction * 100, 0)} %`} bad={clar.blanketLevelFraction > 0.7} />
           <Row k="Escape TSS" v={`${fmt(clar.escapeTssMgL, 0)} mg/L`} bad={clar.escapeTssMgL > 20} />
         </>
@@ -367,6 +403,10 @@ function DiagnosticsTab({ unit, bp }: { unit: PlacedUnit; bp: PlacedUnit['bluepr
           <Row k="Stored BOD load" v={`${fmt(eqSt?.constituentMassKg['bod'] ?? 0, 0)} kg`} />
           <Row k="Stored TSS load" v={`${fmt(eqSt?.constituentMassKg['tss'] ?? 0, 0)} kg`} />
           <Row k="Min pump-out pool" v={`~${fmt(eqCapM3 * EQ_MIN_POOL_FRACTION, 0)} m³`} />
+          <CalcBlock title="Storage Balance (live)"
+            eq="V′ = V₀ + (Q_in − Q_out)·Δt"
+            sub={`level ${fmt(Math.min(1.5, eqLevel) * 100, 0)} % of ${fmt(eqCapM3, 0)} m³ working volume`}
+            result={`${fmt(eqSt?.storedVolumeM3 ?? 0, 0)} m³ stored`} />
           <p className="text-[10px] text-slate-500 font-mono">Mixed storage: V′ = V + (Qin − Qout)·dt; each pollutant integrates Qin·Cin − Qout·Ctank. Bigger basin ⇒ smoother downstream load (§J).</p>
         </>
       )}
@@ -378,6 +418,20 @@ function DiagnosticsTab({ unit, bp }: { unit: PlacedUnit; bp: PlacedUnit['bluepr
           <Row k="Duty head" v={`${fmt(unit.pumpRuntime.dutyHeadM, 2)} m`} />
           <Row k="BEP fraction" v={`${fmt(unit.pumpRuntime.bepFraction * 100, 0)} %`} good={unit.pumpRuntime.bepFraction >= 0.7 && unit.pumpRuntime.bepFraction <= 1.15} bad={unit.pumpRuntime.bepFraction < 0.5 || unit.pumpRuntime.bepFraction > 1.3} />
           <Row k="Electrical power" v={`${fmt(unit.pumpRuntime.electricalPowerKw, 1)} kW`} />
+          {(() => {
+            const rt = unit.pumpRuntime;
+            if (!rt || rt.dutyFlowM3h <= 0) return null;
+            const qM3s = rt.dutyFlowM3h / 3600;
+            const pHydKw = (1000 * 9.81 * qM3s * rt.dutyHeadM) / 1000;
+            const etaWire = rt.electricalPowerKw > 0 ? pHydKw / rt.electricalPowerKw : 0;
+            return (
+              <CalcBlock title="Wire-to-Water Efficiency"
+                eq="η = P_hyd / P_elec ; P_hyd = ρ·g·Q·H"
+                sub={`9.81 × ${fmt(qM3s, 3)} m³/s × ${fmt(rt.dutyHeadM, 2)} m = ${fmt(pHydKw, 2)} kW hydraulic vs ${fmt(rt.electricalPowerKw, 1)} kW drawn`}
+                result={`${fmt(etaWire * 100, 0)} %`}
+                note="Low η ⇒ duty point far from BEP or oversized motor — resize impound/piping." />
+            );
+          })()}
           {unit.pumpRuntime.cavitating && <Row k="⚠ Cavitation risk" v="YES" bad />}
           {unit.pumpRuntime.failedUnitCount > 0 && <Row k="Failed units" v={String(unit.pumpRuntime.failedUnitCount)} bad />}
         </>
@@ -402,6 +456,17 @@ function EconomicsTab({ bp }: { bp: PlacedUnit['blueprint'] }) {
   return (
     <div className="flex flex-col gap-2 text-[11px] font-mono">
       <Row k="Civil works" v={money(struct.civil)} />
+      {(() => {
+        const mat = CONSTRUCTION_MATERIALS[bp!.design.materialId] ?? CONSTRUCTION_MATERIALS.reinforced_concrete;
+        const cq = civilQuantities(geo);
+        return (
+          <CalcBlock title="Civil Works Derivation"
+            eq="V_conc = A_floor·t_floor + A_wall·t_wall ; civil = V_conc·rate·shell + V_exc·$22"
+            sub={`${fmt(cq.concreteVolumeM3, 0)} m³ × $${mat.concreteCostPerM3}/m³ × ${mat.shellCostFactor} shell + ${fmt(cq.excavationVolumeM3, 0)} m³ × $22/m³ excavation`}
+            result={money(struct.civil)}
+            note="Quantity take-off from the ACTUAL designed geometry — no fixed template price." />
+        );
+      })()}
       <Row k="Mechanical (eq/diffusers)" v={money(struct.mechanical + blowerCap)} />
       <Row k="Electrical" v={money(struct.electrical)} />
       <Row k="Instrumentation" v={money(struct.instrumentation)} />
@@ -409,6 +474,10 @@ function EconomicsTab({ bp }: { bp: PlacedUnit['blueprint'] }) {
       <Row k="Contingency (12%)" v={money(struct.contingency)} />
       <Divider />
       <Row k="TOTAL CAPEX" v={money(struct.total + blowerCap)} good />
+      <CalcBlock title="Total CAPEX Composition"
+        eq="TOTAL = civil + mech/equip + elec + instr + site + contingency(12%) + blower"
+        sub={`${money(struct.civil)} + ${money(struct.mechanical + blowerCap)} + ${money(struct.electrical)} + ${money(struct.instrumentation)} + ${money(struct.sitework)} + ${money(struct.contingency)} + ${money(blowerCap)}`}
+        result={money(struct.total + blowerCap)} />
       <p className="text-[10px] text-slate-500 font-mono">Cost derives from concrete volumes, equipment selections, redundancy and pipework — not a fixed template price (Prompt §T/U).</p>
     </div>
   );
