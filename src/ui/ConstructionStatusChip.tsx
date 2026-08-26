@@ -1,7 +1,7 @@
 import React from 'react';
 import { ConstructionStats } from '../design/ConstructionNetwork';
 import { BasinZoneStats } from '../design/BasinZone';
-import { Zap, Waves, Droplets, Cable, Columns3, ShieldCheck, Hexagon, Gauge, FlaskConical } from 'lucide-react';
+import { Zap, Waves, Droplets, Cable, Columns3, ShieldCheck, Hexagon, Gauge, FlaskConical, Filter, Cylinder } from 'lucide-react';
 
 interface Props {
   stats: ConstructionStats;
@@ -60,6 +60,13 @@ export const ConstructionStatusChip: React.FC<Props> = ({ stats, zoneStats }) =>
           <FlaskConical size={12} className={stats.poweredChemicalUnits>0 ? "text-lime-400" : "text-amber-400"} />
           <span className="font-bold">{stats.poweredChemicalUnits}/{stats.totalChemicalUnits} dosing live</span>
           <span className="opacity-70 hidden sm:inline">· {stats.totalStorageTanks} tank{stats.totalStorageTanks!==1?'s':''} · {stats.totalDosingPumps} pump{stats.totalDosingPumps!==1?'s':''}</span>
+        </span>
+      )}
+      {stats.totalRoUnits > 0 && (
+        <span className={`pointer-events-auto inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-mono shadow-lg ${stats.poweredRoUnits > 0 ? 'bg-sky-950/40 border-sky-500/30 text-sky-200' : 'bg-amber-950/30 border-amber-500/30 text-amber-200'}`}>
+          <Filter size={12} className={stats.poweredRoUnits>0 ? "text-sky-400" : "text-amber-400"} />
+          <span className="font-bold">{stats.poweredRoSkids}/{stats.totalRoSkids} RO skid{stats.totalRoSkids!==1?'s':''} live</span>
+          {stats.totalBrineTanks>0 && <><span className="opacity-50">·</span><Cylinder size={12} className={stats.poweredBrineTanks>0 ? "text-amber-300" : "text-amber-400"} /><span className="font-bold">{stats.poweredBrineTanks}/{stats.totalBrineTanks} brine</span></>}
         </span>
       )}
       {stats.totalUtilityConnections > 0 && (

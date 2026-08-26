@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, Wind, Trash2, Droplets, Fan, Cog, Waves, AlertTriangle, CheckCircle2, Columns3, ShieldCheck, Hexagon, Gauge, Activity, Ruler, FlaskConical, Beaker } from 'lucide-react';
+import { X, Wind, Trash2, Droplets, Fan, Cog, Waves, AlertTriangle, CheckCircle2, Columns3, ShieldCheck, Hexagon, Gauge, Activity, Ruler, FlaskConical, Beaker, Filter, Cylinder } from 'lucide-react';
 import { EQUIPMENT_TYPES } from '../design/ProcessEquipment';
 import type { ProcessEquipmentItem } from '../design/ProcessEquipment';
 import type { BasinZone } from '../design/BasinZone';
@@ -17,6 +17,8 @@ const ICONS: Record<string, React.ComponentType<{ size?: number; className?: str
   level_sensor: Ruler,
   chemical_storage_tank: FlaskConical,
   chemical_dosing_pump: Beaker,
+  ro_skid: Filter,
+  brine_tank: Cylinder,
 };
 
 interface EquipmentInspectorProps {
@@ -189,6 +191,30 @@ export const EquipmentInspector: React.FC<EquipmentInspectorProps> = ({ item, po
                 <>
                   <span className="text-xs font-bold text-amber-300">Dark — needs a Power cable on this tile</span>
                   <span className="text-[11px] text-slate-400">Run a Power cable here to energize the dosing skid (red while dark, lime when injecting).</span>
+                </>
+              )
+            ) : item.typeId === 'ro_skid' ? (
+              powered ? (
+                <>
+                  <span className="text-xs font-bold text-sky-300">RO live — tertiary barrier (cyan shimmer)</span>
+                  <span className="text-[11px] text-slate-400">Spiral-wound RO polishing TSS/TP/salts to near-zero when powered. Pair with a brine tank for concentrate handling.</span>
+                </>
+              ) : (
+                <>
+                  <span className="text-xs font-bold text-amber-300">Dark — needs a Power cable on this ground tile</span>
+                  <span className="text-[11px] text-slate-400">Run a Power cable here to energize the HP pump (red while dark, cyan when polishing). High power: 12 kW.</span>
+                </>
+              )
+            ) : item.typeId === 'brine_tank' ? (
+              powered ? (
+                <>
+                  <span className="text-xs font-bold text-amber-300">Brine handling live — tank recirculating (amber shimmer)</span>
+                  <span className="text-[11px] text-slate-400">Bunded brine storage recirculating — handles RO concentrate for evaporation/hauling.</span>
+                </>
+              ) : (
+                <>
+                  <span className="text-xs font-bold text-amber-300">Dark — needs a Power cable on this ground tile</span>
+                  <span className="text-[11px] text-slate-400">Run a Power cable here to keep the recirculation agitator live (red while dark, amber when active).</span>
                 </>
               )
             ) : needsPower ? (

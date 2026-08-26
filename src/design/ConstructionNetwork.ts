@@ -143,6 +143,13 @@ export interface ConstructionStats {
   poweredStorageTanks: number;
   totalDosingPumps: number;
   poweredDosingPumps: number;
+  /** RO SLICE 1 tertiary RO kit */
+  totalRoUnits: number;
+  poweredRoUnits: number;
+  totalRoSkids: number;
+  poweredRoSkids: number;
+  totalBrineTanks: number;
+  poweredBrineTanks: number;
   /** Nameplate power of *powered* machines only (kW) — what the grid actually feeds. */
   livePowerKw: number;
   /** Nameplate power of all installed machines (kW). */
@@ -208,6 +215,12 @@ export function constructionStats(
     poweredStorageTanks: equipment.filter(e => e.typeId === 'chemical_storage_tank' && powered.has(e.id)).length,
     totalDosingPumps: equipment.filter(e => e.typeId === 'chemical_dosing_pump').length,
     poweredDosingPumps: equipment.filter(e => e.typeId === 'chemical_dosing_pump' && powered.has(e.id)).length,
+    totalRoUnits: equipment.filter(e => e.typeId === 'ro_skid' || e.typeId === 'brine_tank').length,
+    poweredRoUnits: equipment.filter(e => (e.typeId === 'ro_skid' || e.typeId === 'brine_tank') && powered.has(e.id)).length,
+    totalRoSkids: equipment.filter(e => e.typeId === 'ro_skid').length,
+    poweredRoSkids: equipment.filter(e => e.typeId === 'ro_skid' && powered.has(e.id)).length,
+    totalBrineTanks: equipment.filter(e => e.typeId === 'brine_tank').length,
+    poweredBrineTanks: equipment.filter(e => e.typeId === 'brine_tank' && powered.has(e.id)).length,
     livePowerKw,
     installedPowerKw,
     liveOpexPerDay,
@@ -227,6 +240,7 @@ export function constructionSummaryLine(s: ConstructionStats): string {
   if (s.totalCarriers > 0) parts.push(`${s.totalCarriers} carrier tile${s.totalCarriers>1?'s':''}`);
   if (s.totalSensors > 0) parts.push(`${s.poweredSensors}/${s.totalSensors} sensors live`);
   if (s.totalChemicalUnits > 0) parts.push(`${s.poweredChemicalUnits}/${s.totalChemicalUnits} dosing live`);
+  if (s.totalRoUnits > 0) parts.push(`${s.poweredRoUnits}/${s.totalRoUnits} RO live`);
   if (s.totalUtilityConnections > 0) parts.push(`${s.totalUtilityConnections} utility line${s.totalUtilityConnections > 1 ? 's' : ''}`);
   if (parts.length === 0) return 'No custom construction yet — draw a basin to start.';
   return parts.join(' · ');

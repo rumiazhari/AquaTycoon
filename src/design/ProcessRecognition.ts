@@ -319,6 +319,50 @@ export function recognizeProcess(
     }
   }
 
+  // ── 12. Tertiary RO (RO SLICE 1) — multi-barrier potable reuse ──────────────
+  {
+    const roItems = eq.filter(e => e.typeId === 'ro_skid' || e.typeId === 'brine_tank');
+    const roSkids = roItems.filter(e => e.typeId === 'ro_skid');
+    const poweredSkids = roSkids.filter(e => poweredSet.has(e.id)).length;
+    const brineTanks = roItems.filter(e => e.typeId === 'brine_tank');
+    const poweredBrine = brineTanks.filter(e => poweredSet.has(e.id)).length;
+    if (poweredSkids > 0) {
+      const detail = brineTanks.length > 0
+        ? `${poweredSkids} RO skid${poweredSkids>1?'s':''} live + ${poweredBrine}/${brineTanks.length} brine — tertiary RO`
+        : `${poweredSkids} RO skid${poweredSkids>1?'s':''} — tertiary barrier (add brine tank)`;
+      badges.push({
+        id: 'tertiary',
+        label: poweredBrine > 0 || brineTanks.length === 0 ? 'Tertiary RO' : 'Tertiary RO — brine ready',
+        detail,
+        tone: 'cyan',
+      });
+    } else if (roSkids.length > 0) {
+      badges.push({
+        id: 'tertiary-dormant',
+        label: 'RO (dormant)',
+        detail: `${roSkids.length} RO skid${roSkids.length>1?'s':''} — needs power`,
+        tone: 'amber',
+      });
+    } else if (brineTanks.length > 0) {
+      const powered = brineTanks.filter(e => poweredSet.has(e.id)).length;
+      if (powered > 0) {
+        badges.push({
+          id: 'tertiary-ready',
+          label: 'Brine handling',
+          detail: `${powered}/${brineTanks.length} brine tank${brineTanks.length>1?'s':''} live — add RO skid`,
+          tone: 'amber',
+        });
+      } else {
+        badges.push({
+          id: 'tertiary-dormant',
+          label: 'Brine (dormant)',
+          detail: `${brineTanks.length} brine tank${brineTanks.length>1?'s':''} — needs power`,
+          tone: 'amber',
+        });
+      }
+    }
+  }
+
   return badges;
 }
 

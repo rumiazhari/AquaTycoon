@@ -136,6 +136,25 @@ export const EQUIPMENT_TYPES: Record<string, EquipmentTypeDef> = {
     powerKw: 0.9, // peristaltic injection
     blurb: 'In-basin dosing skid. Injects coagulant at the point of use — TP polish when its zone is mixed and powered.',
   },
+  // ── PHASE 7 slice 5 / RO SLICE 1: tertiary reverse-osmosis kit — RO multi-barrier reuse train ───
+  ro_skid: {
+    id: 'ro_skid',
+    name: 'RO Membrane Skid',
+    mounting: 'ground',
+    capexUsd: 28_500,
+    opexUsdPerDay: 19,
+    powerKw: 12, // HP pump + CIP recirc — tertiary barrier; powered to polish to potable
+    blurb: 'Ground RO skid with 4×8″ spiral-wound vessels + HP pump. Tertiary barrier — polishes TSS/TP/salts to near-zero when powered; brine to tank.',
+  },
+  brine_tank: {
+    id: 'brine_tank',
+    name: 'Brine Holding Tank',
+    mounting: 'ground',
+    capexUsd: 13_500,
+    opexUsdPerDay: 7,
+    powerKw: 1.5, // agitator/recirc — needs power to handle concentrate
+    blurb: 'Ground bunded brine tank. Stores RO concentrate for evaporation/hauling — completes the zero-liquid reuse loop.',
+  },
 };
 
 /** One installed machine. Occupies exactly ONE grid tile. */

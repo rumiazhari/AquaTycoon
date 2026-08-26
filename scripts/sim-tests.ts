@@ -3980,5 +3980,171 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
 }
 
 
+
+// ═════════════════════════════════════════════════════════════
+// RO SLICE 1: tertiary reverse-osmosis kit — RO skid + brine tank
+// ═════════════════════════════════════════════════════════════
+{
+  const mkBasinRo = (x=5,y=5,w=8,h=6,id='bRo1') => ({ x, y, w, h, depthM:4, id, createdAtDay:0 });
+  const mkRo = (id,x,y) => ({ id, typeId:'ro_skid', x, y, createdAtDay:0 });
+  const mkBrine = (id,x,y) => ({ id, typeId:'brine_tank', x, y, createdAtDay:0 });
+  const mkMixerRo = (id,x,y) => ({ id, typeId:'submersible_mixer', x, y, createdAtDay:0 });
+  const mkPumpRo = (x=22,y=5) => ({ id:'puRo', typeId:'process_pump', x, y, createdAtDay:0 });
+  const cableRo = (ax,ay,bx,by) => ({ id:'c_'+ax+'_'+ay+'_'+bx+'_'+by, type:'power_cable', ax, ay, bx, by, createdAtDay:0 });
+  const withBasinRo = () => {
+    let s = GameManager.createInitialState(0, true);
+    const r = GameManager.placeCustomBasin(s, { x:5, y:5, w:8, h:6 });
+    if (!r.success) throw new Error('withBasinRo failed: '+r.reason);
+    return r.newState;
+  };
+  const hasRo = (badges, id) => badges.some((b)=>b.id===id);
+
+  // RO01: ro_skid mounts on open ground (dry), inside basin rejected
+  {
+    const s = withBasinRo();
+    const rGround = GameManager.placeProcessEquipment(s, 'ro_skid', 22, 5);
+    const rInBasin = GameManager.placeProcessEquipment(s, 'ro_skid', 6, 6);
+    assert(rGround.success, 'RO01. ro_skid mounts on open ground');
+    assert(!rInBasin.success && /dry/i.test(rInBasin.reason??''), 'RO01b. ro_skid inside basin rejected: '+(rInBasin.reason??''));
+  }
+  // RO02: brine_tank mounts on open ground, inside basin rejected
+  {
+    const s = withBasinRo();
+    const rGround = GameManager.placeProcessEquipment(s, 'brine_tank', 23, 5);
+    const rInBasin = GameManager.placeProcessEquipment(s, 'brine_tank', 7, 6);
+    assert(rGround.success, 'RO02. brine_tank mounts on open ground');
+    assert(!rInBasin.success && /dry/i.test(rInBasin.reason??''), 'RO02b. brine_tank inside basin rejected: '+(rInBasin.reason??''));
+  }
+  // RO03: tile exclusivity — second RO kit on same tile rejected
+  {
+    const s = withBasinRo();
+    const r1 = GameManager.placeProcessEquipment(s, 'ro_skid', 22, 5);
+    const r2 = GameManager.placeProcessEquipment(r1.newState, 'brine_tank', 22, 5);
+    assert(r1.success && !r2.success && /already holds/i.test(r2.reason??''), 'RO03. tile exclusivity blocks second RO on same tile');
+    const r3 = GameManager.placeProcessEquipment(r1.newState, 'ro_skid', 22, 5);
+    assert(!r3.success && /already holds/i.test(r3.reason??''), 'RO03b. duplicate ro_skid on same tile rejected');
+  }
+  // RO04: exact campaign CAPEX charges for RO kit
+  {
+    let s = withBasinRo();
+    s.gameMode='campaign'; s.tutorialActive=false; s.financials.cash=10000000;
+    const cash0 = s.financials.cash;
+    let r = GameManager.placeProcessEquipment(s, 'ro_skid', 22, 5); s=r.newState;
+    assert(cash0 - s.financials.cash === 28500, 'RO04. ro_skid CAPEX 28500 (got '+(cash0 - s.financials.cash)+')');
+    const cash1 = s.financials.cash;
+    r = GameManager.placeProcessEquipment(s, 'brine_tank', 23, 5); s=r.newState;
+    assert(cash1 - s.financials.cash === 13500, 'RO04b. brine_tank CAPEX 13500 (got '+(cash1 - s.financials.cash)+')');
+  }
+  // RO05: unaffordable rejected
+  {
+    let s = withBasinRo();
+    s.gameMode='campaign'; s.tutorialActive=false; s.financials.cash=100;
+    const r = GameManager.placeProcessEquipment(s, 'ro_skid', 22, 5);
+    assert(!r.success, 'RO05. unaffordable ro_skid rejected');
+    const r2 = GameManager.placeProcessEquipment(s, 'brine_tank', 23, 5);
+    assert(!r2.success, 'RO05b. unaffordable brine_tank rejected');
+  }
+  // RO06: powered model — RO needs power cable on exact tile
+  {
+    const basin = mkBasinRo();
+    const ro = mkRo('ro1',22,5);
+    const br = mkBrine('br1',23,5);
+    const eq = [ro, br];
+    const stNone = constructionStats([basin], eq, []);
+    assert(stNone.totalRoUnits===2 && stNone.poweredRoUnits===0, 'RO06. 0/2 RO powered with no cables (got '+stNone.poweredRoUnits+'/'+stNone.totalRoUnits+')');
+    assert(stNone.poweredRoSkids===0 && stNone.poweredBrineTanks===0, 'RO06b. 0 skids/brine powered');
+    const stRoOnly = constructionStats([basin], eq, [cableRo(22,5,22,5)]);
+    assert(stRoOnly.poweredRoUnits===1 && stRoOnly.poweredRoSkids===1, 'RO06c. ro_skid powered alone (got '+stRoOnly.poweredRoSkids+'/'+stRoOnly.totalRoSkids+')');
+    const stBoth = constructionStats([basin], eq, [cableRo(22,5,22,5), cableRo(23,5,22,5)]);
+    assert(stBoth.poweredRoUnits===2 && stBoth.poweredRoSkids===1 && stBoth.poweredBrineTanks===1, 'RO06d. both RO powered (got '+stBoth.poweredRoSkids+' skids + '+stBoth.poweredBrineTanks+' brine)');
+    assert(stBoth.totalRoSkids===1 && stBoth.totalBrineTanks===1, 'RO06e. total counts correct');
+  }
+  // RO07: livePower includes powered RO (12 + 1.5)
+  {
+    const basin = mkBasinRo();
+    const eq = [mkRo('ro1',22,5), mkBrine('br1',23,5), mkMixerRo('mx1',6,6)];
+    const stNone = constructionStats([basin], eq, []);
+    const stAll = constructionStats([basin], eq, [cableRo(22,5,22,5), cableRo(23,5,22,5), cableRo(6,6,22,5)]);
+    assert(stAll.livePowerKw > stNone.livePowerKw, 'RO07. powered RO increases livePower '+stNone.livePowerKw+' -> '+stAll.livePowerKw);
+    assert(Math.abs(stAll.livePowerKw - (4 + 12 + 1.5)) < 0.01, 'RO07b. livePower includes mixer 4 + ro 12 + brine 1.5 = '+stAll.livePowerKw);
+  }
+  // RO08: ground RO does NOT block basin demolition (unlike in-basin kits)
+  {
+    let s2 = withBasinRo();
+    const basinId = s2.customBasins[0].id;
+    const rRo = GameManager.placeProcessEquipment(s2, 'ro_skid', 22, 5);
+    const demo = GameManager.demolishCustomBasin(rRo.newState, basinId);
+    assert(demo.success, 'RO08. basin demolition succeeds while ground RO skid remains (ground not blocking)');
+    let s3 = withBasinRo();
+    const basinId3 = s3.customBasins[0].id;
+    const rMix = GameManager.placeProcessEquipment(s3, 'submersible_mixer', 6, 6);
+    const demoBlock = GameManager.demolishCustomBasin(rMix.newState, basinId3);
+    assert(!demoBlock.success && /equipment/i.test(demoBlock.reason??''), 'RO08b. in-basin kit still blocks basin demolition');
+  }
+  // RO09: demolish salvage (campaign 70%)
+  {
+    let s = withBasinRo();
+    s.gameMode='campaign'; s.tutorialActive=false; s.financials.cash=10000000;
+    const builtRo = GameManager.placeProcessEquipment(s, 'ro_skid', 22, 5);
+    const idRo = builtRo.newState.processEquipment.find((e)=>e.typeId==='ro_skid').id;
+    const demoRo = GameManager.demolishProcessEquipment(builtRo.newState, idRo);
+    const salvageRo = Math.round(28500*0.7);
+    assert(demoRo.success && demoRo.refunded===salvageRo, 'RO09. demolish ro_skid refunds 70% ('+salvageRo+')');
+    let s2 = withBasinRo();
+    s2.gameMode='campaign'; s2.tutorialActive=false; s2.financials.cash=10000000;
+    const builtBr = GameManager.placeProcessEquipment(s2, 'brine_tank', 23, 5);
+    const idBr = builtBr.newState.processEquipment.find((e)=>e.typeId==='brine_tank').id;
+    const demoBr = GameManager.demolishProcessEquipment(builtBr.newState, idBr);
+    const salvageBr = Math.round(13500*0.7);
+    assert(demoBr.success, 'RO09b. brine_tank demolish succeeds');
+    assert(demoBr.refunded===salvageBr, 'RO09b. brine_tank refunds 70% ('+salvageBr+' got '+demoBr.refunded+')');
+  }
+  // RO10: summary line includes RO live
+  {
+    const basin = mkBasinRo();
+    const st = constructionStats([basin], [mkRo('ro1',22,5), mkBrine('br1',23,5), mkPumpRo()], [cableRo(22,5,22,5), cableRo(23,5,22,5)]);
+    const line = constructionSummaryLine(st);
+    assert(line.includes('RO live'), 'RO10. summary line includes RO live: '+line);
+  }
+  // RO11: badge thresholds — no basins -> no RO badge even with powered RO
+  {
+    const badgesNoBasin = recognizeProcess([], [], [mkRo('ro1',22,5)], [cableRo(22,5,22,5)]);
+    assert(badgesNoBasin.length===0, 'RO11. no basins -> no RO badge even with powered skid (got '+badgesNoBasin.length+')');
+  }
+  // RO12: one powered ro_skid -> Tertiary RO cyan, unpowered -> dormant amber
+  {
+    const basin = mkBasinRo();
+    const badgesLive = recognizeProcess([basin], [], [mkRo('ro1',22,5)], [cableRo(22,5,22,5)]);
+    assert(hasRo(badgesLive,'tertiary'), 'RO12. powered ro_skid -> Tertiary RO badge');
+    assert(badgesLive.find((b)=>b.id==='tertiary').tone==='cyan', 'RO12b. powered RO tone cyan');
+    const badgesDormant = recognizeProcess([basin], [], [mkRo('ro1',22,5)], []);
+    assert(hasRo(badgesDormant,'tertiary-dormant'), 'RO12c. unpowered ro_skid -> RO dormant badge');
+    assert(badgesDormant.find((b)=>b.id==='tertiary-dormant').tone==='amber', 'RO12d. dormant tone amber');
+  }
+  // RO13: powered ro_skid + powered brine_tank -> detail includes both + cyan label
+  {
+    const basin = mkBasinRo();
+    const badges = recognizeProcess([basin], [], [mkRo('ro1',22,5), mkBrine('br1',23,5)], [cableRo(22,5,22,5), cableRo(23,5,22,5)]);
+    assert(hasRo(badges,'tertiary'), 'RO13. powered skid + brine -> Tertiary badge');
+    const det = badges.find((b)=>b.id==='tertiary').detail;
+    assert(det.includes('brine'), 'RO13b. detail mentions brine: '+det);
+    assert(det.includes('RO'), 'RO13c. detail mentions RO: '+det);
+  }
+  // RO14: brine_tank alone powered -> Brine handling amber, unpowered -> dormant
+  {
+    const basin = mkBasinRo();
+    const badgesPoweredBrine = recognizeProcess([basin], [], [mkBrine('br1',23,5)], [cableRo(23,5,23,5)]);
+    assert(hasRo(badgesPoweredBrine,'tertiary-ready'), 'RO14. powered brine alone -> Brine handling badge');
+    const badgesDormantBrine = recognizeProcess([basin], [], [mkBrine('br1',23,5)], []);
+    assert(hasRo(badgesDormantBrine,'tertiary-dormant'), 'RO14b. unpowered brine -> dormant badge');
+  }
+  // RO15: unknown type still rejected after RO catalog expansion
+  {
+    let s = withBasinRo();
+    assert(!GameManager.placeProcessEquipment(s, 'flux_capacitor', 22, 5).success, 'RO15. unknown type still rejected after RO expansion');
+  }
+}
+
+
 console.log(failures === 0 ? "\nALL TESTS PASSED" : `\n${failures} TEST(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);

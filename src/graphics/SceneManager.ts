@@ -812,6 +812,8 @@ export class SceneManager {
       const isSensor = it.typeId === 'do_probe' || it.typeId === 'flow_meter' || it.typeId === 'level_sensor';
       const isStorage = it.typeId === 'chemical_storage_tank';
       const isDosing = it.typeId === 'chemical_dosing_pump';
+      const isRoSkid = it.typeId === 'ro_skid';
+      const isBrine = it.typeId === 'brine_tank';
       const isPowered = !poweredIds || poweredIds.has(it.id);
       const isAerated = !aeratedIds || !isDiffuser || aeratedIds.has(it.id);
       // Phase 6 slice 2 filtration status for tinting
@@ -891,6 +893,24 @@ export class SceneManager {
               } else {
                 m.emissive.setHex(0x5a1a1a);
                 m.emissiveIntensity = 0.52;
+              }
+            } else if (isRoSkid) {
+              // RO skid: powered = bright cyan tertiary barrier shimmer
+              if (!isPowered) {
+                m.emissive.setHex(0x5a1a1a);
+                m.emissiveIntensity = 0.52;
+              } else {
+                m.emissive.setHex(0x0284c7);
+                m.emissiveIntensity = 0.52;
+              }
+            } else if (isBrine) {
+              // Brine tank: powered = amber recirc shimmer
+              if (!isPowered) {
+                m.emissive.setHex(0x5a1a1a);
+                m.emissiveIntensity = 0.52;
+              } else {
+                m.emissive.setHex(0xd97706);
+                m.emissiveIntensity = 0.42;
               }
             } else if (isDiffuser) {
               // Diffusers: aerated = blue shimmer, idle = no glow
@@ -1179,10 +1199,90 @@ export class SceneManager {
         nozzle.rotation.x = Math.PI;
         break;
       }
+      // ── RO SLICE 1: tertiary reverse-osmosis kit ─────────────────────────
+      case 'ro_skid': {
+        // Containerised RO skid: 4 horizontal spiral-wound pressure vessels on a
+        // skid frame + HP pump + CIP manifold — the tertiary barrier visual.
+        const frameMat = new THREE.MeshStandardMaterial({ color: 0xe0f2fe, roughness: 0.28, metalness: 0.12 });
+        const vesselMat = new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.25, metalness: 0.05 });
+        const capMat = new THREE.MeshStandardMaterial({ color: 0x0ea5e9, roughness: 0.35, emissive: 0x0c4a6e, emissiveIntensity: 0.18 });
+        const pumpMat = new THREE.MeshStandardMaterial({ color: 0x1e3a5f, roughness: 0.45, metalness: 0.35 });
+        (frameMat as any)._equipBase = true;
+        (vesselMat as any)._equipBase = true;
+        (capMat as any)._equipBase = true;
+        const skid = add(new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.28, 2.0), plinth));
+        skid.position.set(0, 0.14, 0);
+        // 4 pressure vessels stacked 2×2 on the skid
+        for (let row = 0; row < 2; row++) {
+          for (let col = 0; col < 2; col++) {
+            const vessel = add(new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, 2.2, 16), vesselMat));
+            vessel.rotation.z = Math.PI / 2;
+            vessel.position.set(0, 0.82 + row * 0.62, -0.55 + col * 1.1);
+            // blue end caps
+            for (const dx of [-1.05, 1.05]) {
+              const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.30, 0.30, 0.14, 16), capMat);
+              cap.rotation.z = Math.PI / 2;
+              cap.position.set(dx, 0.82 + row * 0.62, -0.55 + col * 1.1);
+              cap.castShadow = true;
+              g.add(cap);
+            }
+          }
+        }
+        // HP pump at skid front
+        const hp = add(new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.32, 0.75, 16), pumpMat));
+        hp.rotation.z = Math.PI / 2;
+        hp.position.set(-1.65, 0.62, 0);
+        const hpHead = add(new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.42, 0.42), steel));
+        hpHead.position.set(-1.65, 0.95, 0);
+        // Interconnect manifold
+        const manifold = add(new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 2.4, 10), steel));
+        manifold.rotation.z = Math.PI / 2;
+        manifold.position.set(0, 1.55, -0.55);
+        const manifold2 = add(new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 2.4, 10), steel));
+        manifold2.rotation.z = Math.PI / 2;
+        manifold2.position.set(0, 1.55, 0.55);
+        // Control cabinet
+        const cabinet = add(new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.62, 0.38), dark));
+        cabinet.position.set(1.55, 0.55, 0);
+        const plcLight = add(new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 6), new THREE.MeshStandardMaterial({ color: 0x22c55e, emissive: 0x16a34a, emissiveIntensity: 0.9 })));
+        plcLight.position.set(1.60, 0.85, 0.20);
+        break;
+      }
+      case 'brine_tank': {
+        // Bunded brine holding tank: vertical cylinder with bund wall, ladder,
+        // vent + discharge pipe — distinctive rust / amber palette.
+        const tankMat = new THREE.MeshStandardMaterial({ color: 0xc9b896, roughness: 0.55 });
+        const brineMat = new THREE.MeshStandardMaterial({ color: 0x92400e, roughness: 0.65, transparent: true, opacity: 0.85 });
+        const bundMat2 = new THREE.MeshStandardMaterial({ color: 0x78716c, roughness: 0.9 });
+        (tankMat as any)._equipBase = true;
+        (brineMat as any)._equipBase = true;
+        const bund = add(new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.24, 2.8), bundMat2));
+        bund.position.set(0, 0.12, 0);
+        const tank = add(new THREE.Mesh(new THREE.CylinderGeometry(0.85, 0.88, 1.85, 20), tankMat));
+        tank.position.set(0, 1.20, 0);
+        // Brine surface hint inside
+        const brineSurf = add(new THREE.Mesh(new THREE.CylinderGeometry(0.80, 0.80, 0.08, 20), brineMat));
+        brineSurf.position.set(0, 1.95, 0);
+        // Top walkway rim
+        const rim = add(new THREE.Mesh(new THREE.TorusGeometry(0.85, 0.08, 8, 20), steel));
+        rim.position.set(0, 2.12, 0);
+        rim.rotation.x = Math.PI / 2;
+        // Small vent stack
+        const vent = add(new THREE.Mesh(new THREE.CylinderGeometry(0.10, 0.10, 0.55, 10), steel));
+        vent.position.set(0, 2.45, 0);
+        const ventCap = add(new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.18, 10), dark));
+        ventCap.position.set(0, 2.75, 0);
+        // Discharge pipe stub
+        const discharge = add(new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.11, 0.85, 10), steel));
+        discharge.rotation.z = Math.PI / 2;
+        discharge.position.set(1.15, 0.62, 0);
+        break;
+      }
       default: {
         // Unknown type → plain marker cube so it is never invisible.
         const marker = add(new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), dark));
         marker.position.set(0, 0.5, 0);
+        break;
       }
     }
 
