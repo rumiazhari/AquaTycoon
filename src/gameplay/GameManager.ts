@@ -28,6 +28,13 @@ import {
   estimateEquipmentCAPEX,
   validateEquipmentPlacement,
 } from '../design/ProcessEquipment';
+import {
+  UtilityConnection,
+  UtilityConnectionType,
+  estimateUtilityCAPEX,
+  validateUtilityConnection,
+  pointNearUtility,
+} from '../design/UtilityConnection';
 
 export interface NextStepSuggestion {
   unitTypeId: UnitTypeId;
@@ -80,6 +87,14 @@ export interface GameState {
    * basin drawing symmetrically.
    */
   processEquipment: ProcessEquipmentItem[];
+  /**
+   * CONSTRUCTION-BUILDER Phase 3: utility connections between hosts
+   * (water_pipe / air_pipe / power_cable). Straight tile-to-tile lines
+   * rendered atop the site; functional simulation wiring lands in Phase 4.
+   */
+  utilityConnections: UtilityConnection[];
+  /** Selected utility line id for Inspect/Demolish. */
+  selectedUtilityId?: string | null;
 }
 
 export class GameManager {
@@ -197,7 +212,9 @@ export class GameManager {
       tutorialStep: 0,
       diurnalInfluentStrength: DIURNAL_DEFAULT_STRENGTH,
       customBasins: [],
-      processEquipment: []
+      processEquipment: [],
+      utilityConnections: [],
+      selectedUtilityId: null
     };
   }
 
@@ -958,7 +975,8 @@ export class GameManager {
    * CONSTRUCTION-BUILDER Phase 1: demolishes a player-drawn basin with a 50%
    * salvage refund (campaign/sandbox aware). Mounting integrity: a basin that
    * still holds installed equipment cannot be demolished — un-bolt the
-   * machines first.
+   * machines first. Utilities that touch the basin are cascade-removed with
+   * their own salvage.
    */
   public static demolishCustomBasin(state: GameState, basinId: string): {
     newState: GameState; success: boolean; refunded?: number; reason?: string;
@@ -981,17 +999,29 @@ export class GameManager {
       ? Math.round(estimateBasinCAPEX(basin) * GameManager.CUSTOM_BASIN_SALVAGE_RATE)
       : 0;
 
+    // Cascade-remove any utility that has an endpoint inside the basin rect
+    const attached = (state.utilityConnections ?? []).filter(c =>
+      (c.ax >= basin.x && c.ax < basin.x + basin.w && c.ay >= basin.y && c.ay < basin.y + basin.h) ||
+      (c.bx >= basin.x && c.bx < basin.x + basin.w && c.by >= basin.y && c.by < basin.y + basin.h)
+    );
+    const utilSalvage = (state.gameMode !== 'sandbox' && !state.tutorialActive)
+      ? attached.reduce((s, c) => s + Math.round(estimateUtilityCAPEX(c.type, c.ax, c.ay, c.bx, c.by) * GameManager.UTILITY_SALVAGE_RATE), 0)
+      : 0;
+    const remainingUtils = (state.utilityConnections ?? []).filter(c => !attached.includes(c));
+
     return {
       newState: {
         ...state,
         financials: {
           ...state.financials,
-          cash: state.financials.cash + refunded,
+          cash: state.financials.cash + refunded + utilSalvage,
         },
         customBasins: (state.customBasins ?? []).filter(b => b.id !== basinId),
+        utilityConnections: remainingUtils,
+        selectedUtilityId: attached.some(c => c.id === state.selectedUtilityId) ? null : state.selectedUtilityId,
       },
       success: true,
-      refunded,
+      refunded: refunded + utilSalvage,
     };
   }
 
@@ -1059,7 +1089,7 @@ export class GameManager {
     };
   }
 
-  /** Removes one installed machine and refunds its salvage (70% of CAPEX). */
+  /** Removes one installed machine and refunds its salvage (70% of CAPEX). Cascade-removes any utility that touched its tile. */
   public static demolishProcessEquipment(state: GameState, itemId: string): {
     newState: GameState; success: boolean; refunded?: number;
   } {
@@ -1070,17 +1100,26 @@ export class GameManager {
       ? Math.round(estimateEquipmentCAPEX(item.typeId) * GameManager.EQUIPMENT_SALVAGE_RATE)
       : 0;
 
+    const attached = (state.utilityConnections ?? []).filter(c =>
+      (c.ax === item.x && c.ay === item.y) || (c.bx === item.x && c.by === item.y)
+    );
+    const utilSalvage = (state.gameMode !== 'sandbox' && !state.tutorialActive)
+      ? attached.reduce((s, c) => s + Math.round(estimateUtilityCAPEX(c.type, c.ax, c.ay, c.bx, c.by) * GameManager.UTILITY_SALVAGE_RATE), 0)
+      : 0;
+
     return {
       newState: {
         ...state,
         financials: {
           ...state.financials,
-          cash: state.financials.cash + refunded,
+          cash: state.financials.cash + refunded + utilSalvage,
         },
         processEquipment: (state.processEquipment ?? []).filter(e => e.id !== itemId),
+        utilityConnections: (state.utilityConnections ?? []).filter(c => !attached.includes(c)),
+        selectedUtilityId: attached.some(c => c.id === state.selectedUtilityId) ? null : state.selectedUtilityId,
       },
       success: true,
-      refunded,
+      refunded: refunded + utilSalvage,
     };
   }
 
@@ -1093,6 +1132,88 @@ export class GameManager {
   public static tileInCustomBasin(state: GameState, tx: number, ty: number): boolean {
     return (state.customBasins ?? []).some(b =>
       tx >= b.x && tx < b.x + b.w && ty >= b.y && ty < b.y + b.h
+    );
+  }
+
+  // ── CONSTRUCTION-BUILDER Phase 3: utility connections ────────────────────
+
+  /** Salvage fraction for utilities (trenches/excels less retained than kit). */
+  public static readonly UTILITY_SALVAGE_RATE = 0.6;
+
+  /**
+   * Installs a utility connection (straight tile-to-tile line) between two
+   * host tiles (equipment or basin). Cash-gated like every other builder
+   * action; sandbox skips only the cash gate. Cost = length × rate + fixed
+   * tie-in (see UtilityConnection.estimateUtilityCAPEX).
+   */
+  public static placeUtilityConnection(
+    state: GameState,
+    type: UtilityConnectionType,
+    ax: number, ay: number, bx: number, by: number
+  ): { newState: GameState; success: boolean; reason?: string; charged?: number } {
+    const v = validateUtilityConnection(
+      type, ax, ay, bx, by,
+      state.currentLevel.mapSize,
+      state.customBasins ?? [],
+      state.processEquipment ?? [],
+      state.utilityConnections ?? []
+    );
+    if (!v.ok) return { newState: state, success: false, reason: v.reason };
+    const capex = estimateUtilityCAPEX(type, ax, ay, bx, by);
+    if (state.gameMode !== 'sandbox' && state.financials.cash < capex) {
+      return { newState: state, success: false, reason: `Insufficient funds ($${capex.toLocaleString()} required)` };
+    }
+    const conn: UtilityConnection = {
+      id: `util_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      type, ax, ay, bx, by,
+      createdAtDay: state.gameTimeDays,
+    };
+    const newCash = state.gameMode === 'sandbox' ? state.financials.cash : state.financials.cash - capex;
+    return {
+      newState: {
+        ...state,
+        financials: { ...state.financials, cash: newCash },
+        utilityConnections: [...(state.utilityConnections ?? []), conn],
+        selectedUtilityId: conn.id,
+      },
+      success: true,
+      charged: state.gameMode === 'sandbox' ? 0 : capex,
+    };
+  }
+
+  /** Removes one utility line and refunds its salvage (60%). */
+  public static demolishUtilityConnection(state: GameState, connId: string): {
+    newState: GameState; success: boolean; refunded?: number;
+  } {
+    const conn = (state.utilityConnections ?? []).find(c => c.id === connId);
+    if (!conn) return { newState: state, success: false };
+    const refunded = (state.gameMode !== 'sandbox' && !state.tutorialActive)
+      ? Math.round(estimateUtilityCAPEX(conn.type, conn.ax, conn.ay, conn.bx, conn.by) * GameManager.UTILITY_SALVAGE_RATE)
+      : 0;
+    return {
+      newState: {
+        ...state,
+        financials: { ...state.financials, cash: state.financials.cash + refunded },
+        utilityConnections: (state.utilityConnections ?? []).filter(c => c.id !== connId),
+        selectedUtilityId: state.selectedUtilityId === connId ? null : state.selectedUtilityId,
+      },
+      success: true,
+      refunded,
+    };
+  }
+
+  /** Hit-test: which utility line is near the tile-center point? */
+  public static utilityAtPoint(state: GameState, px: number, pz: number): UtilityConnection | null {
+    for (const c of state.utilityConnections ?? []) {
+      if (pointNearUtility(px, pz, c, 0.65)) return c;
+    }
+    return null;
+  }
+
+  /** All utilities that touch a given tile (endpoint on that tile). */
+  public static utilitiesAtTile(state: GameState, tx: number, ty: number): UtilityConnection[] {
+    return (state.utilityConnections ?? []).filter(c =>
+      (c.ax === tx && c.ay === ty) || (c.bx === tx && c.by === ty)
     );
   }
 

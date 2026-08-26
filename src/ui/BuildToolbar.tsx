@@ -13,6 +13,7 @@ import { estimateSeedSludgeCAPEX } from '../design/CostEstimator';
 import { blueprintFromTemplate } from '../design/UnitBlueprint';
 import { workingVolumeM3 } from '../design/Geometry';
 import { EQUIPMENT_TYPES, EquipmentTypeDef } from '../design/ProcessEquipment';
+import { UTILITY_TYPES, UtilityConnectionType } from '../design/UtilityConnection';
 
 /** Toolbar icon per equipment type (Phase 2 catalog). */
 const EQUIP_ICONS: Record<string, React.ComponentType<{ size?: number }>> = {
@@ -20,6 +21,12 @@ const EQUIP_ICONS: Record<string, React.ComponentType<{ size?: number }>> = {
   submersible_mixer: Fan,
   process_pump: Cog,
   rotary_blower: Wind,
+};
+
+const UTILITY_ICONS: Record<UtilityConnectionType, React.ComponentType<{ size?: number }>> = {
+  water_pipe: Droplets,
+  air_pipe: Wind,
+  power_cable: Zap,
 };
 
 interface BuildToolbarProps {
@@ -30,6 +37,9 @@ interface BuildToolbarProps {
   /** CONSTRUCTION-BUILDER Phase 2: armed machine for place_equipment mode. */
   selectedEquipmentTypeId?: string | null;
   onSelectEquipmentTypeId?: (typeId: string | null) => void;
+  /** CONSTRUCTION-BUILDER Phase 3: armed utility for connect_utility mode. */
+  selectedUtilityTypeId?: UtilityConnectionType | null;
+  onSelectUtilityTypeId?: (typeId: UtilityConnectionType | null) => void;
   currentRotation: 0 | 90 | 180 | 270;
   onRotate: () => void;
   techTree: TechNode[];
@@ -64,6 +74,8 @@ export const BuildToolbar: React.FC<BuildToolbarProps> = ({
   onSelectUnitTypeId,
   selectedEquipmentTypeId,
   onSelectEquipmentTypeId,
+  selectedUtilityTypeId,
+  onSelectUtilityTypeId,
   currentRotation,
   onRotate,
   techTree,
@@ -179,6 +191,7 @@ export const BuildToolbar: React.FC<BuildToolbarProps> = ({
                 onSetToolMode('draw_basin');
                 onSelectUnitTypeId(null);
                 onSelectEquipmentTypeId?.(null);
+                onSelectUtilityTypeId?.(null);
               }}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
                 toolMode === 'draw_basin'
@@ -203,6 +216,7 @@ export const BuildToolbar: React.FC<BuildToolbarProps> = ({
                   onClick={() => {
                     SoundManager.playClick();
                     onSelectUnitTypeId(null);
+                    onSelectUtilityTypeId?.(null);
                     onSelectEquipmentTypeId?.(eq.id);
                     onSetToolMode('place_equipment');
                   }}
@@ -215,6 +229,35 @@ export const BuildToolbar: React.FC<BuildToolbarProps> = ({
                 >
                   <Icon size={14} />
                   <span>{eq.name.replace(' (Dry-Pit)', '').replace(' Skid', '').replace(' Grid', '')}</span>
+                </button>
+              );
+            })}
+            {/* CONSTRUCTION-BUILDER Phase 3: utility connections (water/air/power).
+                Arms connect_utility mode — two clicks tile-to-tile completes the line. */}
+            {(Object.keys(UTILITY_TYPES) as UtilityConnectionType[]).map(tid => {
+              const util = UTILITY_TYPES[tid];
+              const active = toolMode === 'connect_utility' && selectedUtilityTypeId === tid;
+              const Icon = UTILITY_ICONS[tid] ?? Cable;
+              const label = tid === 'water_pipe' ? 'Water' : tid === 'air_pipe' ? 'Air' : 'Power';
+              return (
+                <button
+                  key={tid}
+                  onClick={() => {
+                    SoundManager.playClick();
+                    onSelectUnitTypeId(null);
+                    onSelectEquipmentTypeId?.(null);
+                    onSelectUtilityTypeId?.(tid);
+                    onSetToolMode('connect_utility');
+                  }}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+                    active
+                      ? 'bg-sky-500 text-slate-950 shadow-md font-bold'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+                  }`}
+                  title={`UTILITY: ${util.name} — $${util.perMeterUsd}/m + $${util.fixedUsd} tie-in · ${util.blurb}  Two clicks: source tile → target tile. Esc cancels.`}
+                >
+                  <Icon size={14} />
+                  <span>{label}</span>
                 </button>
               );
             })}

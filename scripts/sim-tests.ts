@@ -1871,5 +1871,163 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
   }
 }
 
-console.log(failures === 0 ? '\nALL TESTS PASSED' : `\n${failures} TEST(S) FAILED`);
+// ── CONSTRUCTION-BUILDER Phase 3: utility connections ────────────────────
+{
+  const mkState = () => GameManager.createInitialState(0, true);
+  const withFixture = () => {
+    const s = mkState();
+    const rB = GameManager.placeCustomBasin(s, { x: 5, y: 5, w: 8, h: 6 });
+    assert(rB.success, 'U0a. fixture basin drawn');
+    let st = rB.newState;
+    const rDiff = GameManager.placeProcessEquipment(st, 'fine_bubble_diffuser', 6, 6);
+    assert(rDiff.success, 'U0b. fixture diffuser placed');
+    st = rDiff.newState;
+    const rMix = GameManager.placeProcessEquipment(st, 'submersible_mixer', 7, 6);
+    assert(rMix.success, 'U0c. fixture mixer placed');
+    st = rMix.newState;
+    const rPump = GameManager.placeProcessEquipment(st, 'process_pump', 20, 5);
+    assert(rPump.success, 'U0d. fixture pump placed on ground');
+    st = rPump.newState;
+    const rBlow = GameManager.placeProcessEquipment(st, 'rotary_blower', 22, 5);
+    assert(rBlow.success, 'U0e. fixture blower placed on ground');
+    return rBlow.newState;
+  };
+
+  // 1. Water pipe: pump -> basin tile is valid.
+  {
+    const s = withFixture();
+    const r = GameManager.placeUtilityConnection(s, 'water_pipe', 20, 5, 6, 6);
+    assert(r.success, 'U1. water_pipe pump -> basin-tile succeeds');
+  }
+  // 2. Air pipe: blower -> diffuser is the canonical valid case.
+  {
+    const s = withFixture();
+    const r = GameManager.placeUtilityConnection(s, 'air_pipe', 22, 5, 6, 6);
+    assert(r.success, 'U2. air_pipe blower -> diffuser succeeds');
+  }
+  // 3. Power cable: pump -> mixer (both powered) is valid.
+  {
+    const s = withFixture();
+    const r = GameManager.placeUtilityConnection(s, 'power_cable', 20, 5, 7, 6);
+    assert(r.success, 'U3. power_cable pump -> mixer succeeds');
+  }
+  // 4. Air pipe type-enforcement: diffuser -> mixer must fail (no blower).
+  {
+    const s = withFixture();
+    const r = GameManager.placeUtilityConnection(s, 'air_pipe', 6, 6, 7, 6);
+    assert(!r.success && /Blower.*Diffuser/i.test(r.reason ?? ''), 'U4. air_pipe diffuser -> mixer rejected - needs blower+diffuser');
+  }
+  // 5. Water pipe type-enforcement: blower -> blower without pump/basin fails.
+  {
+    const s2 = mkState();
+    const b = GameManager.placeCustomBasin(s2, { x: 30, y: 30, w: 4, h: 4 });
+    let st = b.newState;
+    const p1 = GameManager.placeProcessEquipment(st, 'rotary_blower', 2, 2);
+    st = p1.newState;
+    const p2 = GameManager.placeProcessEquipment(st, 'rotary_blower', 4, 2);
+    st = p2.newState;
+    const rFail = GameManager.placeUtilityConnection(st, 'water_pipe', 2, 2, 4, 2);
+    assert(!rFail.success && /pump|basin/i.test(rFail.reason ?? ''), 'U5. water_pipe blower -> blower without pump/basin rejected');
+  }
+  // 6. Power cable needs a powered machine - diffuser alone (0 kW) is not enough.
+  {
+    const s = withFixture();
+    const rD2 = GameManager.placeProcessEquipment(s, 'fine_bubble_diffuser', 8, 6);
+    assert(rD2.success, 'U6a. second diffuser placed');
+    const r = GameManager.placeUtilityConnection(rD2.newState, 'power_cable', 6, 6, 8, 6);
+    assert(!r.success && /powered/i.test(r.reason ?? ''), 'U6. power_cable diffuser -> diffuser rejected - needs powered kit');
+  }
+  // 7. Endpoints must be on hosts (equipment or basin) - empty ground fails.
+  {
+    const s = mkState();
+    const r = GameManager.placeUtilityConnection(s, 'water_pipe', 1, 1, 2, 2);
+    assert(!r.success && /host|equipment|basin/i.test(r.reason ?? ''), 'U7. utility with both endpoints on empty ground rejected');
+  }
+  // 8. Duplicate connection rejected (unordered).
+  {
+    const s = withFixture();
+    const r1 = GameManager.placeUtilityConnection(s, 'water_pipe', 20, 5, 6, 6);
+    assert(r1.success, 'U8a. first water_pipe placed');
+    const r2 = GameManager.placeUtilityConnection(r1.newState, 'water_pipe', 6, 6, 20, 5);
+    assert(!r2.success && /already exists/i.test(r2.reason ?? ''), 'U8. duplicate utility (swapped endpoints) rejected');
+  }
+  // 9. Distinct endpoints required.
+  {
+    const s = withFixture();
+    const r = GameManager.placeUtilityConnection(s, 'water_pipe', 20, 5, 20, 5);
+    assert(!r.success && /distinct/i.test(r.reason ?? ''), 'U9. same-tile endpoints rejected');
+  }
+  // 10. Campaign cost charged correctly and bounds enforced.
+  {
+    const sCamp = GameManager.createInitialState(0, false);
+    sCamp.financials.cash = 10_000_000;
+    const rb = GameManager.placeCustomBasin(sCamp, { x: 5, y: 5, w: 8, h: 6 });
+    let st = rb.newState;
+    st = GameManager.placeProcessEquipment(st, 'fine_bubble_diffuser', 6, 6).newState;
+    st = GameManager.placeProcessEquipment(st, 'process_pump', 20, 5).newState;
+    const r = GameManager.placeUtilityConnection(st, 'water_pipe', 20, 5, 6, 6);
+    assert(r.success && (r.charged ?? 0) > 900, 'U10. campaign water_pipe charged > $900 (got $' + (r.charged ?? 0) + ')');
+    assert(r.newState.financials.cash === st.financials.cash - (r.charged ?? 0), 'U10b. cash reduced by exact charge');
+    const ro = GameManager.placeUtilityConnection(st, 'water_pipe', -1, 0, 6, 6);
+    assert(!ro.success && /boundary|out of/i.test(ro.reason ?? ''), 'U11. out-of-bounds rejected');
+    const sPoor = { ...st, financials: { ...st.financials, cash: 1 } };
+    const rPoor = GameManager.placeUtilityConnection(sPoor, 'water_pipe', 20, 5, 6, 6);
+    assert(!rPoor.success && /Insufficient funds/i.test(rPoor.reason ?? ''), 'U12. unaffordable utility rejected');
+  }
+  // 11. Demolish removes line and refunds 60% in campaign.
+  {
+    const sCamp = GameManager.createInitialState(0, false);
+    sCamp.financials.cash = 10_000_000;
+    let st = GameManager.placeCustomBasin(sCamp, { x: 5, y: 5, w: 6, h: 6 }).newState;
+    st = GameManager.placeProcessEquipment(st, 'fine_bubble_diffuser', 6, 6).newState;
+    st = GameManager.placeProcessEquipment(st, 'rotary_blower', 14, 5).newState;
+    const built = GameManager.placeUtilityConnection(st, 'air_pipe', 14, 5, 6, 6);
+    assert(built.success, 'U13a. air_pipe built for demolish test');
+    const connId = built.newState.utilityConnections[0].id;
+    const cashAfterBuild = built.newState.financials.cash;
+    const demo = GameManager.demolishUtilityConnection(built.newState, connId);
+    assert(demo.success && demo.newState.utilityConnections.length === 0, 'U13. demolish removes the utility');
+    const salvage = Math.round((built.charged ?? 0) * 0.6);
+    assert(demo.refunded === salvage, 'U14. campaign demolish refunds 60% salvage ($' + salvage + ')');
+    assert(demo.newState.financials.cash === cashAfterBuild + salvage, 'U14b. cash refunded correctly');
+    const sand = { ...built.newState, gameMode: 'sandbox' };
+    const demoSandbox = GameManager.demolishUtilityConnection(sand, connId);
+    assert(demoSandbox.refunded === 0, 'U15. sandbox demolish refunds $0');
+  }
+  // 12. Cascade: demolishing a basin removes attached utilities.
+  {
+    const s2 = mkState();
+    const rb2 = GameManager.placeCustomBasin(s2, { x: 5, y: 5, w: 6, h: 6 });
+    let st2 = rb2.newState;
+    st2 = GameManager.placeProcessEquipment(st2, 'process_pump', 15, 5).newState;
+    const rWater = GameManager.placeUtilityConnection(st2, 'water_pipe', 15, 5, 6, 6);
+    assert(rWater.success, 'U16b. water_pipe pump -> basin-tile placed');
+    const demo = GameManager.demolishCustomBasin(rWater.newState, rb2.newState.customBasins[0].id);
+    assert(demo.success, 'U16. basin demolition still succeeds');
+    assert(demo.newState.utilityConnections.length === 0, 'U17. basin cascade removed attached utility');
+  }
+  // 13. Cascade: demolishing equipment removes its attached utilities.
+  {
+    const s = withFixture();
+    const rAir = GameManager.placeUtilityConnection(s, 'air_pipe', 22, 5, 6, 6);
+    assert(rAir.success, 'U18a. air_pipe placed for equip-cascade test');
+    const blowerId = rAir.newState.processEquipment.find(e => e.typeId === 'rotary_blower' && e.x === 22).id;
+    const demo = GameManager.demolishProcessEquipment(rAir.newState, blowerId);
+    assert(demo.success, 'U18. blower demolish succeeds');
+    assert(demo.newState.utilityConnections.length === 0, 'U19. equipment cascade removed its utility');
+  }
+  // 14. Hit-testing helpers.
+  {
+    const s = withFixture();
+    const r = GameManager.placeUtilityConnection(s, 'water_pipe', 20, 5, 6, 6);
+    const conn = r.newState.utilityConnections[0];
+    assert(GameManager.utilitiesAtTile(r.newState, 20, 5).length === 1, 'U20. utilitiesAtTile finds endpoint utility');
+    assert(GameManager.utilitiesAtTile(r.newState, 1, 1).length === 0, 'U21. utilitiesAtTile returns empty on distant tile');
+    const mx = (conn.ax + conn.bx) / 2 + 0.5, mz = (conn.ay + conn.by) / 2 + 0.5;
+    assert(GameManager.utilityAtPoint(r.newState, mx, mz) !== null, 'U22. utilityAtPoint finds midline');
+    assert(GameManager.utilityAtPoint(r.newState, 0, 0) === null, 'U23. utilityAtPoint returns null far away');
+  }
+}
+
+console.log(failures === 0 ? "\nALL TESTS PASSED" : `\n${failures} TEST(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);

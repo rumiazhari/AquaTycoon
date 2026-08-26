@@ -11,7 +11,8 @@ export type ToolMode =
   | 'inspect'
   | 'pave_road'
   | 'draw_basin'
-  | 'place_equipment';
+  | 'place_equipment'
+  | 'connect_utility';
 
 export interface VisualTheme {
   waterTurbidColor: string;

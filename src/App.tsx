@@ -23,6 +23,7 @@ import { CAMPAIGN_LEVELS } from './gameplay/LevelsData';
 import { TUTORIAL_STEPS, TUTORIAL_PIPE_CHAIN } from './gameplay/TutorialSteps';
 import { BASIN_DEFAULT_DEPTH_M, validateBasinPlacement } from './design/CustomBasin';
 import { EQUIPMENT_TYPES, validateEquipmentPlacement } from './design/ProcessEquipment';
+import { UTILITY_TYPES, UtilityConnectionType, validateUtilityConnection } from './design/UtilityConnection';
 
 // UI Components
 import { HeaderHUD } from './ui/HeaderHUD';
@@ -146,6 +147,15 @@ export const App: React.FC = () => {
   const selectedEquipmentIdRef = useRef<string | null>(null);
   selectedEquipmentIdRef.current = selectedEquipmentId;
 
+  // ── CONSTRUCTION-BUILDER Phase 3: utility connections (water/air/power) ───
+  const [selectedUtilityTypeId, setSelectedUtilityTypeId] = useState<UtilityConnectionType | null>('water_pipe');
+  const selUtilityTypeRef = useRef<UtilityConnectionType | null>('water_pipe');
+  selUtilityTypeRef.current = selectedUtilityTypeId;
+  const [selectedUtilityId, setSelectedUtilityId] = useState<string | null>(null);
+  const selectedUtilityIdRef = useRef<string | null>(null);
+  selectedUtilityIdRef.current = selectedUtilityId;
+  const utilitySourceRef = useRef<{ x: number; y: number } | null>(null);
+
   // Placement-time seed choice (backlog #1 follow-up): ON (default) hands over
   // a contractor-seeded reactor at full def.capex; OFF starts UNSEEDED at
   // def.capex − seed haul-in credit and lets the culture ramp over ~2 weeks.
@@ -231,6 +241,9 @@ export const App: React.FC = () => {
     if (sm) {
       sm.syncUnits(state.units);
       sm.syncPipes(state.pipes);
+      sm.syncBasins(state.customBasins ?? [], null);
+      sm.syncEquipment(state.processEquipment ?? [], state.customBasins ?? [], null);
+      sm.syncUtilityConnections(state.utilityConnections ?? [], null);
       if (state.suggestion) {
         sm.showNextStepGhost(state.suggestion.unitTypeId, state.suggestion.gridX, state.suggestion.gridY);
       } else {
@@ -269,6 +282,13 @@ export const App: React.FC = () => {
     if (!silent) setToast('Pipe selection cancelled.');
   }, []);
 
+  const cancelUtilitySelection = useCallback((silent: boolean = false) => {
+    utilitySourceRef.current = null;
+    sceneRef.current?.setUtilityPreview(null, null);
+    sceneRef.current?.terrainGrid.setGhostPreview(0, 0, 1, 1, true, false);
+    if (!silent) setToast('Utility selection cancelled.');
+  }, []);
+
   // ─────────────────────────────────────────────────────────────────────────────
   // INITIALIZE THREE.JS SCENE (once)
   // ─────────────────────────────────────────────────────────────────────────────
@@ -292,6 +312,7 @@ export const App: React.FC = () => {
     sm.syncPipes(initState.pipes);
     sm.syncBasins(initState.customBasins ?? [], selectedBasinId);
     sm.syncEquipment(initState.processEquipment ?? [], initState.customBasins ?? [], null);
+    sm.syncUtilityConnections(initState.utilityConnections ?? [], null);
 
     if (initState.suggestion) {
       sm.showNextStepGhost(initState.suggestion.unitTypeId, initState.suggestion.gridX, initState.suggestion.gridY);
@@ -351,6 +372,16 @@ export const App: React.FC = () => {
           }
         } else if (toolModeRef.current === 'connect_pipe') {
           sm.setPipePreview(null, null);
+        }
+        // Utility preview (Phase 3): source tile → hover tile
+        if (toolModeRef.current === 'connect_utility' && utilitySourceRef.current) {
+          if (tile) {
+            sm.setUtilityPreview(utilitySourceRef.current, tile, selUtilityTypeRef.current ?? 'water_pipe');
+          } else {
+            sm.setUtilityPreview(null, null);
+          }
+        } else if (toolModeRef.current !== 'connect_utility') {
+          sm.setUtilityPreview(null, null);
         }
 
         if (!tile) {
@@ -423,6 +454,28 @@ export const App: React.FC = () => {
             unitRects
           );
           sm.terrainGrid.setGhostPreview(tile.x, tile.y, 1, 1, v.ok, true);
+        } else if (toolModeRef.current === 'connect_utility') {
+          // Phase 3: utility endpoint ghost + line validity
+          const src = utilitySourceRef.current;
+          const utype = (selUtilityTypeRef.current ?? 'water_pipe') as UtilityConnectionType;
+          if (!src) {
+            // First click: eligible only if tile hosts equipment or basin
+            const gs = gsRef.current;
+            const e = gs.processEquipment?.find(eq => eq.x === tile.x && eq.y === tile.y);
+            const inB = gs.customBasins?.some(b => tile.x >= b.x && tile.x < b.x + b.w && tile.y >= b.y && tile.y < b.y + b.h);
+            const valid = !!e || !!inB;
+            sm.terrainGrid.setGhostPreview(tile.x, tile.y, 1, 1, valid, true);
+          } else {
+            // Second click: validate the full connection
+            const v = validateUtilityConnection(
+              utype, src.x, src.y, tile.x, tile.y,
+              gsRef.current.currentLevel.mapSize,
+              gsRef.current.customBasins ?? [],
+              gsRef.current.processEquipment ?? [],
+              gsRef.current.utilityConnections ?? []
+            );
+            sm.terrainGrid.setGhostPreview(tile.x, tile.y, 1, 1, v.ok, true);
+          }
         } else {
           sm.terrainGrid.setGhostPreview(0, 0, 1, 1, true, false);
         }
@@ -444,9 +497,12 @@ export const App: React.FC = () => {
       if (wasDrag) return; // drags orbit/pan — never a click
 
       if (button === 2) {
-        // RIGHT CLICK: cancel the pending pipe selection (control scheme)
+        // RIGHT CLICK: cancel the pending pipe/utility selection (control scheme)
         if (toolModeRef.current === 'connect_pipe' && pipeSourceRef.current) {
           cancelPipeSelection();
+        }
+        if (toolModeRef.current === 'connect_utility' && utilitySourceRef.current) {
+          cancelUtilitySelection();
         }
         return;
       }
@@ -632,6 +688,10 @@ export const App: React.FC = () => {
     // Phase 2: which installed machine (if any) stands on this tile?
     const clickedEquipment = tile ? GameManager.equipmentAtTile(gs, tile.x, tile.y) : null;
 
+    // Phase 3: which utility line is near the cursor ground point (for inspect/demolish)?
+    const groundPt = sm.getGroundPointFromScreen(clientX, clientY);
+    const clickedUtility = groundPt ? GameManager.utilityAtPoint(gs, groundPt.x, groundPt.z) : null;
+
     // Piping guidance: never leave a click in Pipes mode as a silent no-op
     if (mode === 'connect_pipe') {
       if (!clickedUnit && !srcId) {
@@ -649,6 +709,7 @@ export const App: React.FC = () => {
         SoundManager.playClick();
         setSelectedBasinId(null);
         setSelectedEquipmentId(null);
+        setSelectedUtilityId(null);
         setGameState(prev => ({ ...prev, selectedUnitId: clickedUnit.instanceId }));
         const def = UNIT_DEFINITIONS[clickedUnit.typeId];
         setToast(`Inspecting: ${def?.name ?? clickedUnit.typeId}`);
@@ -656,7 +717,10 @@ export const App: React.FC = () => {
         // Phase 2: installed machines are inspectable too.
         SoundManager.playClick();
         setSelectedBasinId(null);
+        setSelectedUtilityId(null);
         setSelectedEquipmentId(clickedEquipment.id);
+        sm.syncEquipment(gs.processEquipment ?? [], gs.customBasins ?? [], clickedEquipment.id);
+        sm.syncUtilityConnections(gs.utilityConnections ?? [], null);
         const eq = EQUIPMENT_TYPES[clickedEquipment.typeId];
         if (eq) {
           setToast(`${eq.name} — $${eq.capexUsd.toLocaleString()} · ${eq.powerKw} kW · ${eq.blurb} Switch to Demolish to remove.`);
@@ -666,13 +730,31 @@ export const App: React.FC = () => {
       } else if (clickedBasin) {
         SoundManager.playClick();
         setSelectedEquipmentId(null);
+        setSelectedUtilityId(null);
         setSelectedBasinId(clickedBasin.id);
+        sm.syncBasins(gs.customBasins ?? [], clickedBasin.id);
+        sm.syncEquipment(gs.processEquipment ?? [], gs.customBasins ?? [], null);
+        sm.syncUtilityConnections(gs.utilityConnections ?? [], null);
         const area = clickedBasin.w * clickedBasin.h;
         const vol = area * clickedBasin.depthM;
         setToast(`Custom Basin: ${clickedBasin.w}m × ${clickedBasin.h}m (${area}m², ${vol.toLocaleString()}m³, depth ${clickedBasin.depthM}m). Switch to Demolish to remove.`);
+      } else if (clickedUtility) {
+        SoundManager.playClick();
+        setSelectedBasinId(null);
+        setSelectedEquipmentId(null);
+        setSelectedUtilityId(clickedUtility.id);
+        sm.syncBasins(gs.customBasins ?? [], null);
+        sm.syncEquipment(gs.processEquipment ?? [], gs.customBasins ?? [], null);
+        sm.syncUtilityConnections(gs.utilityConnections ?? [], clickedUtility.id);
+        const util = UTILITY_TYPES[clickedUtility.type];
+        setToast(`${util.name}: (${clickedUtility.ax},${clickedUtility.ay}) → (${clickedUtility.bx},${clickedUtility.by}) · ${util.blurb} Switch to Demolish to remove.`);
       } else {
         setSelectedBasinId(null);
         setSelectedEquipmentId(null);
+        setSelectedUtilityId(null);
+        sm.syncBasins(gs.customBasins ?? [], null);
+        sm.syncEquipment(gs.processEquipment ?? [], gs.customBasins ?? [], null);
+        sm.syncUtilityConnections(gs.utilityConnections ?? [], null);
         setGameState(prev => ({ ...prev, selectedUnitId: null }));
       }
 
@@ -940,7 +1022,52 @@ export const App: React.FC = () => {
         setToast(result.reason ?? 'Cannot install equipment here.');
       }
 
-    } else if (mode === 'demolish' && (clickedUnit || clickedBasin || clickedEquipment)) {
+    } else if (mode === 'connect_utility' && tile) {
+      // ── CONSTRUCTION-BUILDER Phase 3: utility line (two-click) ───────
+      const utype = (selUtilityTypeRef.current ?? 'water_pipe') as UtilityConnectionType;
+      const src = utilitySourceRef.current;
+      if (!src) {
+        // First click: anchor source (must be on equipment or basin)
+        const onHost = tile ? (gs.processEquipment?.some(eq => eq.x === tile.x && eq.y === tile.y) ||
+          gs.customBasins?.some(b => tile.x >= b.x && tile.x < b.x + b.w && tile.y >= b.y && tile.y < b.y + b.h)) : false;
+        if (!onHost) {
+          SoundManager.playWarning();
+          setToast('Utility: click ON installed equipment or inside a basin to start the line. Endpoints must be on host tiles.');
+          return;
+        }
+        utilitySourceRef.current = { x: tile.x, y: tile.y };
+        SoundManager.playClick();
+        const util = UTILITY_TYPES[utype];
+        setToast(`${util.name}: source (${tile.x},${tile.y}) anchored — click the destination host tile. (Esc cancels)`);
+        return;
+      }
+      // Second click: complete the line
+      if (src.x === tile.x && src.y === tile.y) {
+        utilitySourceRef.current = null;
+        sm.setUtilityPreview(null, null);
+        sm.terrainGrid.setGhostPreview(0, 0, 1, 1, true, false);
+        SoundManager.playClick();
+        setToast('Utility: cancelled (same tile).');
+        return;
+      }
+      const result = GameManager.placeUtilityConnection(gs, utype, src.x, src.y, tile.x, tile.y);
+      utilitySourceRef.current = null;
+      sm.setUtilityPreview(null, null);
+      sm.terrainGrid.setGhostPreview(0, 0, 1, 1, true, false);
+      if (result.success) {
+        SoundManager.playPlace();
+        pushHistory(gs);
+        setGameState(result.newState);
+        sm.syncUtilityConnections(result.newState.utilityConnections ?? [], result.newState.selectedUtilityId ?? null);
+        const util = UTILITY_TYPES[utype];
+        const cost = result.charged ?? 0;
+        setToast(`${util.name} connected (${src.x},${src.y}) → (${tile.x},${tile.y})${cost > 0 ? ` — $${cost.toLocaleString()}` : ' — $0 (sandbox)'}`);
+      } else {
+        SoundManager.playWarning();
+        setToast(result.reason ?? 'Cannot connect utility here.');
+      }
+
+    } else if (mode === 'demolish' && (clickedUnit || clickedBasin || clickedEquipment || clickedUtility)) {
       if (clickedUnit) {
         if (clickedUnit.typeId === 'influent_inlet' || clickedUnit.typeId === 'effluent_outfall') {
           SoundManager.playWarning();
@@ -959,6 +1086,22 @@ export const App: React.FC = () => {
             ? 'Unit demolished. (No refund during tutorial — training grant units.)'
             : 'Unit demolished — 70% refund applied.');
         }
+      } else if (clickedUtility) {
+        // Phase 3: cut a utility line (60% salvage).
+        SoundManager.playDemolish();
+        const res = GameManager.demolishUtilityConnection(gs, clickedUtility.id);
+        if (res.success) {
+          pushHistory(gs);
+          setSelectedUtilityId(null);
+          setGameState(res.newState);
+          sm.syncUtilityConnections(res.newState.utilityConnections ?? [], null);
+          setToast(res.refunded && res.refunded > 0
+            ? `${UTILITY_TYPES[clickedUtility.type]?.name ?? 'Utility'} removed — salvage refund $${res.refunded.toLocaleString()}.`
+            : `${UTILITY_TYPES[clickedUtility.type]?.name ?? 'Utility'} removed.`);
+        } else {
+          SoundManager.playWarning();
+          setToast('Cannot remove utility.');
+        }
       } else if (clickedBasin) {
         // CONSTRUCTION-BUILDER Phase 1: demolish a player-drawn basin (50% salvage).
         SoundManager.playDemolish();
@@ -968,6 +1111,8 @@ export const App: React.FC = () => {
           setSelectedBasinId(null);
           setGameState(res.newState);
           sm.syncBasins(res.newState.customBasins, selectedBasinId);
+          sm.syncUtilityConnections(res.newState.utilityConnections ?? [], null);
+          sm.syncEquipment(res.newState.processEquipment ?? [], res.newState.customBasins ?? [], null);
           setToast(res.refunded && res.refunded > 0
             ? `Basin demolished — salvage refund $${res.refunded.toLocaleString()}.`
             : 'Basin demolished.');
@@ -984,6 +1129,7 @@ export const App: React.FC = () => {
           setSelectedEquipmentId(null);
           setGameState(res.newState);
           sm.syncEquipment(res.newState.processEquipment ?? [], res.newState.customBasins ?? [], null);
+          sm.syncUtilityConnections(res.newState.utilityConnections ?? [], null);
           setToast(res.refunded && res.refunded > 0
             ? `${EQUIPMENT_TYPES[clickedEquipment.typeId]?.name ?? 'Equipment'} removed — salvage refund $${res.refunded.toLocaleString()}.`
             : `${EQUIPMENT_TYPES[clickedEquipment.typeId]?.name ?? 'Equipment'} removed.`);
@@ -1134,6 +1280,8 @@ export const App: React.FC = () => {
         case 'Escape':
           if (toolModeRef.current === 'connect_pipe' && pipeSourceRef.current) {
             cancelPipeSelection();
+          } else if (toolModeRef.current === 'connect_utility' && utilitySourceRef.current) {
+            cancelUtilitySelection();
           } else if (toolModeRef.current === 'draw_basin' && drawStartTileRef.current) {
             // Cancel an in-progress basin draw (anchor reset, no construction).
             drawStartTileRef.current = null;
@@ -1143,6 +1291,7 @@ export const App: React.FC = () => {
           } else {
             setToolState(prev => reduceToolSelection(prev, { type: 'cancel_placement' }));
             cancelPipeSelection(true);
+            cancelUtilitySelection(true);
             sceneRef.current?.setPipeSourceHighlight(null, gsRef.current.units);
             setGameState(prev => ({ ...prev, selectedUnitId: null }));
             setToast('Select mode — click a unit to inspect.');
@@ -1416,13 +1565,23 @@ export const App: React.FC = () => {
           // Demolish.
           setToolMode(mode);
           if (mode !== 'place_unit') cancelPipeSelection(true);
+          if (mode !== 'connect_utility') cancelUtilitySelection(true);
           if (mode === 'select')       setToast('Inspect Mode: Click any tank to configure parameters.');
           if (mode === 'connect_pipe') setToast('Pipes: LEFT-CLICK a unit → click the destination. Click the SAME unit to switch its output port. RIGHT-CLICK to cancel. Ctrl+Z undo / Ctrl+Y redo.');
           if (mode === 'demolish')     setToast('Demolish Mode: Click any unit to remove for 70% cash refund.');
           if (mode === 'place_unit')   setToast('Choose a unit type below, then click on the grid to place.');
           if (mode === 'draw_basin')   setToast('STRUCTURES → Basin: click the FIRST corner, then the opposite corner. Esc cancels. Cost is shown as you draw.');
           if (mode === 'place_equipment') setToast('EQUIPMENT: pick a machine in the toolbar, then click a valid tile — diffusers/mixers mount INSIDE drawn basins, pumps/blowers on open ground. Esc cancels.');
+          if (mode === 'connect_utility') {
+            const util = UTILITY_TYPES[selectedUtilityTypeId ?? 'water_pipe'];
+            setToast(`UTILITY: ${util.name} — ${util.blurb} Two clicks: source host tile → destination host tile. Cost shown after. Esc cancels.`);
+          }
           if (mode !== 'place_equipment') setSelectedEquipmentTypeId(null);
+          if (mode !== 'connect_utility') {
+            setSelectedUtilityId(null);
+            utilitySourceRef.current = null;
+            sceneRef.current?.setUtilityPreview(null, null);
+          }
         }}
         selectedUnitTypeId={selectedUnitTypeId}
         selectedEquipmentTypeId={selectedEquipmentTypeId}
@@ -1432,6 +1591,17 @@ export const App: React.FC = () => {
           if (id) {
             const eq = EQUIPMENT_TYPES[id];
             setToast(`${eq.name} ($${eq.capexUsd.toLocaleString()}) — ${eq.mounting === 'in_basin' ? 'click INSIDE a drawn basin to install.' : 'click open ground to install.'}`);
+          }
+        }}
+        selectedUtilityTypeId={selectedUtilityTypeId}
+        onSelectUtilityTypeId={id => {
+          setSelectedUtilityTypeId(id ?? 'water_pipe');
+          setSelectedUtilityId(null);
+          utilitySourceRef.current = null;
+          sceneRef.current?.setUtilityPreview(null, null);
+          if (id) {
+            const util = UTILITY_TYPES[id];
+            setToast(`${util.name} armed — $${util.perMeterUsd}/m + $${util.fixedUsd} tie-in. Click source host tile, then destination host tile.`);
           }
         }}
         onSelectUnitTypeId={id => {

@@ -1,7 +1,7 @@
 # AUTOPILOT STATE — Aquatycoon
 
 STATUS: OK
-Last run: 2026-08-27 (iter 25 — CONSTRUCTION-BUILDER Phase 2: physical equipment placement; gates: build ✅ tsc ✅ sim ALL PASS (+23 E-tests) ✅ ui 62/62 ✅ eng 368/368 ✅)
+Last run: 2026-08-27 (iter 26 — CONSTRUCTION-BUILDER Phase 3: utility connections (water/air/power lines) with domain + cost + 3D rendering + toolbar; gates: build ✅ tsc ✅ sim ALL PASS (+23 U-tests) ✅ ui 70/70 ✅ eng 368/368 ✅)
 
 Gate policy: `npm run build` + `npx tsc --noEmit` must be clean; suites:
 `npm test` (sim), `npm run test:ui` (= static ui-tests + ui-interaction-tests),
@@ -26,9 +26,17 @@ IMPLEMENTATION PHASES (build top-down, ONE coherent slice per iteration):
   coloring; basin 3D render (floor+walls+water); selection + demolition +
   volume-based cost; legacy units block basins & vice-versa. Tests: 19 basin
   domain tests in sim-tests.ts.
-- PHASE 2: physical equipment placement (diffuser, mixer, pump, blower) with
-  mounting rules + 3D models + select/delete.
-- PHASE 3: utility connections (water pipe, air pipe, power cable) w/ ports.
+- PHASE 2 ✅ DONE (iter 25): physical equipment placement (diffuser, mixer, pump, blower) with
+  mounting rules + 3D models + select/delete. 23 tests E1–E23.
+- PHASE 3 ✅ DONE (iter 26): utility connections (water pipe, air pipe, power cable) —
+  domain model + validation (type-specific host rules) + quantity CAPEX
+  (water $185/m+900, air $110/m+600, power $65/m+400) + GameState
+  `utilityConnections[]` + GameManager place/demolish (campaign 60% salvage,
+  sandbox $0, cascade on basin/equipment removal) + SceneManager
+  syncUtilityConnections (color-coded lines + endpoint dots + selection
+  highlight + dashed preview) + toolbar UTILITY group (Water/Air/Power) +
+  App connect_utility two-click flow (host-only endpoints, duplicate/length
+  guards, cost toasts) + select/demolish/undo support. 23 new domain tests U1–U23.
 - PHASE 4: make components functional (volume→sim, blower+diffuser→aeration,
   mixer state, pump flow, power on/off) via adapter to existing simulation.
 - PHASE 5: zones & baffles (compartments, zone-level equipment membership).
@@ -97,16 +105,41 @@ front-end and back-end improvements beyond the mission after Phase 1.
    - 15: engineering warnings ✅ phase 1+2 (+pipe velocity iter 12); membrane‑flux check lands with the MBR migration
    - 16–17: ✅ RESOLVED (iter 19): updated campaign L1/L2/L3 levels with new objectives (obj_pump, obj_cas_sizing) and revised Test S for staged pump+UV build.
 
-Next goal (iter 26): CONSTRUCTION-BUILDER **PHASE 3 — utility connections**
-(water pipe / air pipe / power cable) between placed components and basins,
-with connection ports on CustomBasin walls + equipment skids. This is the
-missing link that makes Phase-2 machines real (blower→diffuser air line,
-pump→basin water line). Fallback if blast radius looks large: equipment
-OPEX/power wiring into daily financials (Phase 4 pre-slice), or V2-B story/
-environment work from the freedom pool.
+Next goal (iter 27): CONSTRUCTION-BUILDER **PHASE 4 — make components functional**
+via a thin adapter to the existing simulation: basin volume → hydraulic
+volume, blower+diffuser → aeration oxygen transfer, mixer on/off prevents
+septic dead zones, pump station duty-point wiring for inter-basin transfer,
+and power cable on/off gating. Keeps the glimpsed physics honest while the
+builder UI stays the source of truth. Fallback if blast radius looks large:
+zones & baffles pre-slice (compartment dividers) or V2-B story/environment
+polish from the freedom pool.
 RO migration SLICE 1 (src/sim/processes/RO.ts design basis) stays PARKED as
 the post-Phase-4 sim-family work per DIRECTIVE v3 ("do not disappear into
 backend equation work").
+- iter 26 (2026-08-27): **CONSTRUCTION-BUILDER PHASE 3 landed — utility connections.**
+  NEW `src/design/UtilityConnection.ts`: three utility types (water_pipe $185/m+900
+  air_pipe $110/m+600 power_cable $65/m+400) with TYPE-SPECIFIC host rules —
+  water needs pump/basin, air is strict blower↔diffuser, power needs powered kit
+  (pump/mixer/blower); Euclidean length (tile*6m) + fixed tie-in cost;
+  distinct endpoints, bounds, host, duplicate guards. `GameManager`
+  `placeUtilityConnection`/`demolishUtilityConnection` (campaign 60% salvage,
+  sandbox $0, cascade on basin/equipment removal, atomic cash gate) +
+  `utilityAtPoint`/`utilitiesAtTile` hit-testing (midline proximity 0.65 tiles).
+  GameState `utilityConnections[]` + `selectedUtilityId`. SceneManager
+  `syncUtilityConnections` (color-coded Lines: water #3b82f6 / air #f97316 /
+  power #eab308 + endpoint dot markers + white selection highlight +
+  LineDashedMaterial dashed preview) + `setUtilityPreview`. BuildToolbar:
+  new `connect_utility` ToolMode + UTILITY group (Water/Air/Power) with
+  per-type $/m + blurb tooltips; Basin button now clears utility selection.
+  App: `connect_utility` two-click flow (source host → target host, same-tile
+  cancel, host validation, duplicate guard, cost toast), right-click + Esc
+  `cancelUtilitySelection`, hover ghost validity + dashed preview line,
+  select (click line → inspect, white highlight) / demolish (click line →
+  cut, 60% refund) with utility-first hit-testing, demolish cascades for
+  basin+equipment, undo/redo syncs utilities, initial load syncs utilities.
+  23 new domain tests U1–U23 pin all type rules, cost, duplicate, bounds,
+  funding, demolish/salvage, cascade, and hit-testing. Gates: build ✅ tsc ✅
+  sim ALL PASS (U1-23) ✅ ui 70/70+62/62 ✅ eng 368/368 ✅.
 - iter 25 (2026-08-27): **CONSTRUCTION-BUILDER PHASE 2 landed — physical
   equipment placement.** NEW `src/design/ProcessEquipment.ts`: starter
   catalog (fine_bubble_diffuser $4.2k / submersible_mixer $9.8k /

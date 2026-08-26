@@ -891,6 +891,118 @@ export class SceneManager {
     return g;
   }
 
+  // ── CONSTRUCTION-BUILDER Phase 3: utility connections ──────────────────
+  private utilityGroup: THREE.Group = new THREE.Group();
+  private utilityLineMap: Map<string, THREE.Line> = new Map();
+  private utilityPreviewLine: THREE.Line | null = null;
+
+  private ensureUtilityPreviewLine(): THREE.Line {
+    if (this.utilityPreviewLine) return this.utilityPreviewLine;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+    const mat = new THREE.LineDashedMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.9,
+      linewidth: 2,
+      dashSize: 0.4,
+      gapSize: 0.25,
+    });
+    const line = new THREE.Line(geo, mat);
+    line.computeLineDistances();
+    line.visible = false;
+    line.frustumCulled = false;
+    this.utilityPreviewLine = line;
+    this.scene.add(line);
+    return line;
+  }
+
+  /** Straight tile-center → tile-center lines per utility type. */
+  public syncUtilityConnections(
+    conns: { id: string; type: string; ax: number; ay: number; bx: number; by: number }[],
+    selectedId?: string | null
+  ) {
+    if (!this.utilityGroup.parent) this.scene.add(this.utilityGroup);
+    const active = new Set(conns.map(c => c.id));
+    for (const [id, line] of this.utilityLineMap.entries()) {
+      if (!active.has(id)) {
+        this.utilityGroup.remove(line);
+        line.geometry.dispose();
+        (line.material as THREE.Material).dispose();
+        this.utilityLineMap.delete(id);
+      }
+    }
+    const colorFor = (t: string) =>
+      t === 'water_pipe' ? 0x3b82f6 : t === 'air_pipe' ? 0xf97316 : 0xeab308;
+    for (const c of conns) {
+      let line = this.utilityLineMap.get(c.id);
+      if (!line) {
+        const geo = new THREE.BufferGeometry();
+        const pos = new Float32Array([
+          c.ax + 0.5, 0.18, c.ay + 0.5,
+          c.bx + 0.5, 0.18, c.by + 0.5,
+        ]);
+        geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+        const mat = new THREE.LineBasicMaterial({
+          color: colorFor(c.type),
+          transparent: true,
+          opacity: 0.95,
+        });
+        line = new THREE.Line(geo, mat);
+        line.frustumCulled = false;
+        (line as any)._utilType = c.type;
+        this.utilityLineMap.set(c.id, line);
+        this.utilityGroup.add(line);
+
+        // Small endpoint markers so even short cables are visible
+        const mkDot = (x: number, z: number) => {
+          const g = new THREE.SphereGeometry(0.18, 10, 8);
+          const m = new THREE.MeshBasicMaterial({ color: colorFor(c.type) });
+          const s = new THREE.Mesh(g, m);
+          s.position.set(x, 0.18, z);
+          line!.add(s);
+        };
+        mkDot(c.ax + 0.5, c.ay + 0.5);
+        mkDot(c.bx + 0.5, c.by + 0.5);
+      } else {
+        const pos = line.geometry.getAttribute('position') as THREE.BufferAttribute;
+        pos.setXYZ(0, c.ax + 0.5, 0.18, c.ay + 0.5);
+        pos.setXYZ(1, c.bx + 0.5, 0.18, c.by + 0.5);
+        pos.needsUpdate = true;
+      }
+      // Selection highlight: boost opacity + emissive via color lerp
+      const selected = c.id === selectedId;
+      const mat = line.material as THREE.LineBasicMaterial;
+      mat.opacity = selected ? 1 : 0.92;
+      mat.color.setHex(selected ? 0xffffff : colorFor(c.type));
+      // line width hint: selection thicker (note: linewidth only on some platforms)
+      (mat as any).linewidth = selected ? 4 : 2;
+    }
+  }
+
+  /** Live preview from anchored source tile to hover tile. */
+  public setUtilityPreview(
+    from: { x: number; y: number } | null,
+    to: { x: number; y: number } | null,
+    type: string = 'water_pipe'
+  ) {
+    const line = this.ensureUtilityPreviewLine();
+    if (!from || !to) {
+      line.visible = false;
+      return;
+    }
+    const colorFor = (t: string) =>
+      t === 'water_pipe' ? 0x3b82f6 : t === 'air_pipe' ? 0xf97316 : 0xeab308;
+    (line.material as THREE.LineDashedMaterial).color.setHex(colorFor(type));
+    const pos = line.geometry.getAttribute('position') as THREE.BufferAttribute;
+    pos.setXYZ(0, from.x + 0.5, 0.22, from.y + 0.5);
+    pos.setXYZ(1, to.x + 0.5, 0.22, to.y + 0.5);
+    pos.needsUpdate = true;
+    line.geometry.computeBoundingSphere();
+    line.computeLineDistances();
+    line.visible = true;
+  }
+
   public syncPipes(pipes: PipeConnection[]) {
     // Flow animation runs on SIMULATED time — pause freezes the pipe flow.
     this.pipeRenderer.updatePipes(pipes, this.visualSimElapsed);
