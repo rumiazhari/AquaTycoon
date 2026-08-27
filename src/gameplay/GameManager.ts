@@ -68,6 +68,10 @@ import {
   greenDividendBonusPerDay,
   greenDividendLabel,
 } from '../design/GreenDividend';
+import {
+  activeInfluentEventForDay,
+  applyInfluentEvent,
+} from '../design/InfluentEvents';
 
 /**
  * Municipal overdraft financing — tycoon polish iter 39.
@@ -628,6 +632,14 @@ export class GameManager {
     // (default 1.0 — templates are peak-ready as of §AK items 5/6 closure).
     const dynamicInfluent = applyDiurnalInfluent(activeInfluent, newDays, state.diurnalInfluentStrength ?? 1);
 
+    // TYCOON RANDOM EVENTS iter 48 — storm surge & industrial shock influent spikes.
+    // The municipal sewer is not a flat lab beaker: storm infiltration brings a
+    // hydraulic surge (diluted but higher mass load) and organic shocks hammer
+    // BOD/toxics. Events are deterministic hashes of the integer day (replayable,
+    // no Math.random) and gate the influent feeding the solver.
+    const influentEvent = activeInfluentEventForDay(newDays);
+    const eventInfluent = influentEvent ? applyInfluentEvent(dynamicInfluent, influentEvent) : dynamicInfluent;
+
     // Environmental factors driving renewable generation.
     // SOLAR uses the SAME smooth day-night factor as the visual sky (Prompt 3.3
     // item 15): sunrise visually matches production beginning, midday = peak,
@@ -640,7 +652,7 @@ export class GameManager {
     const simResult = SimulationEngine.stepSimulation(
       state.units,
       state.pipes,
-      dynamicInfluent,
+      eventInfluent,
       state.currentLevel.standards,
       state.financials,
       state.currentLevel.tariffPerM3,
@@ -995,6 +1007,35 @@ export class GameManager {
         simResult.financials.dailyGreenBonus = 0;
         if (simResult.overallStats.activeAlerts.some(a => a.id === 'green_bonus')) {
           simResult.overallStats.activeAlerts = simResult.overallStats.activeAlerts.filter(a => a.id !== 'green_bonus');
+        }
+      }
+    }
+
+    // ── TYCOON RANDOM EVENTS iter 48 — storm surge & industrial shock ─────────
+    // Munipical sewer variability: a deterministic hash of the integer day decides
+    // whether today's influent is hit by a storm (hydraulic surge, diluted
+    // concentrations but higher mass) or an industrial organic shock (high BOD/
+    // toxics). The influent was already modified via eventInfluent before the
+    // solver; this block surfaces/clears the warning alert so the operator
+    // learns to over-size clarifiers and aeration for resilience.
+    {
+      const hasFlowEv = simResult.finalEffluent.flowRate > 10;
+      if (influentEvent && hasFlowEv) {
+        if (!simResult.overallStats.activeAlerts.some(a => a.id === 'influent_event')) {
+          const isStorm = influentEvent.type === 'storm_surge';
+          const dur = influentEvent.type === 'storm_surge' ? '1.4 d' : '1.0 d';
+          simResult.overallStats.activeAlerts.push({
+            id: 'influent_event',
+            type: 'warning' as const,
+            message: isStorm
+              ? `Storm surge: +${Math.round((influentEvent.flowMul - 1) * 100)}% hydraulic load (${simResult.finalEffluent.flowRate.toFixed(0)} m³/d) — diluted ×${influentEvent.strengthMul.toFixed(2)} but masses surge for ${dur}! Size clarifiers for peaks.`
+              : `Industrial shock: BOD/COD ×${influentEvent.strengthMul.toFixed(2)} organics + toxics ×${influentEvent.toxicMul.toFixed(1)} ( ${dur} ) — equalization & aeration stressed; watch permit limits!`,
+            timestamp: Date.now(),
+          });
+        }
+      } else {
+        if (simResult.overallStats.activeAlerts.some(a => a.id === 'influent_event')) {
+          simResult.overallStats.activeAlerts = simResult.overallStats.activeAlerts.filter(a => a.id !== 'influent_event');
         }
       }
     }

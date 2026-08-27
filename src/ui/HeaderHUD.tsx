@@ -10,6 +10,7 @@ import { formatGameClock } from '../gameplay/GameTime';
 import { SoundManager } from '../audio/SoundManager';
 import { permitViolations, isPermitCompliant, PERMIT_LABEL } from '../sim/PermitEngine';
 import { seasonalLabel } from '../design/SeasonalProfile';
+import { activeInfluentEventForDay, influentEventLabel } from '../design/InfluentEvents';
 
 interface HeaderHUDProps {
   gameState: GameState;
@@ -163,6 +164,22 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({
             <div className="text-[11px] font-bold text-sky-300 leading-none">Day {dayNumber}</div>
             <div className="text-[9px] text-slate-400">{gameState.isNight ? '🌙 Night' : '☀️ Day'} {clockText}</div>
           </div>
+
+          {/* Influent event pill — storm surge / industrial shock warning */}
+          {(() => {
+            const ev = activeInfluentEventForDay(gameState.gameTimeDays);
+            if (!ev || gameState.finalEffluent.flowRate <= 10) return null;
+            const isStorm = ev.type === 'storm_surge';
+            return (
+              <div
+                className={`hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-lg border font-mono ${isStorm ? 'bg-sky-950/50 border-sky-500/40' : 'bg-amber-950/40 border-amber-500/40'}`}
+                title={isStorm ? `Storm infiltration: ×${ev.flowMul.toFixed(2)} hydraulic load, diluted ×${ev.strengthMul.toFixed(2)} — clarifiers stressed!` : `Industrial slug: organics ×${ev.strengthMul.toFixed(2)} + toxics ×${ev.toxicMul.toFixed(1)} — aeration & disinfection stressed!`}
+              >
+                <span className={`text-[10px] leading-none ${isStorm ? 'text-sky-300' : 'text-amber-300'}`}>{isStorm ? '🌧️' : '⚠️'}</span>
+                <span className={`text-[10px] font-bold leading-none ${isStorm ? 'text-sky-300' : 'text-amber-300'}`}>{influentEventLabel(ev)}</span>
+              </div>
+            );
+          })()}
 
           {/* Power system readout: demand vs on-site green generation */}
           <div

@@ -5319,6 +5319,107 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
   }
 }
 
+// ── TYCOON RANDOM EVENTS ─ storm surge & industrial shock (iter 48) ──────────
+{
+  const { activeInfluentEventForDay, applyInfluentEvent, pseudoRandomForDay, influentEventSummaryLine, STORM_FLOW_MUL, STORM_STRENGTH_MUL, STORM_TOXIC_MUL, SHOCK_FLOW_MUL, SHOCK_STRENGTH_MUL, SHOCK_TOXIC_MUL, STORM_DURATION_D, SHOCK_DURATION_D } = await import('../src/design/InfluentEvents.js');
+  // IE01. guards & constants
+  assert(activeInfluentEventForDay(NaN as any) === null, 'IE01. NaN day -> null');
+  assert(activeInfluentEventForDay(Infinity as any) === null, 'IE01b. Inf day -> null');
+  assert(Math.abs(STORM_FLOW_MUL - 1.85) < 0.001, 'IE01c. storm flow 1.85');
+  assert(Math.abs(STORM_STRENGTH_MUL - 0.88) < 0.001, 'IE01d. storm strength 0.88');
+  assert(Math.abs(SHOCK_STRENGTH_MUL - 1.65) < 0.001, 'IE01e. shock 1.65');
+  assert(STORM_DURATION_D === 1.4 && SHOCK_DURATION_D === 1.0, 'IE01f. durations 1.4/1.0');
+  const r0 = pseudoRandomForDay(10);
+  assert(r0 >= 0 && r0 < 1, 'IE01g. pseudoRandom in [0,1) '+r0.toFixed(3));
+  assert(pseudoRandomForDay(10) === pseudoRandomForDay(10), 'IE01h. deterministic same day');
+  assert(influentEventSummaryLine(99999).length > 0, 'IE01i. summary line exists');
+  // IE02. pure apply — identity vs storm vs shock
+  const baseW: any = { flowRate:3500,bod:220,cod:450,tss:250,tn:40,nh4:30,no3:1,tp:6.5,pathogens:1e6,do:1.5,ph:7.2,temp:20,toxicIndex:3,turbidity:180 };
+  assert(applyInfluentEvent(baseW, null).flowRate === baseW.flowRate, 'IE02. null event identity');
+  {
+    const storm = { id:'s', type:'storm_surge', label:'Storm surge', startDay:5, durationDays:1.4, flowMul:STORM_FLOW_MUL, strengthMul:STORM_STRENGTH_MUL, toxicMul:STORM_TOXIC_MUL } as any;
+    const sw = applyInfluentEvent(baseW, storm);
+    assert(Math.abs(sw.flowRate - 3500*1.85) < 1, 'IE02b. storm flow '+sw.flowRate.toFixed(0)+' ~ '+ (3500*1.85).toFixed(0));
+    assert(Math.abs(sw.bod - 220*0.88) < 1, 'IE02c. storm bod diluted '+sw.bod.toFixed(1));
+    assert(Math.abs(sw.toxicIndex - 3*0.9) < 0.1, 'IE02d. storm toxic diluted '+sw.toxicIndex.toFixed(2));
+  }
+  {
+    const shock = { id:'sh', type:'industrial_shock', label:'Industrial shock', startDay:7, durationDays:1.0, flowMul:SHOCK_FLOW_MUL, strengthMul:SHOCK_STRENGTH_MUL, toxicMul:SHOCK_TOXIC_MUL } as any;
+    const sw = applyInfluentEvent(baseW, shock);
+    assert(Math.abs(sw.flowRate - 3500) < 1, 'IE02e. shock flow unchanged '+sw.flowRate.toFixed(0));
+    assert(Math.abs(sw.bod - 220*1.65) < 1, 'IE02f. shock bod ×1.65 '+sw.bod.toFixed(1));
+    assert(Math.abs(sw.toxicIndex - 3*2.2) < 0.1, 'IE02g. shock toxic ×2.2 '+sw.toxicIndex.toFixed(1));
+  }
+  // IE03. deterministic schedule — brute-force find each type
+  let stormDay = -1, shockDay = -1, calmDay = -1;
+  for (let d=0; d<300; d++) {
+    const ev = activeInfluentEventForDay(d+0.3);
+    if (stormDay<0 && ev && ev.type==='storm_surge') stormDay = d;
+    if (shockDay<0 && ev && ev.type==='industrial_shock') shockDay = d;
+    if (calmDay<0 && !ev) calmDay = d;
+    if (stormDay>=0 && shockDay>=0 && calmDay>=0) break;
+  }
+  assert(stormDay>=0, 'IE03. found storm day '+stormDay);
+  assert(shockDay>=0, 'IE03b. found shock day '+shockDay);
+  assert(calmDay>=0, 'IE03c. found calm day '+calmDay);
+  if (stormDay>=0) {
+    const ev = activeInfluentEventForDay(stormDay+0.3)!;
+    assert(ev.type==='storm_surge' && ev.flowMul===STORM_FLOW_MUL, 'IE03d. storm day type+flow '+ev.type);
+    // storm duration spillover
+    assert(activeInfluentEventForDay(stormDay+0.3) !== null, 'IE03e. storm at +0.3h live');
+    assert(activeInfluentEventForDay(stormDay+1.2) !== null && activeInfluentEventForDay(stormDay+1.2)!.type==='storm_surge', 'IE03f. storm spillover +1.2d live');
+    assert(activeInfluentEventForDay(stormDay+1.5) === null || activeInfluentEventForDay(stormDay+1.5)!.startDay !== stormDay, 'IE03g. storm ends before +1.5d');
+    assert(influentEventSummaryLine(stormDay+0.3).includes('Storm'), 'IE03h. storm summary '+influentEventSummaryLine(stormDay+0.3));
+  }
+  if (shockDay>=0) {
+    assert(activeInfluentEventForDay(shockDay+0.5) !== null && activeInfluentEventForDay(shockDay+0.5)!.type==='industrial_shock', 'IE03i. shock at +0.5 live');
+    assert(activeInfluentEventForDay(shockDay+1.1) === null || activeInfluentEventForDay(shockDay+1.1)!.type !== 'industrial_shock' || activeInfluentEventForDay(shockDay+1.1)!.startDay !== shockDay, 'IE03j. shock ends before +1.1d');
+    assert(influentEventSummaryLine(shockDay+0.3).includes('Industrial'), 'IE03k. shock summary');
+  }
+  if (calmDay>=0) {
+    assert(influentEventSummaryLine(calmDay+0.3).includes('calm'), 'IE03l. calm summary calm');
+  }
+  // IE04. tick lifecycles — storm hydraulic surge, shock organic load, alert, diurnal isolated (strength 0)
+  {
+    // helper to build a minimal steady plant (scr -> outfall) with flat diurnal
+    const mkMinimal = (gameDay:number) => {
+      let gs:any = GameManager.createInitialState(0,false);
+      gs.gameTimeDays = gameDay;
+      gs.diurnalInfluentStrength = 0;
+      const scr={ instanceId:'scrIE', typeId:'bar_screen', gridX:5, gridY:10, rotation:0, volume:200, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:0, lastOpexActual:0 } as any;
+      gs.units.push(scr);
+      gs.pipes.push(
+        { id:'iep1', fromUnitId:'inlet_0', fromPortId:'outlet', toUnitId:'scrIE', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'} as any,
+        { id:'iep2', fromUnitId:'scrIE', fromPortId:'outlet', toUnitId:'outfall_0', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'} as any
+      );
+      for(let i=0;i<6;i++) gs = GameManager.tick(gs, 0.5);
+      return gs;
+    };
+    if (stormDay>=0 && calmDay>=0) {
+      const gStorm = mkMinimal(stormDay+0.3);
+      const gCalm = mkMinimal(calmDay+0.3);
+      assert(gStorm.finalEffluent.flowRate > gCalm.finalEffluent.flowRate * 1.45, 'IE04. storm flow '+gStorm.finalEffluent.flowRate.toFixed(0)+' > 1.45x calm '+gCalm.finalEffluent.flowRate.toFixed(0));
+      assert(gStorm.overallStats.activeAlerts.some((a:any)=>a.id==='influent_event' && a.message.includes('Storm')), 'IE04b. storm alert present');
+      assert(!gCalm.overallStats.activeAlerts.some((a:any)=>a.id==='influent_event'), 'IE04c. calm no alert');
+    }
+    if (shockDay>=0 && calmDay>=0) {
+      const gShock = mkMinimal(shockDay+0.3);
+      const gCalm2 = mkMinimal(calmDay+0.3);
+      // shock BOD higher than calm despite same flow
+      assert(gShock.finalEffluent.bod > gCalm2.finalEffluent.bod * 1.3, 'IE04d. shock bod '+gShock.finalEffluent.bod.toFixed(1)+' > 1.3x calm '+gCalm2.finalEffluent.bod.toFixed(1));
+      assert(gShock.overallStats.activeAlerts.some((a:any)=>a.id==='influent_event' && a.message.includes('Industrial')), 'IE04e. shock alert present');
+    }
+    // IE04f. no-flow never shows event alert even on a storm day
+    if (stormDay>=0) {
+      let gs:any = GameManager.createInitialState(0,false);
+      gs.gameTimeDays = stormDay+0.3;
+      // leave disconnected (no pipes) => no outfall flow
+      for(let i=0;i<5;i++) gs = GameManager.tick(gs, 0.5);
+      assert(!gs.overallStats.activeAlerts.some((a:any)=>a.id==='influent_event'), 'IE04f. no-flow suppresses event alert even on storm day');
+    }
+  }
+}
+
 
 console.log(failures === 0 ? "\nALL TESTS PASSED" : `\n${failures} TEST(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);
