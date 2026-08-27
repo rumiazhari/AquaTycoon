@@ -784,7 +784,7 @@ export class SceneManager {
    * add/remove/dispose discipline. Selection = amber emissive.
    */
   public syncEquipment(
-    items: { id: string; typeId: string; x: number; y: number }[],
+    items: { id: string; typeId: string; x: number; y: number; rotation?: number }[],
     basins: { x: number; y: number; w: number; h: number; depthM: number }[],
     selectedId?: string | null,
     poweredIds?: Set<string> | null,
@@ -815,8 +815,18 @@ export class SceneManager {
         mesh = this.buildEquipmentMesh(it.typeId, host ? host.depthM : 0);
         // Tile centers sit at (+0.5, +0.5) in world tile space.
         mesh.position.set(it.x + 0.5, 0, it.y + 0.5);
+        mesh.rotation.y = ((it.rotation ?? 0) * Math.PI) / 180;
         this.equipMeshMap.set(it.id, mesh);
         this.equipGroup.add(mesh);
+      } else {
+        // Keep mesh in sync when equipment is moved or rotated (P2 direct manipulation)
+        const targetX = it.x + 0.5;
+        const targetZ = it.y + 0.5;
+        if (Math.abs(mesh.position.x - targetX) > 0.001 || Math.abs(mesh.position.z - targetZ) > 0.001) {
+          mesh.position.set(targetX, 0, targetZ);
+        }
+        const targetRot = ((it.rotation ?? 0) * Math.PI) / 180;
+        if (Math.abs(mesh.rotation.y - targetRot) > 0.001) mesh.rotation.y = targetRot;
       }
       const selected = it.id === selectedId;
       // ── Phase 4 functional status (power + aeration) ────────────────

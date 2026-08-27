@@ -5588,6 +5588,110 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
     assert(gs.finalEffluent.flowRate > 10, 'BE10. flow still lives after edit '+gs.finalEffluent.flowRate.toFixed(0));
     assert(gs.customBasins[0].depthM===5, 'BE10b. depth preserved 5');
   }
+  // EM — P2 equipment direct manipulation: move + rotate (free, same validation as placement)
+  {
+    // EM01: in-basin diffuser moves within same basin to adjacent tile
+    let gs = GameManager.createInitialState(0,true);
+    let rr = GameManager.placeCustomBasin(gs, {x:5,y:5,w:4,h:4}); gs=rr.newState;
+    let er = GameManager.placeProcessEquipment(gs, 'fine_bubble_diffuser', 6,6); gs=er.newState;
+    const id = gs.processEquipment[0].id;
+    const mv = GameManager.moveProcessEquipment(gs, id, 7,6);
+    assert(mv.success, 'EM01. diffuser move within basin success');
+    assert(mv.newState.processEquipment[0].x===7 && mv.newState.processEquipment[0].y===6, 'EM01b. diffuser now at (7,6)');
+    gs = mv.newState;
+  }
+  {
+    // EM02: tile already holds equipment blocks move
+    let gs = GameManager.createInitialState(0,true);
+    let rr = GameManager.placeCustomBasin(gs, {x:5,y:5,w:4,h:4}); gs=rr.newState;
+    let e1 = GameManager.placeProcessEquipment(gs, 'fine_bubble_diffuser', 6,6); gs=e1.newState;
+    let e2 = GameManager.placeProcessEquipment(gs, 'submersible_mixer', 7,6); gs=e2.newState;
+    const id1 = gs.processEquipment.find(e=>e.typeId==='fine_bubble_diffuser')!.id;
+    const blocked = GameManager.moveProcessEquipment(gs, id1, 7,6);
+    assert(!blocked.success && (blocked.reason??'').includes('already holds'), 'EM02. move onto occupied tile rejected');
+  }
+  {
+    // EM03: in_basin cannot move outside basin
+    let gs = GameManager.createInitialState(0,true);
+    let rr = GameManager.placeCustomBasin(gs, {x:5,y:5,w:3,h:3}); gs=rr.newState;
+    let er = GameManager.placeProcessEquipment(gs, 'fine_bubble_diffuser', 6,6); gs=er.newState;
+    const id = gs.processEquipment[0].id;
+    const out = GameManager.moveProcessEquipment(gs, id, 2,2);
+    assert(!out.success && (out.reason??'').includes('inside'), 'EM03. in_basin move outside basin rejected');
+  }
+  {
+    // EM04: ground pump cannot move into basin
+    let gs = GameManager.createInitialState(0,true);
+    let rr = GameManager.placeCustomBasin(gs, {x:5,y:5,w:3,h:3}); gs=rr.newState;
+    let er = GameManager.placeProcessEquipment(gs, 'process_pump', 10,10); gs=er.newState;
+    const id = gs.processEquipment[0].id;
+    const intoBasin = GameManager.moveProcessEquipment(gs, id, 6,6);
+    assert(!intoBasin.success && (intoBasin.reason??'').includes('dry'), 'EM04. ground move into basin rejected');
+  }
+  {
+    // EM05: ground pump moves on open ground
+    let gs = GameManager.createInitialState(0,true);
+    let er = GameManager.placeProcessEquipment(gs, 'process_pump', 10,10); gs=er.newState;
+    const id = gs.processEquipment[0].id;
+    const mv = GameManager.moveProcessEquipment(gs, id, 11,10);
+    assert(mv.success && mv.newState.processEquipment[0].x===11, 'EM05. ground pump open-ground move success');
+  }
+  {
+    // EM06: utility attached blocks move (must remove pipe/cable first)
+    let gs = GameManager.createInitialState(0,true);
+    let rr = GameManager.placeCustomBasin(gs, {x:5,y:5,w:4,h:4}); gs=rr.newState;
+    let e1 = GameManager.placeProcessEquipment(gs, 'process_pump', 10,10); gs=e1.newState;
+    let e2 = GameManager.placeProcessEquipment(gs, 'fine_bubble_diffuser', 6,6); gs=e2.newState;
+    // water pipe needs pump/basin, use pump->basin
+    let ur = GameManager.placeUtilityConnection(gs, 'water_pipe', 10,10, 6,6); gs=ur.newState;
+    assert(ur.success, 'EM06 setup utility success');
+    const pid = gs.processEquipment.find(e=>e.typeId==='process_pump')!.id;
+    const blocked = GameManager.moveProcessEquipment(gs, pid, 11,10);
+    assert(!blocked.success && (blocked.reason??'').includes('utility'), 'EM06b. attached utility blocks move');
+    // after removing utility, move succeeds
+    const did = gs.utilityConnections[0].id;
+    let dr = GameManager.demolishUtilityConnection(gs, did); gs=dr.newState;
+    const ok = GameManager.moveProcessEquipment(gs, pid, 11,10);
+    assert(ok.success, 'EM06c. move after utility removal succeeds');
+  }
+  {
+    // EM07: out of bounds rejected
+    let gs = GameManager.createInitialState(0,true);
+    let er = GameManager.placeProcessEquipment(gs, 'process_pump', 10,10); gs=er.newState;
+    const id = gs.processEquipment[0].id;
+    const oob = GameManager.moveProcessEquipment(gs, id, -1,0);
+    assert(!oob.success, 'EM07. out of bounds rejected');
+  }
+  {
+    // EM08: unknown id & same-tile no-op
+    let gs = GameManager.createInitialState(0,true);
+    let er = GameManager.placeProcessEquipment(gs, 'process_pump', 10,10); gs=er.newState;
+    const unk = GameManager.moveProcessEquipment(gs, 'nope', 11,10);
+    assert(!unk.success, 'EM08. unknown id rejected');
+    const id = gs.processEquipment[0].id;
+    const same = GameManager.moveProcessEquipment(gs, id, 10,10);
+    assert(same.success && same.newState.processEquipment[0].x===10, 'EM08b. same-tile no-op success');
+  }
+  {
+    // EM09: rotation cycles 0→90→180→270→0 and tick preserves
+    let gs = GameManager.createInitialState(0,true);
+    let er = GameManager.placeProcessEquipment(gs, 'process_pump', 10,10); gs=er.newState;
+    const id = gs.processEquipment[0].id;
+    assert((gs.processEquipment[0].rotation ?? 0)===0, 'EM09a. initial rotation 0');
+    let r1 = GameManager.rotateProcessEquipment(gs, id); gs=r1.newState;
+    assert(gs.processEquipment[0].rotation===90, 'EM09b. 0→90');
+    let r2 = GameManager.rotateProcessEquipment(gs, id); gs=r2.newState;
+    assert(gs.processEquipment[0].rotation===180, 'EM09c. 90→180');
+    let r3 = GameManager.rotateProcessEquipment(gs, id); gs=r3.newState;
+    assert(gs.processEquipment[0].rotation===270, 'EM09d. 180→270');
+    let r4 = GameManager.rotateProcessEquipment(gs, id); gs=r4.newState;
+    assert(gs.processEquipment[0].rotation===0, 'EM09e. 270→0 wrap');
+    const unk = GameManager.rotateProcessEquipment(gs, 'nope');
+    assert(!unk.success, 'EM09f. unknown rotate rejected');
+    // tick preserves rotation
+    for(let i=0;i<4;i++) gs = GameManager.tick(gs, 0.5);
+    assert(gs.processEquipment[0].rotation===0, 'EM09g. tick preserves rotation');
+  }
 }
 
 console.log(failures === 0 ? "\nALL TESTS PASSED" : `\n${failures} TEST(S) FAILED`);

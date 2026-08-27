@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, Wind, Trash2, Droplets, Fan, Cog, Waves, AlertTriangle, CheckCircle2, Columns3, ShieldCheck, Hexagon, Gauge, Activity, Ruler, FlaskConical, Beaker, Filter, Cylinder } from 'lucide-react';
+import { X, Wind, Trash2, Droplets, Fan, Cog, Waves, AlertTriangle, CheckCircle2, Columns3, ShieldCheck, Hexagon, Gauge, Activity, Ruler, FlaskConical, Beaker, Filter, Cylinder, Move, RotateCw } from 'lucide-react';
 import { EQUIPMENT_TYPES } from '../design/ProcessEquipment';
 import type { ProcessEquipmentItem } from '../design/ProcessEquipment';
 import type { BasinZone } from '../design/BasinZone';
@@ -34,8 +34,11 @@ interface EquipmentInspectorProps {
   dosingPowered?: boolean | null;
   storagePowered?: boolean | null;
   flowM3d?: number;
+  moving?: boolean;
   onClose: () => void;
   onDemolish: (id: string) => void;
+  onMove?: (id: string) => void;
+  onRotate?: (id: string) => void;
 }
 
 const ROLE_TONE: Record<string, string> = {
@@ -45,7 +48,7 @@ const ROLE_TONE: Record<string, string> = {
   buffer: 'bg-slate-800 border-slate-600 text-slate-300',
 };
 
-export const EquipmentInspector: React.FC<EquipmentInspectorProps> = ({ item, powered, aerated, zone, filtrationLive, filtrationDegraded, carrierActive, carrierAerated, dosingActive, dosingPowered, storagePowered: _storagePowered, flowM3d, onClose, onDemolish }) => {
+export const EquipmentInspector: React.FC<EquipmentInspectorProps> = ({ item, powered, aerated, zone, filtrationLive, filtrationDegraded, carrierActive, carrierAerated, dosingActive, dosingPowered, storagePowered: _storagePowered, flowM3d, moving, onClose, onDemolish, onMove, onRotate }) => {
   const def = EQUIPMENT_TYPES[item.typeId];
   if (!def) return null;
   const Icon = ICONS[item.typeId] ?? Cog;
@@ -257,6 +260,24 @@ export const EquipmentInspector: React.FC<EquipmentInspectorProps> = ({ item, po
         </div>
 
         <p className="text-xs text-slate-400 bg-slate-800/50 p-2.5 rounded-xl border border-slate-700/60">{def.blurb}</p>
+
+        {/* P2: direct manipulation — relocate + rotate (free, same tile rules as placement; utilities must be removed first) */}
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            onClick={() => { SoundManager.playClick(); onMove?.(item.id); }}
+            className={`flex items-center justify-center gap-1.5 p-2.5 rounded-xl border text-xs font-bold transition ${moving ? 'bg-cyan-600 border-cyan-500 text-white animate-pulse' : 'bg-sky-500/10 hover:bg-sky-500/20 border-sky-500/30 text-sky-300'}`}
+          >
+            <Move size={14} /> <span>{moving ? 'Click destination...' : 'Move'}</span>
+          </button>
+          <button
+            onClick={() => { SoundManager.playClick(); onRotate?.(item.id); }}
+            className="flex items-center justify-center gap-1.5 p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-xs font-bold transition"
+          >
+            <RotateCw size={14} /> <span>Rotate 90°</span>
+          </button>
+        </div>
+        {moving && <span className="text-[10px] text-cyan-400 font-mono text-center">Click a valid tile to relocate — green = OK · red = blocked. Esc cancels. {(item.rotation ?? 0) !== 0 ? `Now at ${item.rotation}°` : `Facing ${item.rotation ?? 0}° — Rotate to turn.`}</span>}
+        {!moving && (item.rotation ?? 0) !== 0 && <span className="text-[10px] text-slate-500 font-mono text-center">Facing {item.rotation}° · use Rotate to re-orient the machine in-world.</span>}
 
         <button
           onClick={() => { SoundManager.playDemolish(); onDemolish(item.id); }}

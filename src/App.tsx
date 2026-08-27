@@ -156,6 +156,20 @@ export const App: React.FC = () => {
   const selectedEquipmentIdRef = useRef<string | null>(null);
   selectedEquipmentIdRef.current = selectedEquipmentId;
 
+  // ── CONSTRUCTION-BUILDER P2: equipment direct manipulation — move/rotate ────
+  // Armed move: after clicking Move in the inspector, the next tile click
+  // relocates the machine (free, same validation as placement, self-excluded).
+  // Ghost preview follows the cursor while armed; Esc / right-click cancels.
+  const [movingEquipmentId, setMovingEquipmentId] = useState<string | null>(null);
+  const movingEquipmentIdRef = useRef<string | null>(null);
+  movingEquipmentIdRef.current = movingEquipmentId;
+
+  const cancelEquipmentMove = useCallback((silent: boolean = false) => {
+    setMovingEquipmentId(null);
+    sceneRef.current?.terrainGrid.setGhostPreview(0, 0, 1, 1, true, false);
+    if (!silent) setToast('Move cancelled — click the equipment again to re-arm.');
+  }, []);
+
   // ── CONSTRUCTION-BUILDER Phase 3: utility connections (water/air/power) ───
   const [selectedUtilityTypeId, setSelectedUtilityTypeId] = useState<UtilityConnectionType | null>('water_pipe');
   const selUtilityTypeRef = useRef<UtilityConnectionType | null>('water_pipe');
@@ -254,6 +268,8 @@ export const App: React.FC = () => {
 
   const applyHistoryState = useCallback((state: GameState) => {
     setGameState(state);
+    setMovingEquipmentId(null);
+    sceneRef.current?.terrainGrid.setGhostPreview(0, 0, 1, 1, true, false);
     const sm = sceneRef.current;
     if (sm) {
       sm.syncUnits(state.units);
@@ -527,6 +543,42 @@ export const App: React.FC = () => {
             sm.terrainGrid.setGhostPreview(tile.x, tile.y, 1, 1, false, true);
             sm.setBafflePreview(null, null, null);
           }
+        } else if (movingEquipmentIdRef.current) {
+          // P2 move mode: ghost follows hover tile showing validity for the moving machine
+          const movingItem = gsRef.current.processEquipment?.find(e => e.id === movingEquipmentIdRef.current);
+          if (movingItem && tile) {
+            const attached = (gsRef.current.utilityConnections ?? []).filter(c =>
+              (c.ax === movingItem.x && c.ay === movingItem.y) || (c.bx === movingItem.x && c.by === movingItem.y)
+            );
+            if (attached.length > 0) {
+              sm.terrainGrid.setGhostPreview(tile.x, tile.y, 1, 1, false, true);
+            } else if (tile.x === movingItem.x && tile.y === movingItem.y) {
+              sm.terrainGrid.setGhostPreview(tile.x, tile.y, 1, 1, true, true);
+            } else {
+              const [mapW, mapH] = gsRef.current.currentLevel.mapSize;
+              const unitRects = gsRef.current.units.map(u => {
+                const ud = UNIT_DEFINITIONS[u.typeId];
+                const [uw, ul] = ud ? ud.footprint : [1, 1];
+                return { x: u.gridX, y: u.gridY, w: uw, h: ul };
+              });
+              for (const e of gsRef.current.processEquipment ?? []) {
+                if (e.id !== movingItem.id && EQUIPMENT_TYPES[e.typeId]?.mounting === 'ground') {
+                  unitRects.push({ x: e.x, y: e.y, w: 1, h: 1 });
+                }
+              }
+              const v = validateEquipmentPlacement(
+                movingItem.typeId, tile.x, tile.y,
+                [mapW, mapH],
+                gsRef.current.customBasins ?? [],
+                gsRef.current.processEquipment ?? [],
+                unitRects,
+                movingItem.id
+              );
+              sm.terrainGrid.setGhostPreview(tile.x, tile.y, 1, 1, v.ok, true);
+            }
+          } else {
+            sm.terrainGrid.setGhostPreview(0, 0, 1, 1, true, false);
+          }
         } else {
           sm.terrainGrid.setGhostPreview(0, 0, 1, 1, true, false);
         }
@@ -548,7 +600,11 @@ export const App: React.FC = () => {
       if (wasDrag) return; // drags orbit/pan — never a click
 
       if (button === 2) {
-        // RIGHT CLICK: cancel the pending pipe/utility selection (control scheme)
+        // RIGHT CLICK: cancel the pending pipe/utility/move selection (control scheme)
+        if (movingEquipmentIdRef.current) {
+          cancelEquipmentMove();
+          return;
+        }
         if (toolModeRef.current === 'connect_pipe' && pipeSourceRef.current) {
           cancelPipeSelection();
         }
@@ -755,6 +811,43 @@ export const App: React.FC = () => {
         cancelPipeSelection();
         return;
       }
+    }
+
+    // P2: armed equipment move — highest priority over select/demolish/place
+    if (movingEquipmentIdRef.current) {
+      const movingId = movingEquipmentIdRef.current;
+      const movingItem = gs.processEquipment?.find(e => e.id === movingId);
+      if (!movingItem) { cancelEquipmentMove(true); return; }
+      if (!tile) { cancelEquipmentMove(); return; }
+      // Same tile = cancel without history (no-op)
+      if (tile.x === movingItem.x && tile.y === movingItem.y) {
+        cancelEquipmentMove(true);
+        setToast('Move cancelled — machine stays where it was.');
+        return;
+      }
+      const res = GameManager.moveProcessEquipment(gs, movingId, tile.x, tile.y);
+      if (!res.success) {
+        SoundManager.playWarning();
+        setToast(`⛔ Move blocked: ${res.reason}`);
+        return;
+      }
+      pushHistory(gs);
+      setGameState(res.newState);
+      setMovingEquipmentId(null);
+      sm.terrainGrid.setGhostPreview(0, 0, 1, 1, true, false);
+      sm.syncEquipment(
+        res.newState.processEquipment ?? [], res.newState.customBasins ?? [], movingId,
+        poweredEquipmentIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
+        aeratedDiffuserIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
+        filtrationLiveSets(res.newState.customBasins ?? [], res.newState.processEquipment ?? [], res.newState.utilityConnections ?? [], res.newState.customBaffles ?? []),
+        chemicalLiveSets(res.newState.customBasins ?? [], res.newState.processEquipment ?? [], res.newState.utilityConnections ?? [], res.newState.customBaffles ?? [])
+      );
+      sm.syncUtilityConnections(res.newState.utilityConnections ?? [], null);
+      sm.syncBaffles(res.newState.customBaffles ?? [], res.newState.customBasins ?? [], null);
+      setSelectedEquipmentId(movingId);
+      SoundManager.playPlace();
+      setToast(`${EQUIPMENT_TYPES[movingItem.typeId]?.name ?? 'Equipment'} moved to (${tile.x},${tile.y}) — free reposition (Ctrl+Z to undo).`);
+      return;
     }
 
     if (mode === 'select') {
@@ -1462,7 +1555,9 @@ export const App: React.FC = () => {
           setToast('Rotated placement direction.');
           break;
         case 'Escape':
-          if (toolModeRef.current === 'connect_pipe' && pipeSourceRef.current) {
+          if (movingEquipmentIdRef.current) {
+            cancelEquipmentMove();
+          } else if (toolModeRef.current === 'connect_pipe' && pipeSourceRef.current) {
             cancelPipeSelection();
           } else if (toolModeRef.current === 'connect_utility' && utilitySourceRef.current) {
             cancelUtilitySelection();
@@ -1609,6 +1704,8 @@ export const App: React.FC = () => {
   const handleSelectLevel = useCallback((levelIndex: number, isSandbox: boolean) => {
     undoStackRef.current = [];
     redoStackRef.current = [];
+    setMovingEquipmentId(null);
+    sceneRef.current?.terrainGrid.setGhostPreview(0, 0, 1, 1, true, false);
     const next = GameManager.createInitialState(levelIndex, isSandbox);
     setGameState(next);
 
@@ -2003,7 +2100,9 @@ export const App: React.FC = () => {
             dosingPowered={chem.poweredDosingIds.has(item.id)}
             storagePowered={chem.poweredStorageIds.has(item.id)}
             flowM3d={gameState.finalEffluent.flowRate}
+            moving={movingEquipmentId === item.id}
             onClose={() => {
+              if (movingEquipmentId === item.id) cancelEquipmentMove(true);
               setSelectedEquipmentId(null);
               sceneRef.current?.syncEquipment(
                 gameState.processEquipment ?? [], gameState.customBasins ?? [], null,
@@ -2012,6 +2111,48 @@ export const App: React.FC = () => {
                 filtrationLiveSets(gameState.customBasins ?? [], gameState.processEquipment ?? [], gameState.utilityConnections ?? [], gameState.customBaffles ?? []),
                 chemicalLiveSets(gameState.customBasins ?? [], gameState.processEquipment ?? [], gameState.utilityConnections ?? [], gameState.customBaffles ?? [])
               );
+            }}
+            onMove={id => {
+              if (movingEquipmentId === id) {
+                cancelEquipmentMove(true);
+                setToast('Move cancelled — machine stays where it was.');
+                return;
+              }
+              const it = gsRef.current.processEquipment?.find(e => e.id === id);
+              if (!it) return;
+              const attached = (gsRef.current.utilityConnections ?? []).filter(c =>
+                (c.ax === it.x && c.ay === it.y) || (c.bx === it.x && c.by === it.y)
+              );
+              if (attached.length > 0) {
+                SoundManager.playWarning();
+                setToast(`⛔ Can't move — remove its ${attached.length} pipe/cable(s) first (utility blocks relocation).`);
+                return;
+              }
+              setMovingEquipmentId(id);
+              setToast(`Moving ${EQUIPMENT_TYPES[it.typeId]?.name ?? 'equipment'} — click a green destination tile. Esc or right-click cancels.`);
+            }}
+            onRotate={id => {
+              const it = gsRef.current.processEquipment?.find(e => e.id === id);
+              if (!it) return;
+              pushHistory(gsRef.current);
+              const res = GameManager.rotateProcessEquipment(gsRef.current, id);
+              if (!res.success) {
+                SoundManager.playWarning();
+                undoStackRef.current.pop();
+                setToast(res.reason ?? 'Cannot rotate.');
+                return;
+              }
+              setGameState(res.newState);
+              sceneRef.current?.syncEquipment(
+                res.newState.processEquipment ?? [], res.newState.customBasins ?? [], id,
+                poweredEquipmentIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
+                aeratedDiffuserIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
+                filtrationLiveSets(res.newState.customBasins ?? [], res.newState.processEquipment ?? [], res.newState.utilityConnections ?? [], res.newState.customBaffles ?? []),
+                chemicalLiveSets(res.newState.customBasins ?? [], res.newState.processEquipment ?? [], res.newState.utilityConnections ?? [], res.newState.customBaffles ?? [])
+              );
+              const rot = res.newState.processEquipment?.find(e => e.id === id)?.rotation ?? 0;
+              SoundManager.playClick();
+              setToast(`Rotated to ${rot}° — visual orientation updated (Ctrl+Z to undo).`);
             }}
             onDemolish={id => {
               pushHistory(gsRef.current);

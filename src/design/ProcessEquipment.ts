@@ -164,6 +164,8 @@ export interface ProcessEquipmentItem {
   /** Tile coords (the tile's center hosts the machine). */
   x: number;
   y: number;
+  /** Yaw in degrees — ground kit rotates visually; 1×1 so no footprint change. */
+  rotation?: 0 | 90 | 180 | 270;
   createdAtDay: number;
 }
 
@@ -195,7 +197,8 @@ export function validateEquipmentPlacement(
   mapSize: [number, number],
   basins: { x: number; y: number; w: number; h: number }[],
   equipment: ProcessEquipmentItem[],
-  placedUnitRects: { x: number; y: number; w: number; h: number }[]
+  placedUnitRects: { x: number; y: number; w: number; h: number }[],
+  ignoreEquipmentId?: string
 ): EquipmentPlacementResult {
   const def = EQUIPMENT_TYPES[typeId];
   if (!def) return { ok: false, reason: 'Unknown equipment type' };
@@ -206,7 +209,7 @@ export function validateEquipmentPlacement(
   if (tx < 0 || ty < 0 || tx >= mapW || ty >= mapH) {
     return { ok: false, reason: 'Out of site boundary' };
   }
-  if (equipment.some(e => e.x === tx && e.y === ty)) {
+  if (equipment.some(e => e.id !== ignoreEquipmentId && e.x === tx && e.y === ty)) {
     return { ok: false, reason: 'Tile already holds equipment' };
   }
   if (def.mounting === 'in_basin') {

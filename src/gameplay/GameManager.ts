@@ -1641,6 +1641,58 @@ export class GameManager {
     );
   }
 
+  /** Relocates one installed machine to a new tile — free move, same validation as placement (self-excluded), blocked when utilities still attached. */
+  public static moveProcessEquipment(
+    state: GameState,
+    itemId: string,
+    newX: number,
+    newY: number
+  ): { newState: GameState; success: boolean; reason?: string } {
+    const item = (state.processEquipment ?? []).find(e => e.id === itemId);
+    if (!item) return { newState: state, success: false, reason: 'Unknown equipment' };
+    if (item.x === newX && item.y === newY) return { newState: state, success: true };
+    const attached = (state.utilityConnections ?? []).filter(c =>
+      (c.ax === item.x && c.ay === item.y) || (c.bx === item.x && c.by === item.y)
+    );
+    if (attached.length > 0) {
+      return { newState: state, success: false, reason: 'Remove utility connections first — this machine still has a pipe/cable attached' };
+    }
+    const unitRects = state.units.map(u => {
+      const [uw, ul] = resolveFootprint(u);
+      return { x: u.gridX, y: u.gridY, w: uw, h: ul };
+    });
+    // ground equipment already blocks unit lots via unitRects; add other ground kit as pseudo-unit rects
+    for (const e of state.processEquipment ?? []) {
+      if (e.id !== itemId && EQUIPMENT_TYPES[e.typeId]?.mounting === 'ground') {
+        unitRects.push({ x: e.x, y: e.y, w: 1, h: 1 });
+      }
+    }
+    const v = validateEquipmentPlacement(
+      item.typeId, newX, newY,
+      state.currentLevel.mapSize,
+      state.customBasins ?? [],
+      state.processEquipment ?? [],
+      unitRects,
+      itemId
+    );
+    if (!v.ok) return { newState: state, success: false, reason: v.reason };
+    const next = (state.processEquipment ?? []).map(e => e.id === itemId ? { ...e, x: newX, y: newY } : e);
+    return { newState: { ...state, processEquipment: next }, success: true };
+  }
+
+  /** Rotates one installed machine 90° clockwise — free, 1×1 so no footprint/validation needed. Ground kit shows orientation; in-basin also rotates for visual variety. */
+  public static rotateProcessEquipment(
+    state: GameState,
+    itemId: string
+  ): { newState: GameState; success: boolean; reason?: string } {
+    const item = (state.processEquipment ?? []).find(e => e.id === itemId);
+    if (!item) return { newState: state, success: false, reason: 'Unknown equipment' };
+    const cur = (item.rotation ?? 0) as 0 | 90 | 180 | 270;
+    const nxt = ((cur + 90) % 360) as 0 | 90 | 180 | 270;
+    const next = (state.processEquipment ?? []).map(e => e.id === itemId ? { ...e, rotation: nxt } : e);
+    return { newState: { ...state, processEquipment: next }, success: true };
+  }
+
   // ── CONSTRUCTION-BUILDER Phase 3: utility connections ────────────────────
 
   /** Salvage fraction for utilities (trenches/excels less retained than kit). */
