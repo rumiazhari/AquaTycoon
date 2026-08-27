@@ -16,6 +16,10 @@ export const BASIN_TILE_METERS = 6;
 export const BASIN_MIN_TILES = 2;
 /** Fixed initial depth for Phase 1 (direct depth editing lands in Phase 2+). */
 export const BASIN_DEFAULT_DEPTH_M = 4.0;
+/** Direct-editing bounds (iter 49 P1 slice 1): player can retune depth after draw. */
+export const BASIN_MIN_DEPTH_M = 1.5;
+export const BASIN_MAX_DEPTH_M = 8.0;
+export const BASIN_DEPTH_STEP_M = 0.5;
 
 /** Cost model (§19 — quantity-based, simple, visible while building):
  *  civil works ≈ $165 per m³ of excavated/reinforced water volume
@@ -127,4 +131,58 @@ export function validateBasinPlacement(
     }
   }
   return { ok: true };
+}
+
+/**
+ * P1 DIRECT EDITING — validates a RESIZE/DEPTH edit of an EXISTING basin.
+ * Reuses placement rules but EXCLUDES the basin itself from overlap checks
+ * and adds stranded-equipment / baffle-validity guards so a shrink never
+ * orphans installed kit or leaves a baffle wall outside the new footprint.
+ */
+export function validateBasinEdit(
+  basinId: string,
+  newRect: BasinRect,
+  newDepthM: number,
+  mapSize: [number, number],
+  allBasins: CustomBasin[],
+  placedUnitRects: BasinRect[],
+  equipmentTiles: { x: number; y: number }[] = [],
+  baffleOffsets: { basinId: string; orientation: 'vertical' | 'horizontal'; offsetTiles: number }[] = []
+): BasinPlacementResult {
+  if (!Number.isFinite(newDepthM) || !(newDepthM >= BASIN_MIN_DEPTH_M && newDepthM <= BASIN_MAX_DEPTH_M)) {
+    return { ok: false, reason: `Depth must be ${BASIN_MIN_DEPTH_M}–${BASIN_MAX_DEPTH_M} m` };
+  }
+  const others = allBasins.filter(b => b.id !== basinId);
+  const v = validateBasinPlacement(newRect, newDepthM, mapSize, others, placedUnitRects);
+  if (!v.ok) return v;
+  // Stranded equipment: every tile that was inside the OLD basin and holds
+  // equipment must still be inside the new rect — otherwise the machine
+  // would float outside the walls.
+  for (const e of equipmentTiles) {
+    if (!rectContains(newRect, e.x, e.y)) {
+      return { ok: false, reason: 'Resize would strand installed equipment — remove it first' };
+    }
+  }
+  // Baffle validity: each baffle's offset must still be 1..dim-1 under new dims
+  for (const bf of baffleOffsets) {
+    if (bf.basinId !== basinId) continue;
+    const dim = bf.orientation === 'vertical' ? newRect.w : newRect.h;
+    if (bf.offsetTiles < 1 || bf.offsetTiles >= dim) {
+      return { ok: false, reason: 'Resize would invalidate a baffle wall — remove baffles first' };
+    }
+  }
+  return { ok: true };
+}
+
+/** Cost delta for an edit (positive = extra CAPEX, negative = salvage pool). */
+export function basinEditCostDelta(oldBasin: CustomBasin & { depthM: number }, newRect: BasinRect & { depthM: number }): number {
+  return estimateBasinCAPEX(newRect) - estimateBasinCAPEX(oldBasin);
+}
+
+/** Human one-liner for a basin's engineered dimensions (in-world label). */
+export function basinDimensionLabel(b: CustomBasin): string {
+  const len = basinLengthM(b);
+  const wid = basinWidthM(b);
+  const vol = basinVolumeM3(b);
+  return `${len}×${wid} m · ${b.depthM.toFixed(1)} m deep · ${Math.round(vol).toLocaleString()} m³`;
 }

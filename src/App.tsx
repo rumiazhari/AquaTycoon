@@ -32,6 +32,7 @@ import { validateBafflePlacement } from './design/BasinZone';
 import { HeaderHUD } from './ui/HeaderHUD';
 import { BuildToolbar } from './ui/BuildToolbar';
 import { UnitInspector } from './ui/UnitInspector';
+import { BasinInspector } from './ui/BasinInspector';
 import { EquipmentInspector } from './ui/EquipmentInspector';
 import { BaffleInspector } from './ui/BaffleInspector';
 import { ConstructionStatusChip } from './ui/ConstructionStatusChip';
@@ -1891,6 +1892,91 @@ export const App: React.FC = () => {
           onOpenDesigner={id => setDesignerModalId(id)}
         />
       )}
+
+      {/* ── P1: Basin Inspector — direct depth + footprint editing + in-world dimensions ── */}
+      {selectedBasinId && (() => {
+        const basin = gameState.customBasins?.find(b => b.id === selectedBasinId);
+        if (!basin) return null;
+        const zoneCount = GameManager.zonesForBasin(gameState, basin.id).length || 1;
+        const equipmentInside = (gameState.processEquipment ?? []).filter(e => e.x >= basin.x && e.x < basin.x + basin.w && e.y >= basin.y && e.y < basin.y + basin.h).length;
+        return (
+          <BasinInspector
+            basin={basin}
+            zoneCount={zoneCount}
+            equipmentInside={equipmentInside}
+            onClose={() => {
+              setSelectedBasinId(null);
+              sceneRef.current?.syncBasins(gameState.customBasins ?? [], null);
+            }}
+            onDemolish={id => {
+              pushHistory(gsRef.current);
+              const res = GameManager.demolishCustomBasin(gsRef.current, id);
+              if (res.success) {
+                setSelectedBasinId(null);
+                setGameState(res.newState);
+                sceneRef.current?.syncBasins(res.newState.customBasins ?? [], null);
+                sceneRef.current?.syncBaffles(res.newState.customBaffles ?? [], res.newState.customBasins ?? [], null);
+                sceneRef.current?.syncUtilityConnections(res.newState.utilityConnections ?? [], null);
+                sceneRef.current?.syncEquipment(
+                  res.newState.processEquipment ?? [], res.newState.customBasins ?? [], null,
+                  poweredEquipmentIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
+                  aeratedDiffuserIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
+                  filtrationLiveSets(res.newState.customBasins ?? [], res.newState.processEquipment ?? [], res.newState.utilityConnections ?? [], res.newState.customBaffles ?? [])
+                );
+                setToast(res.refunded && res.refunded > 0 ? `Basin demolished — salvage refund $${res.refunded.toLocaleString()}.` : 'Basin demolished.');
+              } else {
+                SoundManager.playWarning();
+                setToast(res.reason ?? 'Cannot demolish basin.');
+              }
+            }}
+            onUpdateDepth={(id, depth) => {
+              pushHistory(gsRef.current);
+              const res = GameManager.updateBasinDepth(gsRef.current, id, depth);
+              if (!res.success) {
+                SoundManager.playWarning();
+                setToast(res.reason ?? 'Cannot update depth.');
+                undoStackRef.current.pop();
+                return;
+              }
+              setGameState(res.newState);
+              sceneRef.current?.syncBasins(res.newState.customBasins ?? [], id);
+              sceneRef.current?.syncBaffles(res.newState.customBaffles ?? [], res.newState.customBasins ?? [], null);
+              sceneRef.current?.syncEquipment(
+                res.newState.processEquipment ?? [], res.newState.customBasins ?? [], null,
+                poweredEquipmentIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
+                aeratedDiffuserIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
+                filtrationLiveSets(res.newState.customBasins ?? [], res.newState.processEquipment ?? [], res.newState.utilityConnections ?? [], res.newState.customBaffles ?? [])
+              );
+              if (res.charged) setToast(`Basin deepened to ${depth.toFixed(1)} m — charged $${res.charged.toLocaleString()} extra concrete.`);
+              else if (res.refunded) setToast(`Basin shallowed to ${depth.toFixed(1)} m — refund +$${res.refunded.toLocaleString()} (50% salvage).`);
+              else setToast(`Basin depth set to ${depth.toFixed(1)} m.`);
+            }}
+            onResize={(id, rect) => {
+              pushHistory(gsRef.current);
+              const res = GameManager.updateBasinRect(gsRef.current, id, rect);
+              if (!res.success) {
+                SoundManager.playWarning();
+                setToast(res.reason ?? 'Cannot resize basin.');
+                undoStackRef.current.pop();
+                return;
+              }
+              setGameState(res.newState);
+              sceneRef.current?.syncBasins(res.newState.customBasins ?? [], id);
+              sceneRef.current?.syncBaffles(res.newState.customBaffles ?? [], res.newState.customBasins ?? [], null);
+              sceneRef.current?.syncUtilityConnections(res.newState.utilityConnections ?? [], null);
+              sceneRef.current?.syncEquipment(
+                res.newState.processEquipment ?? [], res.newState.customBasins ?? [], null,
+                poweredEquipmentIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
+                aeratedDiffuserIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
+                filtrationLiveSets(res.newState.customBasins ?? [], res.newState.processEquipment ?? [], res.newState.utilityConnections ?? [], res.newState.customBaffles ?? [])
+              );
+              if (res.charged) setToast(`Basin resized to ${rect.w}×${rect.h} — charged $${res.charged.toLocaleString()}.`);
+              else if (res.refunded) setToast(`Basin shrunk to ${rect.w}×${rect.h} — refund +$${res.refunded.toLocaleString()}.`);
+              else setToast(`Basin resized to ${rect.w}×${rect.h}.`);
+            }}
+          />
+        );
+      })()}
 
       {/* ── Phase 4: installed equipment inspector (power + aeration live status) ── */}
       {selectedEquipmentId && (() => {

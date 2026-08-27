@@ -687,8 +687,25 @@ export class SceneManager {
 
     for (const b of basins) {
       let mesh = this.basinMeshMap.get(b.id);
+      const needsRebuild = mesh && (
+        (mesh as any)._basinW !== b.w ||
+        (mesh as any)._basinH !== b.h ||
+        (mesh as any)._basinDepth !== b.depthM
+      );
+      if (needsRebuild && mesh) {
+        this.basinGroup.remove(mesh);
+        mesh.traverse(o => {
+          const mm = o as THREE.Mesh;
+          if (mm.geometry) mm.geometry.dispose();
+        });
+        this.basinMeshMap.delete(b.id);
+        mesh = undefined as any;
+      }
       if (!mesh) {
         mesh = this.buildBasinMesh(b);
+        (mesh as any)._basinW = b.w;
+        (mesh as any)._basinH = b.h;
+        (mesh as any)._basinDepth = b.depthM;
         this.basinMeshMap.set(b.id, mesh);
         this.basinGroup.add(mesh);
       }

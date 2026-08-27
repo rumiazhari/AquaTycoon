@@ -19,8 +19,11 @@ import { pathLengthM } from '../sim/hydraulics/PipeHydraulics';
 import {
   CustomBasin,
   BASIN_DEFAULT_DEPTH_M,
+  BASIN_MIN_DEPTH_M,
+  BASIN_MAX_DEPTH_M,
   estimateBasinCAPEX,
   validateBasinPlacement,
+  validateBasinEdit,
 } from '../design/CustomBasin';
 import {
   ProcessEquipmentItem,
@@ -1821,6 +1824,105 @@ export class GameManager {
 
   public static basinZoneStats(state: GameState): BasinZoneStats {
     return _basinZoneStats(state.customBasins ?? [], state.customBaffles ?? []);
+  }
+
+  // ── CONSTRUCTION-BUILDER P1 — BASIN DIRECT EDITING (depth + resize) ─────────
+  /**
+   * Retunes a basin's depth (campaign charges the civil delta, sandbox free).
+   * Shallowing refunds 50% of the saved concrete/excavation. Pure domain,
+   * cash-gated, no React.
+   */
+  public static updateBasinDepth(
+    state: GameState,
+    basinId: string,
+    newDepthM: number
+  ): { newState: GameState; success: boolean; reason?: string; charged?: number; refunded?: number } {
+    const basin = (state.customBasins ?? []).find(b => b.id === basinId);
+    if (!basin) return { newState: state, success: false, reason: 'Unknown basin' };
+    const depth = Number(newDepthM);
+    if (!Number.isFinite(depth) || depth < BASIN_MIN_DEPTH_M || depth > BASIN_MAX_DEPTH_M) {
+      return { newState: state, success: false, reason: `Depth must be ${BASIN_MIN_DEPTH_M}–${BASIN_MAX_DEPTH_M} m` };
+    }
+    if (Math.abs(depth - basin.depthM) < 0.001) return { newState: state, success: true };
+    const equipmentTiles = (state.processEquipment ?? [])
+      .filter(e => e.x >= basin.x && e.x < basin.x + basin.w && e.y >= basin.y && e.y < basin.y + basin.h)
+      .map(e => ({ x: e.x, y: e.y }));
+    const baffleOffsets = (state.customBaffles ?? []).map(bf => ({ basinId: bf.basinId, orientation: bf.orientation as 'vertical' | 'horizontal', offsetTiles: bf.offsetTiles }));
+    const unitRects = state.units.map(u => {
+      const [uw, ul] = resolveFootprint(u);
+      return { x: u.gridX, y: u.gridY, w: uw, h: ul };
+    });
+    for (const e of state.processEquipment ?? []) {
+      if (EQUIPMENT_TYPES[e.typeId]?.mounting === 'ground') unitRects.push({ x: e.x, y: e.y, w: 1, h: 1 });
+    }
+    const rect = { x: basin.x, y: basin.y, w: basin.w, h: basin.h };
+    const v = validateBasinEdit(basinId, rect, depth, state.currentLevel.mapSize, state.customBasins ?? [], unitRects, equipmentTiles, baffleOffsets);
+    if (!v.ok) return { newState: state, success: false, reason: v.reason };
+    const oldCapex = estimateBasinCAPEX(basin);
+    const newCapex = estimateBasinCAPEX({ ...rect, depthM: depth });
+    const delta = newCapex - oldCapex;
+    if (state.gameMode !== 'sandbox' && !state.tutorialActive && delta > 0 && state.financials.cash < delta) {
+      return { newState: state, success: false, reason: `Insufficient funds (needs $${delta.toLocaleString()} more concrete)` };
+    }
+    const refund = (!state.tutorialActive && state.gameMode !== 'sandbox' && delta < 0) ? Math.round(-delta * GameManager.CUSTOM_BASIN_SALVAGE_RATE) : 0;
+    const charged = delta > 0 && state.gameMode !== 'sandbox' && !state.tutorialActive ? delta : 0;
+    const newCash = state.gameMode === 'sandbox' || state.tutorialActive
+      ? state.financials.cash
+      : state.financials.cash - charged + refund;
+    const nextBasins = (state.customBasins ?? []).map(b => b.id === basinId ? { ...b, depthM: depth } : b);
+    return {
+      newState: { ...state, financials: { ...state.financials, cash: newCash }, customBasins: nextBasins },
+      success: true,
+      ...(charged > 0 ? { charged } : {}),
+      ...(refund > 0 ? { refunded: refund } : {}),
+    };
+  }
+
+  /**
+   * Resizes a basin's footprint (campaign charges delta, 50% salvage on shrink).
+   * Validates against overlaps (excluding self), stranded equipment, baffle validity.
+   */
+  public static updateBasinRect(
+    state: GameState,
+    basinId: string,
+    newRect: { x: number; y: number; w: number; h: number }
+  ): { newState: GameState; success: boolean; reason?: string; charged?: number; refunded?: number } {
+    const basin = (state.customBasins ?? []).find(b => b.id === basinId);
+    if (!basin) return { newState: state, success: false, reason: 'Unknown basin' };
+    const norm = { x: Math.floor(newRect.x), y: Math.floor(newRect.y), w: Math.max(1, Math.floor(newRect.w)), h: Math.max(1, Math.floor(newRect.h)) };
+    // no-op
+    if (norm.x === basin.x && norm.y === basin.y && norm.w === basin.w && norm.h === basin.h) return { newState: state, success: true };
+    const equipmentTiles = (state.processEquipment ?? [])
+      .filter(e => e.x >= basin.x && e.x < basin.x + basin.w && e.y >= basin.y && e.y < basin.y + basin.h)
+      .map(e => ({ x: e.x, y: e.y }));
+    const baffleOffsets = (state.customBaffles ?? []).map(bf => ({ basinId: bf.basinId, orientation: bf.orientation as 'vertical' | 'horizontal', offsetTiles: bf.offsetTiles }));
+    const unitRects = state.units.map(u => {
+      const [uw, ul] = resolveFootprint(u);
+      return { x: u.gridX, y: u.gridY, w: uw, h: ul };
+    });
+    for (const e of state.processEquipment ?? []) {
+      if (EQUIPMENT_TYPES[e.typeId]?.mounting === 'ground') unitRects.push({ x: e.x, y: e.y, w: 1, h: 1 });
+    }
+    const v = validateBasinEdit(basinId, norm, basin.depthM, state.currentLevel.mapSize, state.customBasins ?? [], unitRects, equipmentTiles, baffleOffsets);
+    if (!v.ok) return { newState: state, success: false, reason: v.reason };
+    const oldCapex = estimateBasinCAPEX(basin);
+    const newCapex = estimateBasinCAPEX({ ...norm, depthM: basin.depthM });
+    const delta = newCapex - oldCapex;
+    if (state.gameMode !== 'sandbox' && !state.tutorialActive && delta > 0 && state.financials.cash < delta) {
+      return { newState: state, success: false, reason: `Insufficient funds (needs $${delta.toLocaleString()} more)` };
+    }
+    const refund = (!state.tutorialActive && state.gameMode !== 'sandbox' && delta < 0) ? Math.round(-delta * GameManager.CUSTOM_BASIN_SALVAGE_RATE) : 0;
+    const charged = delta > 0 && state.gameMode !== 'sandbox' && !state.tutorialActive ? delta : 0;
+    const newCash = state.gameMode === 'sandbox' || state.tutorialActive
+      ? state.financials.cash
+      : state.financials.cash - charged + refund;
+    const nextBasins = (state.customBasins ?? []).map(b => b.id === basinId ? { ...b, x: norm.x, y: norm.y, w: norm.w, h: norm.h } : b);
+    return {
+      newState: { ...state, financials: { ...state.financials, cash: newCash }, customBasins: nextBasins },
+      success: true,
+      ...(charged > 0 ? { charged } : {}),
+      ...(refund > 0 ? { refunded: refund } : {}),
+    };
   }
 
   /**

@@ -5420,6 +5420,175 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
   }
 }
 
+// ── P1 BASIN DIRECT EDITING ─ depth + resize (iter 49) ───────────────────────
+{
+  const { validateBasinEdit, basinEditCostDelta, basinDimensionLabel, estimateBasinCAPEX, BASIN_MIN_DEPTH_M, BASIN_MAX_DEPTH_M, rectContains } = await import('../src/design/CustomBasin.js');
+  // BE01. pure validateBasinEdit guards
+  {
+    const b = { id:'b1', x:2, y:2, w:3, h:3, depthM:4, createdAtDay:0 };
+    const map = [40,30];
+    assert(!validateBasinEdit('b1', {x:2,y:2,w:3,h:3}, 0.5, map, [b], []).ok, 'BE01. depth below min rejected');
+    assert(!validateBasinEdit('b1', {x:2,y:2,w:3,h:3}, 10, map, [b], []).ok, 'BE01b. depth above max rejected');
+    assert(validateBasinEdit('b1', {x:2,y:2,w:3,h:3}, 4.0, map, [b], []).ok, 'BE01c. same rect depth 4 ok (self excluded)');
+    assert(validateBasinEdit('b1', {x:2,y:2,w:3,h:3}, BASIN_MIN_DEPTH_M, map, [b], []).ok, 'BE01d. min depth '+BASIN_MIN_DEPTH_M+' ok');
+    assert(validateBasinEdit('b1', {x:2,y:2,w:3,h:3}, BASIN_MAX_DEPTH_M, map, [b], []).ok, 'BE01e. max depth '+BASIN_MAX_DEPTH_M+' ok');
+  }
+  // BE02. overlap — expanding into another basin is rejected, self excluded
+  {
+    const b1 = { id:'b1', x:2, y:2, w:3, h:3, depthM:4 };
+    const b2 = { id:'b2', x:8, y:2, w:3, h:3, depthM:4 };
+    const map = [40,30];
+    assert(!validateBasinEdit('b1', {x:2,y:2,w:7,h:3}, 4, map, [b1,b2], []).ok, 'BE02. expand into neighbour rejected');
+    assert(validateBasinEdit('b1', {x:2,y:2,w:3,h:3}, 4, map, [b1,b2], []).ok, 'BE02b. self rect still ok with neighbour present');
+    assert(validateBasinEdit('b1', {x:2,y:2,w:2,h:2}, 4, map, [b1,b2], []).ok, 'BE02c. shrink to 2x2 ok');
+    assert(!validateBasinEdit('b1', {x:2,y:2,w:1,h:3}, 4, map, [b1,b2], []).ok, 'BE02d. w=1 too small');
+  }
+  // BE03. stranded equipment guard
+  {
+    const b = { id:'b1', x:2, y:2, w:4, h:4, depthM:4 };
+    const map = [40,30];
+    const equipTiles = [{x:5,y:5}];
+    assert(!validateBasinEdit('b1', {x:2,y:2,w:3,h:3}, 4, map, [b], [], equipTiles, []).ok, 'BE03. shrink strands equipment rejected');
+    assert(validateBasinEdit('b1', {x:2,y:2,w:4,h:4}, 4, map, [b], [], equipTiles, []).ok, 'BE03b. unchanged still ok');
+    assert(validateBasinEdit('b1', {x:2,y:2,w:5,h:4}, 4, map, [b], [], equipTiles, []).ok, 'BE03c. expand still covers');
+  }
+  // BE04. baffle validity guard
+  {
+    const b = { id:'b1', x:2, y:2, w:4, h:4, depthM:4 };
+    const map = [40,30];
+    const baffles = [{ basinId:'b1', orientation:'vertical', offsetTiles:3 }];
+    assert(!validateBasinEdit('b1', {x:2,y:2,w:3,h:4}, 4, map, [b], [], [], baffles).ok, 'BE04. shrink invalidates vertical baffle rejected');
+    assert(validateBasinEdit('b1', {x:2,y:2,w:5,h:4}, 4, map, [b], [], [], baffles).ok, 'BE04b. expand baffle still valid');
+    const baffles2 = [{ basinId:'b2', orientation:'vertical', offsetTiles:3 }];
+    assert(validateBasinEdit('b1', {x:2,y:2,w:3,h:4}, 4, map, [b], [], [], baffles2).ok, 'BE04c. other basin baffle ignored');
+  }
+  // BE05. cost delta & label
+  {
+    const oldB = { x:2,y:2,w:3,h:3, depthM:4 };
+    const newDeep = { x:2,y:2,w:3,h:3, depthM:5 };
+    const newWide = { x:2,y:2,w:4,h:3, depthM:4 };
+    const oldCapex = estimateBasinCAPEX(oldB);
+    const deepCapex = estimateBasinCAPEX(newDeep);
+    const wideCapex = estimateBasinCAPEX(newWide);
+    assert(basinEditCostDelta(oldB, newDeep) === deepCapex - oldCapex && basinEditCostDelta(oldB, newDeep) > 0, 'BE05. deeper delta positive '+ basinEditCostDelta(oldB,newDeep));
+    assert(basinEditCostDelta(newDeep, oldB) === oldCapex - deepCapex && basinEditCostDelta(newDeep, oldB) < 0, 'BE05b. shallower delta negative');
+    assert(basinEditCostDelta(oldB, newWide) > 0, 'BE05c. wider delta positive');
+    const label = basinDimensionLabel({ id:'x', x:2,y:2,w:3,h:3, depthM:4, createdAtDay:0 });
+    assert(label.includes('18') && label.includes('m'), 'BE05d. label contains meters '+label);
+    assert(label.includes('4.0') && label.includes('m³'), 'BE05e. label contains depth & volume '+label);
+    assert(rectContains({x:2,y:2,w:3,h:3}, 2,2) && !rectContains({x:2,y:2,w:3,h:3},5,5), 'BE05f. rectContains');
+  }
+  // BE06. GameManager.updateBasinDepth — charges, refunds, guards
+  {
+    let gs = GameManager.createInitialState(0,false);
+    let rr = GameManager.placeCustomBasin(gs, {x:2,y:2,w:3,h:3}); gs=rr.newState;
+    const basinId = gs.customBasins[0].id;
+    const oldCash = gs.financials.cash;
+    const oldDepth = gs.customBasins[0].depthM;
+    const deep = GameManager.updateBasinDepth(gs, basinId, oldDepth+1);
+    assert(deep.success, 'BE06. deepen success');
+    assert((deep.charged ?? 0) > 0, 'BE06b. deepen charged >0 ($'+(deep.charged??0)+')');
+    assert(deep.newState.customBasins[0].depthM === oldDepth+1, 'BE06c. depth updated');
+    assert(deep.newState.financials.cash === oldCash - (deep.charged ?? 0), 'BE06d. cash debited');
+    const cashAfterDeep = deep.newState.financials.cash;
+    const shallow = GameManager.updateBasinDepth(deep.newState, basinId, oldDepth);
+    assert(shallow.success, 'BE06e. shallow success');
+    assert((shallow.refunded ?? 0) > 0, 'BE06f. shallow refunded >0 ($'+(shallow.refunded??0)+')');
+    assert(shallow.newState.customBasins[0].depthM === oldDepth, 'BE06g. depth restored');
+    const delta = estimateBasinCAPEX({x:2,y:2,w:3,h:3,depthM:oldDepth}) - estimateBasinCAPEX({x:2,y:2,w:3,h:3,depthM:oldDepth+1});
+    assert(Math.abs((shallow.refunded ?? 0) - Math.round(-delta*0.5)) < 1, 'BE06h. refund is 50% salvage');
+    assert(shallow.newState.financials.cash === cashAfterDeep + (shallow.refunded ?? 0), 'BE06i. cash refunded');
+    const noop = GameManager.updateBasinDepth(shallow.newState, basinId, oldDepth);
+    assert(noop.success && (noop.charged ?? 0)===0 && (noop.refunded ?? 0)===0, 'BE06j. no-op same depth');
+    assert(!GameManager.updateBasinDepth(shallow.newState, basinId, 0.5).success, 'BE06k. depth too shallow rejected');
+    assert(!GameManager.updateBasinDepth(shallow.newState, basinId, 9).success, 'BE06l. depth too deep rejected');
+    assert(!GameManager.updateBasinDepth(shallow.newState, 'nope', 5).success, 'BE06m. unknown basin rejected');
+  }
+  // BE07. insufficient funds & sandbox
+  {
+    let gs = GameManager.createInitialState(0,false);
+    gs.financials.cash = 10;
+    let rr = GameManager.placeCustomBasin(GameManager.createInitialState(0,true), {x:2,y:2,w:3,h:3});
+    gs.customBasins = rr.newState.customBasins;
+    const basinId = gs.customBasins[0].id;
+    const fail = GameManager.updateBasinDepth(gs, basinId, 6);
+    assert(!fail.success && (fail.reason ?? '').includes('Insufficient'), 'BE07. insufficient funds rejected ('+(fail.reason??'')+')');
+    let sby = GameManager.createInitialState(0,true);
+    let r2 = GameManager.placeCustomBasin(sby, {x:2,y:2,w:3,h:3}); sby=r2.newState;
+    const sId = sby.customBasins[0].id;
+    const sRes = GameManager.updateBasinDepth(sby, sId, 6);
+    assert(sRes.success && (sRes.charged??0)===0, 'BE07b. sandbox deepening free');
+  }
+  // BE08. GameManager.updateBasinRect — expand/shrink with cash & guards
+  {
+    let gs = GameManager.createInitialState(0,false);
+    let rr = GameManager.placeCustomBasin(gs, {x:5,y:5,w:3,h:3}); gs=rr.newState;
+    const basinId = gs.customBasins[0].id;
+    const oldCash = gs.financials.cash;
+    const exp = GameManager.updateBasinRect(gs, basinId, {x:5,y:5,w:4,h:3});
+    assert(exp.success, 'BE08. expand east success');
+    assert((exp.charged ?? 0) > 0, 'BE08b. expand charged >0 ($'+(exp.charged??0)+')');
+    assert(exp.newState.customBasins[0].w===4, 'BE08c. w now 4');
+    assert(exp.newState.financials.cash === oldCash - (exp.charged ?? 0), 'BE08d. cash debited');
+    const cashAfterExp = exp.newState.financials.cash;
+    const shr = GameManager.updateBasinRect(exp.newState, basinId, {x:5,y:5,w:3,h:3});
+    assert(shr.success, 'BE08e. shrink back success');
+    assert((shr.refunded ?? 0) > 0, 'BE08f. shrink refunded >0 ($'+(shr.refunded??0)+')');
+    assert(shr.newState.customBasins[0].w===3, 'BE08g. w restored 3');
+    assert(shr.newState.financials.cash === cashAfterExp + (shr.refunded ?? 0), 'BE08h. cash refunded');
+    const west = GameManager.updateBasinRect(shr.newState, basinId, {x:4,y:5,w:4,h:3});
+    assert(west.success && west.newState.customBasins[0].x===4 && west.newState.customBasins[0].w===4, 'BE08i. expand west shifts origin');
+    assert(!GameManager.updateBasinRect(west.newState, basinId, {x:4,y:5,w:1,h:3}).success, 'BE08j. w=1 too small rejected');
+    const noop = GameManager.updateBasinRect(west.newState, basinId, {x:4,y:5,w:4,h:3});
+    assert(noop.success, 'BE08k. no-op same rect success');
+    assert(!GameManager.updateBasinRect(west.newState, 'nope', {x:2,y:2,w:3,h:3}).success, 'BE08l. unknown basin rejected');
+  }
+  // BE09. resize guards — overlaps, stranded equipment, baffles
+  {
+    let gs = GameManager.createInitialState(0,true);
+    let rr = GameManager.placeCustomBasin(gs, {x:2,y:2,w:3,h:3}); gs=rr.newState;
+    let rr2 = GameManager.placeCustomBasin(gs, {x:8,y:2,w:3,h:3}); gs=rr2.newState;
+    const b1 = gs.customBasins[0].id;
+    const ov = GameManager.updateBasinRect(gs, b1, {x:2,y:2,w:8,h:3});
+    assert(!ov.success && (ov.reason??'').includes('Overlaps'), 'BE09. expand into neighbour rejected ('+(ov.reason??'')+')');
+    let gs2 = GameManager.createInitialState(0,true);
+    let r3 = GameManager.placeCustomBasin(gs2, {x:2,y:2,w:4,h:4}); gs2=r3.newState;
+    const bid = gs2.customBasins[0].id;
+    let er = GameManager.placeProcessEquipment(gs2, 'fine_bubble_diffuser', 5,5); gs2 = er.newState;
+    const shrinkFail = GameManager.updateBasinRect(gs2, bid, {x:2,y:2,w:3,h:3});
+    assert(!shrinkFail.success && (shrinkFail.reason??'').includes('strand'), 'BE09b. shrink strands equipment rejected ('+(shrinkFail.reason??'')+')');
+    let dr = GameManager.demolishProcessEquipment(gs2, gs2.processEquipment[0].id); gs2 = dr.newState;
+    const shrinkOk = GameManager.updateBasinRect(gs2, bid, {x:2,y:2,w:3,h:3});
+    assert(shrinkOk.success, 'BE09c. shrink after removing equipment succeeds');
+    let gs3 = GameManager.createInitialState(0,true);
+    let r4 = GameManager.placeCustomBasin(gs3, {x:2,y:2,w:4,h:4}); gs3=r4.newState;
+    const bId3 = gs3.customBasins[0].id;
+    let br = GameManager.placeBaffle(gs3, bId3, 'vertical', 3); gs3=br.newState;
+    const shrinkBafFail = GameManager.updateBasinRect(gs3, bId3, {x:2,y:2,w:3,h:4});
+    assert(!shrinkBafFail.success && (shrinkBafFail.reason??'').includes('baffle'), 'BE09d. shrink invalidates baffle rejected ('+(shrinkBafFail.reason??'')+')');
+    let gs4 = GameManager.createInitialState(0,true);
+    let r5 = GameManager.placeCustomBasin(gs4, {x:2,y:2,w:3,h:3}); gs4=r5.newState;
+    const sId4 = gs4.customBasins[0].id;
+    const sExp = GameManager.updateBasinRect(gs4, sId4, {x:2,y:2,w:4,h:3});
+    assert(sExp.success && (sExp.charged??0)===0, 'BE09e. sandbox resize free');
+  }
+  // BE10. tick does not break after edit
+  {
+    let gs = GameManager.createInitialState(0,false);
+    let rr = GameManager.placeCustomBasin(gs, {x:2,y:2,w:3,h:3}); gs=rr.newState;
+    const basinId = gs.customBasins[0].id;
+    const dr = GameManager.updateBasinDepth(gs, basinId, 5); gs=dr.newState;
+    const scr={ instanceId:'scrBE', typeId:'bar_screen', gridX:5, gridY:10, rotation:0, volume:200, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:0, lastOpexActual:0 };
+    gs.units.push(scr);
+    gs.pipes.push(
+      { id:'be1', fromUnitId:'inlet_0', fromPortId:'outlet', toUnitId:'scrBE', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'},
+      { id:'be2', fromUnitId:'scrBE', fromPortId:'outlet', toUnitId:'outfall_0', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'}
+    );
+    for(let i=0;i<8;i++) gs = GameManager.tick(gs, 0.5);
+    assert(gs.finalEffluent.flowRate > 10, 'BE10. flow still lives after edit '+gs.finalEffluent.flowRate.toFixed(0));
+    assert(gs.customBasins[0].depthM===5, 'BE10b. depth preserved 5');
+  }
+}
 
 console.log(failures === 0 ? "\nALL TESTS PASSED" : `\n${failures} TEST(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);
