@@ -170,6 +170,9 @@ export const App: React.FC = () => {
     if (!silent) setToast('Move cancelled — click the equipment again to re-arm.');
   }, []);
 
+  // P3 — hover affordance: contextual hint for what's under the cursor in Inspect mode
+  const [hoverHint, setHoverHint] = useState<string | null>(null);
+
   // ── CONSTRUCTION-BUILDER Phase 3: utility connections (water/air/power) ───
   const [selectedUtilityTypeId, setSelectedUtilityTypeId] = useState<UtilityConnectionType | null>('water_pipe');
   const selUtilityTypeRef = useRef<UtilityConnectionType | null>('water_pipe');
@@ -582,6 +585,35 @@ export const App: React.FC = () => {
         } else {
           sm.terrainGrid.setGhostPreview(0, 0, 1, 1, true, false);
         }
+        // P3 — hover affordance for Inspect mode: show what's under cursor (equipment > baffle > utility > basin > legacy)
+        if (toolModeRef.current === 'select' && !movingEquipmentIdRef.current && !pointerDown.current) {
+          if (!tile) {
+            setHoverHint(null);
+          } else {
+            const hUnit = sm.getUnitAtScreen(e.clientX, e.clientY, gsRef.current.units);
+            const hGround = sm.getGroundPointFromScreen(e.clientX, e.clientY);
+            const hBasin = (gsRef.current.customBasins ?? []).find(b => tile.x >= b.x && tile.x < b.x + b.w && tile.y >= b.y && tile.y < b.y + b.h) ?? null;
+            const hEquip = GameManager.equipmentAtTile(gsRef.current, tile.x, tile.y);
+            const hUtil = hGround ? GameManager.utilityAtPoint(gsRef.current, hGround.x, hGround.z) : null;
+            const hBaffle = hGround ? GameManager.baffleAtPoint(gsRef.current, hGround.x, hGround.z) : null;
+            let hint: string | null = null;
+            if (hEquip) {
+              const eqName = EQUIPMENT_TYPES[hEquip.typeId]?.name ?? hEquip.typeId;
+              hint = `▸ ${eqName} — Click to inspect · Move/Rotate`;
+            } else if (hBaffle) {
+              hint = `▸ ${hBaffle.orientation === 'vertical' ? 'Vertical' : 'Horizontal'} baffle · Click to inspect`;
+            } else if (hUtil) {
+              hint = `▸ ${UTILITY_TYPES[hUtil.type]?.name ?? hUtil.type} · Click to inspect`;
+            } else if (hBasin) {
+              hint = `▸ Basin ${hBasin.w}×${hBasin.h} · ${hBasin.w * hBasin.h * hBasin.depthM} m³ — Click to edit`;
+            } else if (hUnit) {
+              hint = `▸ ${UNIT_DEFINITIONS[hUnit.typeId]?.name ?? hUnit.typeId} (legacy) — Click to inspect`;
+            }
+            setHoverHint(hint);
+          }
+        } else {
+          setHoverHint(null);
+        }
       }
     };
 
@@ -851,22 +883,45 @@ export const App: React.FC = () => {
     }
 
     if (mode === 'select') {
-      if (clickedUnit) {
+      // P3 — construction-first pick priority: most specific (1-tile machine) wins over
+      // area (basin) and legacy (unit). Order: equipment > baffle > utility > basin > unit.
+      if (clickedEquipment) {
+        // Phase 2: installed machines are inspectable too — highest priority.
         SoundManager.playClick();
         setSelectedBasinId(null);
-        setSelectedEquipmentId(null);
         setSelectedUtilityId(null);
         setSelectedBaffleId(null);
-        setGameState(prev => ({ ...prev, selectedUnitId: clickedUnit.instanceId }));
-        const def = UNIT_DEFINITIONS[clickedUnit.typeId];
-        setToast(`Inspecting: ${def?.name ?? clickedUnit.typeId}`);
+        setSelectedEquipmentId(clickedEquipment.id);
+        setGameState(prev => ({ ...prev, selectedUnitId: null }));
+        sm.syncEquipment(
+          gs.processEquipment ?? [], gs.customBasins ?? [], clickedEquipment.id,
+          poweredEquipmentIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
+          aeratedDiffuserIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
+          filtrationLiveSets(gs.customBasins ?? [], gs.processEquipment ?? [], gs.utilityConnections ?? [], gs.customBaffles ?? [])
+        );
+        sm.syncUtilityConnections(gs.utilityConnections ?? [], null);
+        sm.syncBaffles(gs.customBaffles ?? [], gs.customBasins ?? [], null);
+        sm.syncBasins(gs.customBasins ?? [], null);
+        const eq = EQUIPMENT_TYPES[clickedEquipment.typeId];
+        if (eq) {
+          // Phase 4: include live status in the toast
+          const isDiffuser = clickedEquipment.typeId === 'fine_bubble_diffuser';
+          const live = isDiffuser
+            ? aeratedDiffuserIds(gs.processEquipment ?? [], gs.utilityConnections ?? []).has(clickedEquipment.id)
+            : poweredEquipmentIds(gs.processEquipment ?? [], gs.utilityConnections ?? []).has(clickedEquipment.id);
+          const status = isDiffuser ? (live ? 'aerated ✓' : 'not aerated — needs air pipe from powered blower') : (eq.powerKw === 0 ? 'passive' : (live ? 'powered ✓' : 'UNPOWERED — needs Power cable'));
+          setToast(`${eq.name} — ${status} — $${eq.capexUsd.toLocaleString()} · ${eq.powerKw} kW · ${eq.blurb} Move/Rotate in panel — Demolish to remove.`);
+        } else {
+          setToast('Installed equipment. Move/Rotate in panel — Demolish to remove.');
+        }
       } else if (clickedBaffle) {
-        // Phase 5: baffle walls are inspectable (above utility priority but below equipment)
+        // Phase 5: baffle walls are inspectable (above utility but below equipment)
         SoundManager.playClick();
         setSelectedBasinId(null);
         setSelectedEquipmentId(null);
         setSelectedUtilityId(null);
         setSelectedBaffleId(clickedBaffle.id);
+        setGameState(prev => ({ ...prev, selectedUnitId: null }));
         sm.syncBaffles(gs.customBaffles ?? [], gs.customBasins ?? [], clickedBaffle.id);
         sm.syncBasins(gs.customBasins ?? [], null);
         sm.syncEquipment(
@@ -879,37 +934,31 @@ export const App: React.FC = () => {
         const basinOf = gs.customBasins?.find(b => b.id === clickedBaffle.basinId);
         const len = basinOf ? (clickedBaffle.orientation === 'vertical' ? basinOf.h : basinOf.w) * 6 : 0;
         setToast(`${clickedBaffle.orientation === 'vertical' ? 'Vertical' : 'Horizontal'} baffle · ${len} m wall in ${basinOf ? `${basinOf.w}×${basinOf.h}` : 'basin'} · offset ${clickedBaffle.offsetTiles}. Demolish to remove.`);
-      } else if (clickedEquipment) {
-        // Phase 2: installed machines are inspectable too.
+      } else if (clickedUtility) {
         SoundManager.playClick();
         setSelectedBasinId(null);
-        setSelectedUtilityId(null);
-        setSelectedEquipmentId(clickedEquipment.id);
+        setSelectedEquipmentId(null);
+        setSelectedBaffleId(null);
+        setSelectedUtilityId(clickedUtility.id);
+        setGameState(prev => ({ ...prev, selectedUnitId: null }));
+        sm.syncBasins(gs.customBasins ?? [], null);
+        sm.syncBaffles(gs.customBaffles ?? [], gs.customBasins ?? [], null);
         sm.syncEquipment(
-          gs.processEquipment ?? [], gs.customBasins ?? [], clickedEquipment.id,
+          gs.processEquipment ?? [], gs.customBasins ?? [], null,
           poweredEquipmentIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
           aeratedDiffuserIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
           filtrationLiveSets(gs.customBasins ?? [], gs.processEquipment ?? [], gs.utilityConnections ?? [], gs.customBaffles ?? [])
         );
-        sm.syncUtilityConnections(gs.utilityConnections ?? [], null);
-        const eq = EQUIPMENT_TYPES[clickedEquipment.typeId];
-        if (eq) {
-          // Phase 4: include live status in the toast
-          const isDiffuser = clickedEquipment.typeId === 'fine_bubble_diffuser';
-          const live = isDiffuser
-            ? aeratedDiffuserIds(gs.processEquipment ?? [], gs.utilityConnections ?? []).has(clickedEquipment.id)
-            : poweredEquipmentIds(gs.processEquipment ?? [], gs.utilityConnections ?? []).has(clickedEquipment.id);
-          const status = isDiffuser ? (live ? 'aerated ✓' : 'not aerated — needs air pipe from powered blower') : (eq.powerKw === 0 ? 'passive' : (live ? 'powered ✓' : 'UNPOWERED — needs Power cable'));
-          setToast(`${eq.name} — ${status} — $${eq.capexUsd.toLocaleString()} · ${eq.powerKw} kW · ${eq.blurb} Switch to Demolish to remove.`);
-        } else {
-          setToast('Installed equipment. Switch to Demolish to remove.');
-        }
+        sm.syncUtilityConnections(gs.utilityConnections ?? [], clickedUtility.id);
+        const util = UTILITY_TYPES[clickedUtility.type];
+        setToast(`${util.name}: (${clickedUtility.ax},${clickedUtility.ay}) → (${clickedUtility.bx},${clickedUtility.by}) · ${util.blurb} Switch to Demolish to remove.`);
       } else if (clickedBasin) {
         SoundManager.playClick();
         setSelectedEquipmentId(null);
         setSelectedUtilityId(null);
         setSelectedBaffleId(null);
         setSelectedBasinId(clickedBasin.id);
+        setGameState(prev => ({ ...prev, selectedUnitId: null }));
         sm.syncBasins(gs.customBasins ?? [], clickedBasin.id);
         sm.syncBaffles(gs.customBaffles ?? [], gs.customBasins ?? [], null);
         sm.syncEquipment(
@@ -930,24 +979,16 @@ export const App: React.FC = () => {
           const healthy = zones.length - septicZones;
           zoneHealth = septicZones>0 ? ` — ${healthy}/${zones.length} zones mixed, ${septicZones} septic` : ` — ${zones.length} zones, all mixed`;
         }
-        setToast(`Custom Basin: ${clickedBasin.w}×${clickedBasin.h} (${area}m², ${vol.toLocaleString()}m³, depth ${clickedBasin.depthM}m) · ${zones.length} zone${zones.length>1?'s':''}${zoneHealth}. Switch to Demolish to remove.`);
-      } else if (clickedUtility) {
+        setToast(`Custom Basin: ${clickedBasin.w}×${clickedBasin.h} (${area}m², ${vol.toLocaleString()}m³, depth ${clickedBasin.depthM}m) · ${zones.length} zone${zones.length>1?'s':''}${zoneHealth}. Drag handles in panel to resize — depth slider to retune.`);
+      } else if (clickedUnit) {
         SoundManager.playClick();
         setSelectedBasinId(null);
         setSelectedEquipmentId(null);
+        setSelectedUtilityId(null);
         setSelectedBaffleId(null);
-        setSelectedUtilityId(clickedUtility.id);
-        sm.syncBasins(gs.customBasins ?? [], null);
-        sm.syncBaffles(gs.customBaffles ?? [], gs.customBasins ?? [], null);
-        sm.syncEquipment(
-          gs.processEquipment ?? [], gs.customBasins ?? [], null,
-          poweredEquipmentIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
-          aeratedDiffuserIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
-          filtrationLiveSets(gs.customBasins ?? [], gs.processEquipment ?? [], gs.utilityConnections ?? [], gs.customBaffles ?? [])
-        );
-        sm.syncUtilityConnections(gs.utilityConnections ?? [], clickedUtility.id);
-        const util = UTILITY_TYPES[clickedUtility.type];
-        setToast(`${util.name}: (${clickedUtility.ax},${clickedUtility.ay}) → (${clickedUtility.bx},${clickedUtility.by}) · ${util.blurb} Switch to Demolish to remove.`);
+        setGameState(prev => ({ ...prev, selectedUnitId: clickedUnit.instanceId }));
+        const def = UNIT_DEFINITIONS[clickedUnit.typeId];
+        setToast(`Inspecting (legacy): ${def?.name ?? clickedUnit.typeId} — prefab, Inspect-only heritage`);
       } else {
         setSelectedBasinId(null);
         setSelectedEquipmentId(null);
@@ -1814,8 +1855,16 @@ export const App: React.FC = () => {
         </div>
       )}
 
-      {/* ── Piping control legend (visible in Pipes mode) — wraps on narrow
-              screens instead of overflowing ───────────────────────────────── */}
+      {/* P3 hover hint — Inspect mode contextual affordance (equipment > baffle > utility > basin > legacy) */}
+      {hoverHint && toolMode === 'select' && !movingEquipmentId && (
+        <div className="absolute top-[92px] left-1/2 -translate-x-1/2 z-20 pointer-events-none
+                        px-3 py-1 rounded-full bg-slate-800/90 border border-slate-600/50
+                        text-slate-200 text-[11px] font-mono shadow-lg backdrop-blur-sm">
+          {hoverHint}
+        </div>
+      )}
+
+      {/* ── Piping control legend (visible in Pipes mode) ── */}
       {toolMode === 'connect_pipe' && (
         <div className="absolute bottom-[152px] left-1/2 -translate-x-1/2 z-30 pointer-events-none
                         px-4 py-1.5 rounded-xl bg-slate-900 border border-cyan-500/40

@@ -2,7 +2,8 @@ import React, { useState } from 'react';
 import {
   MousePointer, Cable, Trash2, RotateCw, Filter,
   Layers, Activity, Sparkles, Recycle, ArrowRightLeft,
-  Info, Star, Zap, Lock, Droplets, Fan, Wind, Cog, Waves, Columns3, Rows3, ShieldCheck, Hexagon, Gauge, Ruler, FlaskConical, Beaker, Cylinder
+  Info, Star, Zap, Lock, Droplets, Fan, Wind, Cog, Waves, Columns3, Rows3, ShieldCheck, Hexagon, Gauge, Ruler, FlaskConical, Beaker, Cylinder,
+  HardHat, Hammer, ChevronDown, ChevronUp, Package, Building2
 } from 'lucide-react';
 import { UnitCategory, UnitDefinition, UnitTypeId } from '../types/simulation';
 import { ToolMode } from '../types/graphics';
@@ -104,6 +105,7 @@ export const BuildToolbar: React.FC<BuildToolbarProps> = ({
 }) => {
   const [activeCategory, setActiveCategory] = useState<UnitCategory>('preliminary');
   const [hoveredDef, setHoveredDef] = useState<UnitDefinition | null>(null);
+  const [showLegacy, setShowLegacy] = useState(true);
 
   // Filter units belonging to active category & level unlocked
   const categoryUnits = Object.values(UNIT_DEFINITIONS).filter(def => {
@@ -122,7 +124,7 @@ export const BuildToolbar: React.FC<BuildToolbarProps> = ({
   };
 
   return (
-    <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-2 pointer-events-none w-full max-w-5xl px-4">
+    <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-2 pointer-events-none w-full max-w-6xl px-4">
       {/* Unit Hover Information Tooltip */}
       {hoveredDef && (
         <div className="bg-slate-900 border border-cyan-500/40 rounded-xl px-4 py-2.5 shadow-2xl pointer-events-auto text-xs flex flex-col gap-1 w-full max-w-xl animate-in fade-in slide-in-from-bottom-2 duration-150">
@@ -141,64 +143,105 @@ export const BuildToolbar: React.FC<BuildToolbarProps> = ({
           </div>
         </div>
       )}
-
       {/* Main Glassmorphic Build Bar */}
       <div className="bg-slate-900 border border-slate-700/80 rounded-2xl p-2 shadow-2xl pointer-events-auto flex flex-col gap-2 w-full">
-        
-        {/* Top: Global Tool Modes (own layer) */}
-        <div className="flex items-center gap-2 border-b border-slate-700/60 pb-2">
-          <div className="relative z-20 flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800 pointer-events-auto">
-            <button
-              onClick={() => {
-                SoundManager.playClick();
-                onSetToolMode('select');
-                onSelectUnitTypeId(null);
-              }}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
-                toolMode === 'select'
-                  ? 'bg-sky-500 text-slate-950 shadow-md font-bold'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
-              }`}
-              title="Inspect & Configure Placed Tanks"
-            >
-              <MousePointer size={14} />
-              <span>Inspect</span>
-            </button>
+        {/* CONSTRUCTION BUILDER banner — unmistakably central vs LEGACY */}
+        <div className="flex items-center justify-between px-3 py-2 rounded-xl bg-gradient-to-r from-amber-950/60 via-orange-950/40 to-slate-900 border border-amber-700/30 gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="p-1.5 rounded-lg bg-amber-500 text-slate-950 shrink-0">
+              <HardHat size={14} />
+            </div>
+            <div className="flex flex-col min-w-0">
+              <span className="text-xs font-black tracking-widest text-amber-300 leading-none">CONSTRUCTION BUILDER</span>
+              <span className="text-[10px] text-slate-300/80 leading-none hidden sm:inline">Draw basins · equip · wire utilities · baffle into zones — <em className="text-amber-200 not-italic">process emerges from what you build</em></span>
+              <span className="text-[10px] text-slate-400 sm:hidden">Draw · Equip · Wire · Baffle</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <span className="text-[10px] font-mono px-2 py-1 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 hidden md:inline-flex items-center gap-1">
+              <Hammer size={10} /> BUILD THE PROCESS, DON'T SELECT IT
+            </span>
+            <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 border border-slate-700 hidden lg:inline">
+              {Object.keys(EQUIPMENT_TYPES).length} machines · 3 utilities · baffles
+            </span>
+          </div>
+        </div>
 
-            <button
-              onClick={() => {
-                SoundManager.playClick();
-                onSetToolMode('connect_pipe');
-                onSelectUnitTypeId(null);
-              }}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
-                toolMode === 'connect_pipe'
-                  ? 'bg-cyan-400 text-slate-950 shadow-md font-bold'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
-              }`}
-              title="Pipes: LMB unit A → unit B connects. LMB same unit switches output port. LMB again removes a pipe. RMB cancels. Ctrl+Z / Ctrl+Y undo/redo."
-            >
-              <Cable size={14} />
-              <span>Pipes</span>
-            </button>
+        {/* Construction toolbar row — grouped clusters with labelled borders */}
+        <div className="flex flex-wrap items-stretch gap-2 border-b border-slate-700/60 pb-2">
+          {/* ACTIONS cluster — Inspect / Pipes / Demolish */}
+          <div className="flex flex-col gap-1 p-1.5 rounded-xl bg-slate-950 border border-slate-800">
+            <span className="text-[9px] font-bold tracking-widest text-slate-500 px-1">ACTIONS</span>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => {
+                  SoundManager.playClick();
+                  onSetToolMode('select');
+                  onSelectUnitTypeId(null);
+                }}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+                  toolMode === 'select'
+                    ? 'bg-sky-500 text-slate-950 shadow-md font-bold'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+                }`}
+                title="Inspect & Configure Placed Tanks"
+              >
+                <MousePointer size={14} />
+                <span>Inspect</span>
+              </button>
 
-            <button
-              onClick={() => {
-                SoundManager.playClick();
-                onSetToolMode('demolish');
-                onSelectUnitTypeId(null);
-              }}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
-                toolMode === 'demolish'
-                  ? 'bg-rose-500 text-slate-950 shadow-md font-bold'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
-              }`}
-              title="Demolish Unit: Click unit to demolish (70% cash refund)"
-            >
-              <Trash2 size={14} />
-              <span>Demolish</span>
-            </button>
+              <button
+                onClick={() => {
+                  SoundManager.playClick();
+                  onSetToolMode('connect_pipe');
+                  onSelectUnitTypeId(null);
+                }}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+                  toolMode === 'connect_pipe'
+                    ? 'bg-cyan-400 text-slate-950 shadow-md font-bold'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+                }`}
+                title="Pipes: LMB unit A → unit B connects. LMB same unit switches output port. LMB again removes a pipe. RMB cancels. Ctrl+Z / Ctrl+Y undo/redo."
+              >
+                <Cable size={14} />
+                <span>Pipes</span>
+              </button>
 
+              <button
+                onClick={() => {
+                  SoundManager.playClick();
+                  onSetToolMode('demolish');
+                  onSelectUnitTypeId(null);
+                }}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+                  toolMode === 'demolish'
+                    ? 'bg-rose-500 text-slate-950 shadow-md font-bold'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+                }`}
+                title="Demolish Unit: Click unit to demolish (70% cash refund)"
+              >
+                <Trash2 size={14} />
+                <span>Demolish</span>
+              </button>
+              <div className="w-px h-6 bg-slate-700/60 mx-1" />
+              <button
+                onClick={() => {
+                  SoundManager.playClick();
+                  onRotate();
+                }}
+                className="shrink-0 flex items-center gap-1 px-2 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-sky-300 border border-slate-700 transition"
+                title="Rotate placement direction (Shortcut: R)"
+              >
+                <RotateCw size={13} />
+                <span className="hidden xl:inline">Rotate ({currentRotation}°)</span>
+                <span className="xl:hidden">{currentRotation}°</span>
+              </button>
+            </div>
+          </div>
+
+          {/* STRUCTURE cluster — Basin */}
+          <div className="flex flex-col gap-1 p-1.5 rounded-xl bg-amber-950/30 border border-amber-700/40">
+            <span className="text-[9px] font-bold tracking-widest text-amber-400 px-1 flex items-center gap-1"><Building2 size={10} /> STRUCTURE</span>
             <button
               onClick={() => {
                 SoundManager.playClick();
@@ -210,246 +253,271 @@ export const BuildToolbar: React.FC<BuildToolbarProps> = ({
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
                 toolMode === 'draw_basin'
                   ? 'bg-amber-500 text-slate-950 shadow-md font-bold'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+                  : 'text-amber-300 hover:text-amber-100 hover:bg-amber-900/40 border border-amber-700/30'
               }`}
               title="STRUCTURES: Draw a custom basin directly on the site. Click first corner, then opposite corner. (Esc cancels.)"
             >
               <Droplets size={14} />
               <span>Basin</span>
             </button>
-
-            {/* CONSTRUCTION-BUILDER Phase 2: physical equipment placement.
-                One button per machine — clicking arms place_equipment mode
-                with that type; click a tile in the world to install it. */}
-            {Object.values(EQUIPMENT_TYPES).map((eq: EquipmentTypeDef) => {
-              const active = toolMode === 'place_equipment' && selectedEquipmentTypeId === eq.id;
-              const Icon = EQUIP_ICONS[eq.id] ?? Cog;
-              return (
-                <button
-                  key={eq.id}
-                  onClick={() => {
-                    SoundManager.playClick();
-                    onSelectUnitTypeId(null);
-                    onSelectUtilityTypeId?.(null);
-                    onSelectEquipmentTypeId?.(eq.id);
-                    onSetToolMode('place_equipment');
-                  }}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
-                    active
-                      ? 'bg-orange-400 text-slate-950 shadow-md font-bold'
-                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
-                  }`}
-                  title={`EQUIPMENT: ${eq.name} — $${eq.capexUsd.toLocaleString()} · ${eq.mounting === 'in_basin' ? 'mounts INSIDE a drawn basin' : 'dry-installed on open ground'} · ${eq.blurb}`}
-                >
-                  <Icon size={14} />
-                  <span>{eq.name.replace(' (Dry-Pit)', '').replace(' Skid', '').replace(' Grid', '')}</span>
-                </button>
-              );
-            })}
-            {/* CONSTRUCTION-BUILDER Phase 3: utility connections (water/air/power).
-                Arms connect_utility mode — two clicks tile-to-tile completes the line. */}
-            {(Object.keys(UTILITY_TYPES) as UtilityConnectionType[]).map(tid => {
-              const util = UTILITY_TYPES[tid];
-              const active = toolMode === 'connect_utility' && selectedUtilityTypeId === tid;
-              const Icon = UTILITY_ICONS[tid] ?? Cable;
-              const label = tid === 'water_pipe' ? 'Water' : tid === 'air_pipe' ? 'Air' : 'Power';
-              return (
-                <button
-                  key={tid}
-                  onClick={() => {
-                    SoundManager.playClick();
-                    onSelectUnitTypeId(null);
-                    onSelectEquipmentTypeId?.(null);
-                    onSelectUtilityTypeId?.(tid);
-                    onSetToolMode('connect_utility');
-                  }}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
-                    active
-                      ? 'bg-sky-500 text-slate-950 shadow-md font-bold'
-                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
-                  }`}
-                  title={`UTILITY: ${util.name} — $${util.perMeterUsd}/m + $${util.fixedUsd} tie-in · ${util.blurb}  Two clicks: source tile → target tile. Esc cancels.`}
-                >
-                  <Icon size={14} />
-                  <span>{label}</span>
-                </button>
-              );
-            })}
-            {/* CONSTRUCTION-BUILDER Phase 5: baffle walls — partition a basin into zones. */}
-            {([
-              ['vertical', Columns3, 'Vertical Baffle'] as const,
-              ['horizontal', Rows3, 'Horizontal Baffle'] as const,
-            ]).map(([orient, Icon, label]) => {
-              const active = toolMode === 'draw_baffle' && selectedBaffleOrientation === orient;
-              return (
-                <button
-                  key={orient}
-                  onClick={() => {
-                    SoundManager.playClick();
-                    onSelectUnitTypeId(null);
-                    onSelectEquipmentTypeId?.(null);
-                    onSelectUtilityTypeId?.(null);
-                    onSelectBaffleOrientation?.(orient);
-                    onSetToolMode('draw_baffle');
-                  }}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
-                    active
-                      ? 'bg-violet-500 text-white shadow-md font-bold'
-                      : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
-                  }`}
-                  title={`BAFFLE: ${label} — interior concrete wall that splits a basin into compartments (anoxic/aerobic/settling). Click inside a basin to place. Esc cancels.`}
-                >
-                  <Icon size={14} />
-                  <span>{orient === 'vertical' ? '│ Baffle' : '─ Baffle'}</span>
-                </button>
-              );
-            })}
           </div>
 
-          {/* Category Tabs — separate shrinking region, cannot cover mode buttons.
-              justify-start + snap keeps first tabs reachable when overflowing;
-              `justify-end` previously pushed leading tabs out of the scroll
-              window on narrow screens (unreachable without scrolling). */}
-          <div className="flex items-center gap-1 overflow-x-auto flex-1 min-w-0 scrollbar-thin">
-            {CATEGORIES.map(cat => (
-              <button
-                key={cat.id}
-                onClick={() => {
-                  SoundManager.playClick();
-                  setActiveCategory(cat.id);
-                }}
-                className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold transition whitespace-nowrap shrink-0 snap-start ${
-                  activeCategory === cat.id
-                    ? 'bg-slate-800 text-sky-400 border border-sky-500/40 shadow-inner'
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
-                }`}
-              >
-                {cat.icon}
-                <span className="hidden xl:inline">{cat.label}</span>
-                <span className="xl:hidden">{cat.label.split('. ')[1] ?? cat.label}</span>
-              </button>
-            ))}
+          {/* EQUIPMENT cluster — all machines */}
+          <div className="flex flex-col gap-1 p-1.5 rounded-xl bg-orange-950/25 border border-orange-700/30 min-w-0 flex-1">
+            <span className="text-[9px] font-bold tracking-widest text-orange-400 px-1 flex items-center gap-1"><Cog size={10} /> EQUIPMENT <span className="text-orange-300/60 font-normal hidden lg:inline">— click tile to install · orange = powered, dim = needs cable</span></span>
+            <div className="flex flex-wrap gap-1">
+              {Object.values(EQUIPMENT_TYPES).map((eq: EquipmentTypeDef) => {
+                const active = toolMode === 'place_equipment' && selectedEquipmentTypeId === eq.id;
+                const Icon = EQUIP_ICONS[eq.id] ?? Cog;
+                return (
+                  <button
+                    key={eq.id}
+                    onClick={() => {
+                      SoundManager.playClick();
+                      onSelectUnitTypeId(null);
+                      onSelectUtilityTypeId?.(null);
+                      onSelectEquipmentTypeId?.(eq.id);
+                      onSetToolMode('place_equipment');
+                    }}
+                    className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition whitespace-nowrap ${
+                      active
+                        ? 'bg-orange-400 text-slate-950 shadow-md font-bold ring-2 ring-orange-300'
+                        : 'text-slate-300 hover:text-white hover:bg-orange-900/30 border border-orange-800/20'
+                    }`}
+                    title={`EQUIPMENT: ${eq.name} — $${eq.capexUsd.toLocaleString()} · ${eq.mounting === 'in_basin' ? 'mounts INSIDE a drawn basin' : 'dry-installed on open ground'} · ${eq.blurb}`}
+                  >
+                    <Icon size={13} />
+                    <span>{eq.name.replace(' (Dry-Pit)', '').replace(' Skid', '').replace(' Grid', '')}</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
-          {/* Seed-sludge choice (backlog #1): visible while placing a CAS basin.
-            The quoted credit comes from the same template-geometry math the
-            engine charges, so the label can never drift from the real price. */}
-        {toolMode === 'place_unit' && selectedUnitTypeId === 'activated_sludge_cas' && (() => {
-          const tpl = blueprintFromTemplate('activated_sludge_cas');
-          const seedCredit = tpl ? estimateSeedSludgeCAPEX(workingVolumeM3(tpl.design.geometry)) : 0;
-          return (
-            <button
-              onClick={() => { SoundManager.playClick(); onTogglePlaceSeeded?.(); }}
-              className={`shrink-0 flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-semibold border transition ${
-                placeSeeded
-                  ? 'bg-emerald-900/60 hover:bg-emerald-800/70 text-emerald-300 border-emerald-700/60'
-                  : 'bg-amber-900/50 hover:bg-amber-800/60 text-amber-300 border-amber-600/50'
-              }`}
-              title={placeSeeded
-                ? 'Next CAS basin ships contractor-seeded: full price, day-one performance.'
-                : `Next CAS basin starts UNSEEDED: saves $${seedCredit.toLocaleString()} haul-in, biomass ramps over ~2 weeks.`}
-            >
-              <Droplets size={13} />
-              <span>{placeSeeded ? 'Seed sludge: On' : `Unseeded (−$${seedCredit.toLocaleString()})`}</span>
-            </button>
-          );
-        })()}
+          {/* UTILITIES cluster — water / air / power */}
+          <div className="flex flex-col gap-1 p-1.5 rounded-xl bg-sky-950/25 border border-sky-700/30">
+            <span className="text-[9px] font-bold tracking-widest text-sky-400 px-1 flex items-center gap-1"><Zap size={10} /> UTILITIES <span className="text-sky-300/60 font-normal hidden xl:inline">— two-click host→host</span></span>
+            <div className="flex items-center gap-1">
+              {(Object.keys(UTILITY_TYPES) as UtilityConnectionType[]).map(tid => {
+                const util = UTILITY_TYPES[tid];
+                const active = toolMode === 'connect_utility' && selectedUtilityTypeId === tid;
+                const Icon = UTILITY_ICONS[tid] ?? Cable;
+                const label = tid === 'water_pipe' ? 'Water' : tid === 'air_pipe' ? 'Air' : 'Power';
+                return (
+                  <button
+                    key={tid}
+                    onClick={() => {
+                      SoundManager.playClick();
+                      onSelectUnitTypeId(null);
+                      onSelectEquipmentTypeId?.(null);
+                      onSelectUtilityTypeId?.(tid);
+                      onSetToolMode('connect_utility');
+                    }}
+                    className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition ${
+                      active
+                        ? 'bg-sky-500 text-slate-950 shadow-md font-bold ring-2 ring-sky-300'
+                        : 'text-sky-300 hover:text-sky-100 hover:bg-sky-900/30 border border-sky-800/20'
+                    }`}
+                    title={`UTILITY: ${util.name} — $${util.perMeterUsd}/m + $${util.fixedUsd} tie-in · ${util.blurb}  Two clicks: source tile → target tile. Esc cancels.`}
+                  >
+                    <Icon size={13} />
+                    <span>{label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
 
-        {/* Rotation Button */}
-          <button
-            onClick={() => {
-              SoundManager.playClick();
-              onRotate();
-            }}
-            className="shrink-0 flex items-center gap-1 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-sky-300 border border-slate-700 transition"
-            title="Rotate placement direction (Shortcut: R)"
-          >
-            <RotateCw size={13} />
-            <span>Rotate ({currentRotation}°)</span>
-          </button>
+          {/* BAFFLES cluster */}
+          <div className="flex flex-col gap-1 p-1.5 rounded-xl bg-violet-950/30 border border-violet-700/30">
+            <span className="text-[9px] font-bold tracking-widest text-violet-400 px-1 flex items-center gap-1"><Columns3 size={10} /> BAFFLES <span className="text-violet-300/60 font-normal hidden xl:inline">— split basins</span></span>
+            <div className="flex items-center gap-1">
+              {([
+                ['vertical', Columns3, 'Vertical Baffle'] as const,
+                ['horizontal', Rows3, 'Horizontal Baffle'] as const,
+              ]).map(([orient, Icon, label]) => {
+                const active = toolMode === 'draw_baffle' && selectedBaffleOrientation === orient;
+                return (
+                  <button
+                    key={orient}
+                    onClick={() => {
+                      SoundManager.playClick();
+                      onSelectUnitTypeId(null);
+                      onSelectEquipmentTypeId?.(null);
+                      onSelectUtilityTypeId?.(null);
+                      onSelectBaffleOrientation?.(orient);
+                      onSetToolMode('draw_baffle');
+                    }}
+                    className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition ${
+                      active
+                        ? 'bg-violet-500 text-white shadow-md font-bold ring-2 ring-violet-300'
+                        : 'text-violet-300 hover:text-violet-100 hover:bg-violet-900/30 border border-violet-800/20'
+                    }`}
+                    title={`BAFFLE: ${label} — interior concrete wall that splits a basin into compartments (anoxic/aerobic/settling). Click inside a basin to place. Esc cancels.`}
+                  >
+                    <Icon size={13} />
+                    <span>{orient === 'vertical' ? '│ Baffle' : '─ Baffle'}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Seed-sludge choice (backlog #1): visible while placing a CAS basin */}
+          {toolMode === 'place_unit' && selectedUnitTypeId === 'activated_sludge_cas' && (() => {
+            const tpl = blueprintFromTemplate('activated_sludge_cas');
+            const seedCredit = tpl ? estimateSeedSludgeCAPEX(workingVolumeM3(tpl.design.geometry)) : 0;
+            return (
+              <div className="flex flex-col gap-1 p-1 rounded-xl bg-slate-950 border border-slate-800 self-center">
+                <button
+                  onClick={() => { SoundManager.playClick(); onTogglePlaceSeeded?.(); }}
+                  className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold border transition ${
+                    placeSeeded
+                      ? 'bg-emerald-900/60 hover:bg-emerald-800/70 text-emerald-300 border-emerald-700/60'
+                      : 'bg-amber-900/50 hover:bg-amber-800/60 text-amber-300 border-amber-600/50'
+                  }`}
+                  title={placeSeeded
+                    ? 'Next CAS basin ships contractor-seeded: full price, day-one performance.'
+                    : `Next CAS basin starts UNSEEDED: saves $${seedCredit.toLocaleString()} haul-in, biomass ramps over ~2 weeks.`}
+                >
+                  <Droplets size={13} />
+                  <span>{placeSeeded ? 'Seed sludge: On' : `Unseeded (−$${seedCredit.toLocaleString()})`}</span>
+                </button>
+              </div>
+            );
+          })()}
         </div>
 
-        {/* Bottom: Unit Card Palette for Active Category */}
-        <div className="flex items-center gap-2 overflow-x-auto py-1 scrollbar-thin">
-          {categoryUnits.map(def => {
-            const unlocked = isUnitUnlocked(def);
-            const canAfford = isSandbox || playerCash >= def.capex;
-            const isSelected = toolMode === 'place_unit' && selectedUnitTypeId === def.id;
-            const isSuggested = showRecommendationUi && suggestedUnitTypeId === def.id;
-            // Tutorial lock: everything except the guided unit is grayed out
-            const tutorialBlocked = tutorialAllowedUnitId !== undefined &&
-              (tutorialAllowedUnitId === 'none' || def.id !== tutorialAllowedUnitId);
-            const disabled = !unlocked || tutorialBlocked;
+        {/* LEGACY · QUICK-BUILD — collapsible, muted heritage */}
+        <div className={`rounded-xl border flex flex-col gap-2 p-2 transition ${showLegacy ? 'bg-slate-900/40 border-dashed border-slate-700/40' : 'bg-slate-900/20 border-slate-800/50'}`}>
+          <button
+            onClick={() => { SoundManager.playClick(); setShowLegacy(v => !v); }}
+            className="flex items-center justify-between w-full text-left group"
+            title={showLegacy ? 'Collapse prefab catalog — focus on Construction Builder' : 'Expand prefab catalog'}
+          >
+            <span className="flex items-center gap-2 min-w-0">
+              <span className={`p-1 rounded-md shrink-0 ${showLegacy ? 'bg-slate-800 text-slate-400' : 'bg-slate-800/60 text-slate-500'}`}>
+                <Package size={12} />
+              </span>
+              <span className="flex flex-col min-w-0">
+                <span className="text-[10px] font-bold tracking-widest text-slate-500 leading-none flex items-center gap-1.5">
+                  LEGACY · QUICK-BUILD PREFABS
+                  <span className="text-[9px] font-normal px-1.5 py-0.5 rounded bg-amber-900/30 text-amber-400/80 border border-amber-700/20">heritage — Inspect-only</span>
+                </span>
+                <span className="text-[10px] text-slate-500 leading-none hidden sm:inline">
+                  Prefab boxes (pre-designed units) — kept for quick starts; <em className="text-slate-400 not-italic">builder basins are the primary path</em>
+                </span>
+              </span>
+            </span>
+            <span className="flex items-center gap-2 shrink-0">
+              <span className="text-[10px] font-mono text-slate-500 hidden md:inline">{categoryUnits.length} in {CATEGORIES.find(c=>c.id===activeCategory)?.label.split('. ')[1]}</span>
+              {showLegacy ? <ChevronUp size={14} className="text-slate-500 group-hover:text-slate-300" /> : <ChevronDown size={14} className="text-slate-500 group-hover:text-slate-300" />}
+            </span>
+          </button>
+          {showLegacy && (
+            <>
+              {/* Category Tabs — muted heritage strip */}
+              <div className="flex items-center gap-1 overflow-x-auto scrollbar-thin">
+                {CATEGORIES.map(cat => (
+                  <button
+                    key={cat.id}
+                    onClick={() => {
+                      SoundManager.playClick();
+                      setActiveCategory(cat.id);
+                    }}
+                    className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold transition whitespace-nowrap shrink-0 snap-start ${
+                      activeCategory === cat.id
+                        ? 'bg-slate-800 text-sky-400 border border-sky-500/40 shadow-inner'
+                        : 'text-slate-500 hover:text-slate-300 hover:bg-slate-800/50 border border-transparent'
+                    }`}
+                  >
+                    {cat.icon}
+                    <span className="hidden xl:inline">{cat.label}</span>
+                    <span className="xl:hidden">{cat.label.split('. ')[1] ?? cat.label}</span>
+                  </button>
+                ))}
+              </div>
+              {/* Unit Card Palette for Active Category */}
+              <div className="flex items-center gap-2 overflow-x-auto py-1 scrollbar-thin">
+                {categoryUnits.map(def => {
+                  const unlocked = isUnitUnlocked(def);
+                  const canAfford = isSandbox || playerCash >= def.capex;
+                  const isSelected = toolMode === 'place_unit' && selectedUnitTypeId === def.id;
+                  const isSuggested = showRecommendationUi && suggestedUnitTypeId === def.id;
+                  const tutorialBlocked = tutorialAllowedUnitId !== undefined &&
+                    (tutorialAllowedUnitId === 'none' || def.id !== tutorialAllowedUnitId);
+                  const disabled = !unlocked || tutorialBlocked;
 
-            return (
-              <button
-                key={def.id}
-                disabled={disabled}
-                title={tutorialBlocked ? 'Locked during the tutorial — follow Dr. Rio!' : undefined}
-                onMouseEnter={() => setHoveredDef(def)}
-                onMouseLeave={() => setHoveredDef(null)}
-                onClick={() => {
-                  if (disabled) return;
-                  SoundManager.playClick();
-                  onSetToolMode('place_unit');
-                  onSelectUnitTypeId(def.id);
-                }}
-                className={`group relative flex flex-col items-start p-2.5 rounded-xl min-w-[170px] max-w-[190px] border transition text-left ${
-                  !unlocked
-                    ? 'opacity-40 bg-slate-950/60 border-slate-800 cursor-not-allowed'
-                    : tutorialBlocked
-                    ? 'opacity-35 grayscale bg-slate-950/60 border-slate-800 cursor-not-allowed'
-                    : isSelected
-                    ? 'bg-sky-500/20 border-cyan-400 ring-2 ring-cyan-400/50 shadow-lg'
-                    : isSuggested
-                    ? 'bg-sky-950/40 border-sky-400/80 ring-1 ring-sky-400/40'
-                    : canAfford
-                    ? 'bg-slate-900 border-slate-700/80 hover:border-sky-500/60 hover:bg-slate-800/90'
-                    : 'bg-slate-900/60 border-rose-900/40 hover:bg-slate-900/80'
-                }`}
-              >
-                {/* Tutorial Lock Badge */}
-                {tutorialBlocked && (
-                  <div className="absolute -top-2 left-2 px-1.5 py-0.5 rounded-full bg-slate-700 text-slate-300 text-[9px] font-bold font-mono flex items-center gap-0.5 shadow-md">
-                    <Lock size={9} />
-                    <span>Tutorial</span>
-                  </div>
-                )}
-                {/* Suggested Star Badge */}
-                {isSuggested && (
-                  <div className="absolute -top-2 right-2 px-1.5 py-0.5 rounded-full bg-gradient-to-r from-amber-500 to-yellow-400 text-slate-950 text-[9px] font-bold font-mono flex items-center gap-0.5 shadow-md animate-bounce">
-                    <Star size={10} fill="currentColor" />
-                    <span>Recommended</span>
-                  </div>
-                )}
+                  return (
+                    <button
+                      key={def.id}
+                      disabled={disabled}
+                      title={tutorialBlocked ? 'Locked during the tutorial — follow Dr. Rio!' : undefined}
+                      onMouseEnter={() => setHoveredDef(def)}
+                      onMouseLeave={() => setHoveredDef(null)}
+                      onClick={() => {
+                        if (disabled) return;
+                        SoundManager.playClick();
+                        onSetToolMode('place_unit');
+                        onSelectUnitTypeId(def.id);
+                      }}
+                      className={`group relative flex flex-col items-start p-2.5 rounded-xl min-w-[170px] max-w-[190px] border transition text-left ${
+                        !unlocked
+                          ? 'opacity-40 bg-slate-950/60 border-slate-800 cursor-not-allowed'
+                          : tutorialBlocked
+                          ? 'opacity-35 grayscale bg-slate-950/60 border-slate-800 cursor-not-allowed'
+                          : isSelected
+                          ? 'bg-sky-500/20 border-cyan-400 ring-2 ring-cyan-400/50 shadow-lg'
+                          : isSuggested
+                          ? 'bg-sky-950/40 border-sky-400/80 ring-1 ring-sky-400/40'
+                          : canAfford
+                          ? 'bg-slate-900 border-slate-700/80 hover:border-sky-500/60 hover:bg-slate-800/90'
+                          : 'bg-slate-900/60 border-rose-900/40 hover:bg-slate-900/80'
+                      }`}
+                    >
+                      {tutorialBlocked && (
+                        <div className="absolute -top-2 left-2 px-1.5 py-0.5 rounded-full bg-slate-700 text-slate-300 text-[9px] font-bold font-mono flex items-center gap-0.5 shadow-md">
+                          <Lock size={9} />
+                          <span>Tutorial</span>
+                        </div>
+                      )}
+                      {isSuggested && (
+                        <div className="absolute -top-2 right-2 px-1.5 py-0.5 rounded-full bg-gradient-to-r from-amber-500 to-yellow-400 text-slate-950 text-[9px] font-bold font-mono flex items-center gap-0.5 shadow-md animate-bounce">
+                          <Star size={10} fill="currentColor" />
+                          <span>Recommended</span>
+                        </div>
+                      )}
 
-                <div className="flex items-center justify-between w-full">
-                  <span className="font-bold text-xs text-slate-200 group-hover:text-cyan-300 truncate">
-                    {def.name}
-                  </span>
-                  {!unlocked && (
-                    <span className="text-[9px] px-1 py-0.5 rounded bg-slate-800 text-amber-400 font-mono">
-                      Locked
-                    </span>
-                  )}
-                </div>
+                      <div className="flex items-center justify-between w-full">
+                        <span className="font-bold text-xs text-slate-200 group-hover:text-cyan-300 truncate">
+                          {def.name}
+                        </span>
+                        {!unlocked && (
+                          <span className="text-[9px] px-1 py-0.5 rounded bg-slate-800 text-amber-400 font-mono">
+                            Locked
+                          </span>
+                        )}
+                      </div>
 
-                <div className="flex items-center justify-between w-full mt-1 font-mono text-[11px]">
-                  <span className={canAfford ? 'text-emerald-400 font-bold' : 'text-rose-400'}>
-                    ${def.capex.toLocaleString()}
-                  </span>
-                  <span className="text-slate-400 text-[10px]">
-                    {def.footprint[0]}x{def.footprint[1]} grid
-                  </span>
-                </div>
+                      <div className="flex items-center justify-between w-full mt-1 font-mono text-[11px]">
+                        <span className={canAfford ? 'text-emerald-400 font-bold' : 'text-rose-400'}>
+                          ${def.capex.toLocaleString()}
+                        </span>
+                        <span className="text-slate-400 text-[10px]">
+                          {def.footprint[0]}x{def.footprint[1]} grid
+                        </span>
+                      </div>
 
-                <div className="flex items-center justify-between w-full text-[10px] text-slate-400 font-mono mt-0.5">
-                  <span className="text-amber-300/90">{def.powerConsumptionKw} kW</span>
-                  <span className="text-slate-400">${def.baseOpexPerDay}/d</span>
-                </div>
-              </button>
-            );
-          })}
+                      <div className="flex items-center justify-between w-full text-[10px] text-slate-400 font-mono mt-0.5">
+                        <span className="text-amber-300/90">{def.powerConsumptionKw} kW</span>
+                        <span className="text-slate-400">${def.baseOpexPerDay}/d</span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          )}
         </div>
       </div>
     </div>
