@@ -61,6 +61,7 @@ import {
   baffleLengthM,
 } from '../src/design/BasinZone';
 import { recognizeProcess, processSummaryLine } from '../src/design/ProcessRecognition';
+import { emptySelection, selectionCount, toggleSelection, selectionSummaryLine as selSummary } from '../src/design/ConstructionSelection';
 import * as THREE from 'three';
 
 let failures = 0;
@@ -5694,5 +5695,141 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
   }
 }
 
+
+// ═════════════════════════════════════════════════════════════════════════════
+// CONSTRUCTION-BUILDER P4 — shift multi-select + bulk demolish
+// ═════════════════════════════════════════════════════════════════════════════
+{
+  const e = emptySelection();
+  assert(selectionCount(e) === 0, 'SM01. emptySelection count 0');
+  let s = toggleSelection(e, 'basins', 'b1', 'set');
+  assert(s.basins.includes('b1') && s.equipment.length === 0, 'SM01b. set basins b1');
+  s = toggleSelection(s, 'basins', 'b2', 'add');
+  assert(s.basins.length === 2 && s.basins.includes('b2'), 'SM01c. add b2');
+  const same = toggleSelection(s, 'basins', 'b2', 'add');
+  assert(same.basins.length === 2, 'SM01d. add duplicate no-op');
+  let tt = toggleSelection(s, 'basins', 'b1', 'toggle');
+  assert(tt.basins.length === 1 && !tt.basins.includes('b1'), 'SM01e. toggle removes b1');
+  tt = toggleSelection(tt, 'basins', 'b3', 'toggle');
+  assert(tt.basins.includes('b3'), 'SM01f. toggle adds b3');
+  assert(selectionCount(tt) === 2, 'SM01g. count 2');
+  assert(selSummary(tt).includes('2 basins') || selSummary(tt).includes('basin'), 'SM01h. summary ' + selSummary(tt));
+  assert(selSummary(emptySelection()) === 'nothing', 'SM01i. nothing summary');
+}
+{
+  // BM01: single basin bulk demolish refunds 50% CAPEX, sandbox $0
+  let gs = GameManager.createInitialState(0,false);
+  let rr = GameManager.placeCustomBasin(gs, {x:5,y:5,w:3,h:3}); gs=rr.newState;
+  const basin = gs.customBasins[0];
+  const capex = rr.charged ?? 0;
+  const expected = Math.round(capex * 0.5);
+  const cashBefore = gs.financials.cash;
+  const res = GameManager.bulkDemolish(gs, { basins:[basin.id], equipment:[], baffles:[], utilities:[] });
+  assert(res.success && res.removed!.basins === 1, 'BM01. single basin bulk success');
+  assert(res.refunded === expected, 'BM01b. refund 50% '+res.refunded+' vs '+expected);
+  assert(res.newState.financials.cash === cashBefore + expected, 'BM01c. cash credited');
+  assert(res.newState.customBasins.length === 0, 'BM01d. basin removed');
+  let sby = GameManager.createInitialState(0,true);
+  let r2 = GameManager.placeCustomBasin(sby, {x:5,y:5,w:3,h:3}); sby=r2.newState;
+  const b2 = sby.customBasins[0].id;
+  const rS = GameManager.bulkDemolish(sby, { basins:[b2], equipment:[], baffles:[], utilities:[] });
+  assert(rS.success && rS.refunded === 0, 'BM01e. sandbox bulk $0');
+}
+{
+  // BM02: single equipment 70% salvage
+  let gs = GameManager.createInitialState(0,false);
+  let er = GameManager.placeProcessEquipment(gs, 'process_pump', 10,10); gs=er.newState;
+  const eid = gs.processEquipment[0].id;
+  const capex = er.charged ?? 0;
+  const expected = Math.round(capex * 0.7);
+  const cashBefore = gs.financials.cash;
+  const res = GameManager.bulkDemolish(gs, { basins:[], equipment:[eid], baffles:[], utilities:[] });
+  assert(res.success && res.removed!.equipment === 1, 'BM02. single pump bulk');
+  assert(res.refunded === expected, 'BM02b. 70% refund '+res.refunded+' vs '+expected);
+  assert(res.newState.financials.cash === cashBefore + expected, 'BM02c. cash');
+}
+{
+  // BM03: basin with interior equipment cascade — sandbox so w4 fits budget
+  let gs = GameManager.createInitialState(0,true);
+  let rr = GameManager.placeCustomBasin(gs, {x:5,y:5,w:4,h:4}); gs=rr.newState;
+  let er = GameManager.placeProcessEquipment(gs, 'fine_bubble_diffuser', 6,6); gs=er.newState;
+  let er2 = GameManager.placeProcessEquipment(gs, 'submersible_mixer', 7,7); gs=er2.newState;
+  const bid = gs.customBasins[0].id;
+  const res = GameManager.bulkDemolish(gs, { basins:[bid], equipment:[], baffles:[], utilities:[] });
+  assert(res.success, 'BM03. basin+interior cascade success');
+  assert(res.removed!.basins === 1 && res.removed!.equipment === 2, 'BM03b. removed 1 basin + 2 cascade equipment ('+res.removed!.equipment+')');
+  assert(res.newState.customBasins.length === 0 && res.newState.processEquipment.length === 0, 'BM03c. all cleared');
+  assert((res.refunded ?? 0) === 0, 'BM03d. sandbox $0 even with cascade');
+
+  let gs2 = GameManager.createInitialState(0,true);
+  let rr2 = GameManager.placeCustomBasin(gs2, {x:5,y:5,w:4,h:4}); gs2=rr2.newState;
+  let er3 = GameManager.placeProcessEquipment(gs2, 'fine_bubble_diffuser', 6,6); gs2=er3.newState;
+  let er4 = GameManager.placeProcessEquipment(gs2, 'submersible_mixer', 7,7); gs2=er4.newState;
+  const bid2 = gs2.customBasins[0].id;
+  const eid2 = gs2.processEquipment[0].id;
+  const res2 = GameManager.bulkDemolish(gs2, { basins:[bid2], equipment:[eid2], baffles:[], utilities:[] });
+  assert(res2.success && res2.removed!.equipment === 2, 'BM03f. basin+explicit equipment dedup still 2 total');
+}
+{
+  // BM04: baffle 60% bulk, baffle cascade via basin
+  let gs = GameManager.createInitialState(0,false);
+  let rr = GameManager.placeCustomBasin(gs, {x:5,y:5,w:3,h:3}); gs=rr.newState;
+  const bid = gs.customBasins[0].id;
+  let br = GameManager.placeBaffle(gs, bid, 'vertical', 2); gs=br.newState;
+  const baffleId = gs.customBaffles[0].id;
+  const baffCapex = br.charged ?? 0;
+  const baffRefund = Math.round(baffCapex * 0.6);
+  let res = GameManager.bulkDemolish(gs, { basins:[], equipment:[], baffles:[baffleId], utilities:[] });
+  assert(res.success && res.removed!.baffles === 1, 'BM04. single baffle bulk');
+  assert(res.refunded === baffRefund, 'BM04b. baffle 60% '+res.refunded+' vs '+baffRefund);
+  // cascade via basin - use sandbox for w4
+  let gs2 = GameManager.createInitialState(0,true);
+  let rr2 = GameManager.placeCustomBasin(gs2, {x:5,y:5,w:4,h:4}); gs2=rr2.newState;
+  const b2 = gs2.customBasins[0].id;
+  let br2 = GameManager.placeBaffle(gs2, b2, 'vertical', 2); gs2=br2.newState;
+  const res2 = GameManager.bulkDemolish(gs2, { basins:[b2], equipment:[], baffles:[], utilities:[] });
+  assert(res2.success && res2.removed!.baffles === 1, 'BM04c. basin cascade baffle');
+  assert(res2.removed!.basins === 1, 'BM04d. basin 1');
+}
+{
+  let gs = GameManager.createInitialState(0,true);
+  let rr = GameManager.placeCustomBasin(gs, {x:5,y:5,w:3,h:3}); gs=rr.newState;
+  let er = GameManager.placeProcessEquipment(gs, 'process_pump', 10,10); gs=er.newState;
+  let er2 = GameManager.placeProcessEquipment(gs, 'fine_bubble_diffuser', 6,6); gs=er2.newState;
+  let ur = GameManager.placeUtilityConnection(gs, 'water_pipe', 10,10, 6,6); gs=ur.newState;
+  assert(ur.success, 'BM05 setup utility');
+  const uid = gs.utilityConnections[0].id;
+  let res = GameManager.bulkDemolish(gs, { basins:[], equipment:[], baffles:[], utilities:[uid] });
+  assert(res.success && res.removed!.utilities === 1 && res.newState.utilityConnections.length === 0, 'BM05b. single utility bulk');
+  let gs3 = GameManager.createInitialState(0,true);
+  let rr3 = GameManager.placeCustomBasin(gs3, {x:5,y:5,w:3,h:3}); gs3=rr3.newState;
+  let er3 = GameManager.placeProcessEquipment(gs3, 'process_pump', 10,10); gs3=er3.newState;
+  let er4 = GameManager.placeProcessEquipment(gs3, 'fine_bubble_diffuser', 6,6); gs3=er4.newState;
+  let ur2 = GameManager.placeUtilityConnection(gs3, 'water_pipe', 10,10, 6,6); gs3=ur2.newState;
+  const pid = gs3.processEquipment.find(e=>e.typeId==='process_pump')!.id;
+  let res3 = GameManager.bulkDemolish(gs3, { basins:[], equipment:[pid], baffles:[], utilities:[] });
+  assert(res3.success && res3.removed!.utilities === 1, 'BM05c. equipment cascade utility');
+  let empty = GameManager.bulkDemolish(gs3, { basins:[], equipment:[], baffles:[], utilities:[] });
+  assert(!empty.success, 'BM05d. empty rejected');
+  let unk = GameManager.bulkDemolish(gs3, { basins:['nope'], equipment:['nope'], baffles:['nope'], utilities:['nope'] });
+  assert(!unk.success, 'BM05e. unknown ids rejected');
+}
+{
+  // BM06: multi-kind batch — uses sandbox for bigger basins
+  let gs = GameManager.createInitialState(0,true);
+  let rr = GameManager.placeCustomBasin(gs, {x:5,y:5,w:4,h:4}); gs=rr.newState;
+  const bid = gs.customBasins[0].id;
+  let br = GameManager.placeBaffle(gs, bid, 'vertical', 2); gs=br.newState;
+  let er = GameManager.placeProcessEquipment(gs, 'process_pump', 12,12); gs=er.newState;
+  const pid = gs.processEquipment[0].id;
+  let rr2 = GameManager.placeCustomBasin(gs, {x:15,y:15,w:3,h:3}); gs=rr2.newState;
+  const bid2 = gs.customBasins[1].id;
+  const res = GameManager.bulkDemolish(gs, { basins:[bid2], equipment:[pid], baffles:[gs.customBaffles[0].id], utilities:[] });
+  assert(res.success, 'BM06. multi-kind batch success');
+  assert(res.removed!.basins === 1 && res.removed!.equipment === 1 && res.removed!.baffles === 1, 'BM06b. removed counts 1+1+1 ('+JSON.stringify(res.removed)+')');
+  assert(res.newState.customBasins.length === 1 && res.newState.customBasins[0].id === bid, 'BM06d. correct basin remains');
+}
+
 console.log(failures === 0 ? "\nALL TESTS PASSED" : `\n${failures} TEST(S) FAILED`);
+
 process.exit(failures === 0 ? 0 : 1);

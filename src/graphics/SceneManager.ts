@@ -670,7 +670,7 @@ export class SceneManager {
    * is the exact drawn rectangle; depth comes from basin.depthM. Called from
    * App after every place/demolish. Mirrors syncUnits' add/remove discipline.
    */
-  public syncBasins(basins: { id: string; x: number; y: number; w: number; h: number; depthM: number }[], selectedId?: string | null) {
+  public syncBasins(basins: { id: string; x: number; y: number; w: number; h: number; depthM: number }[], selectedId?: string | Set<string> | null) {
     if (!this.basinGroup.parent) this.scene.add(this.basinGroup);
     const activeIds = new Set(basins.map(b => b.id));
 
@@ -709,9 +709,8 @@ export class SceneManager {
         this.basinMeshMap.set(b.id, mesh);
         this.basinGroup.add(mesh);
       }
-      // Selected basin gets a subtle emerald tint + slight lift so the player
-      // always knows what they have selected.
-      const selected = b.id === selectedId;
+      // Selected basin gets a subtle emerald tint — now supports multi-select Set
+      const selected = selectedId instanceof Set ? selectedId.has(b.id) : b.id === selectedId;
       mesh.traverse(o => {
         const mm = o as THREE.Mesh;
         if (mm.isMesh && mm.material) {
@@ -786,7 +785,7 @@ export class SceneManager {
   public syncEquipment(
     items: { id: string; typeId: string; x: number; y: number; rotation?: number }[],
     basins: { x: number; y: number; w: number; h: number; depthM: number }[],
-    selectedId?: string | null,
+    selectedId?: string | Set<string> | null,
     poweredIds?: Set<string> | null,
     aeratedIds?: Set<string> | null,
     filtration?: { liveMembraneIds?: Set<string>; degradedMembraneIds?: Set<string>; activeCarrierIds?: Set<string>; aeratedCarrierIds?: Set<string> } | null,
@@ -828,7 +827,7 @@ export class SceneManager {
         const targetRot = ((it.rotation ?? 0) * Math.PI) / 180;
         if (Math.abs(mesh.rotation.y - targetRot) > 0.001) mesh.rotation.y = targetRot;
       }
-      const selected = it.id === selectedId;
+      const selected = selectedId instanceof Set ? selectedId.has(it.id) : it.id === selectedId;
       // ── Phase 4 functional status (power + aeration) ────────────────
       // Selection takes precedence (amber); otherwise unpowered machines glow
       // dim red and aerated diffusers get a cool blue shimmer so the player
@@ -1347,7 +1346,7 @@ export class SceneManager {
   /** Straight tile-center → tile-center lines per utility type. */
   public syncUtilityConnections(
     conns: { id: string; type: string; ax: number; ay: number; bx: number; by: number }[],
-    selectedId?: string | null
+    selectedId?: string | Set<string> | null
   ) {
     if (!this.utilityGroup.parent) this.scene.add(this.utilityGroup);
     const active = new Set(conns.map(c => c.id));
@@ -1398,7 +1397,7 @@ export class SceneManager {
         pos.needsUpdate = true;
       }
       // Selection highlight: boost opacity + emissive via color lerp
-      const selected = c.id === selectedId;
+      const selected = selectedId instanceof Set ? selectedId.has(c.id) : c.id === selectedId;
       const mat = line.material as THREE.LineBasicMaterial;
       mat.opacity = selected ? 1 : 0.92;
       mat.color.setHex(selected ? 0xffffff : colorFor(c.type));
@@ -1469,7 +1468,7 @@ export class SceneManager {
   public syncBaffles(
     baffles: { id: string; basinId: string; orientation: string; offsetTiles: number }[],
     basins: { id: string; x: number; y: number; w: number; h: number; depthM: number }[],
-    selectedId?: string | null,
+    selectedId?: string | Set<string> | null,
   ) {
     if (!this.baffleGroup.parent) this.scene.add(this.baffleGroup);
     const activeIds = new Set(baffles.map(b => b.id));
@@ -1498,7 +1497,7 @@ export class SceneManager {
       } else {
         group.position.set(basin.x, 0, basin.y + bf.offsetTiles);
       }
-      const selected = bf.id === selectedId;
+      const selected = selectedId instanceof Set ? selectedId.has(bf.id) : bf.id === selectedId;
       group.traverse(o => {
         const mm = o as THREE.Mesh;
         if (mm.isMesh && mm.material) {

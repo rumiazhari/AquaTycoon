@@ -75,6 +75,7 @@ import {
   activeInfluentEventForDay,
   applyInfluentEvent,
 } from '../design/InfluentEvents';
+import type { ConstructionSelection } from '../design/ConstructionSelection';
 
 /**
  * Municipal overdraft financing — tycoon polish iter 39.
@@ -1876,6 +1877,123 @@ export class GameManager {
 
   public static basinZoneStats(state: GameState): BasinZoneStats {
     return _basinZoneStats(state.customBasins ?? [], state.customBaffles ?? []);
+  }
+
+  // ── CONSTRUCTION-BUILDER P4 — BULK DEMOLITION (multi-select) ─────────────
+  /**
+   * Atomically demolishes every entity in a ConstructionSelection.
+   * Campaign cash gets the summed salvage (50% basins / 70% equipment /
+   * 60% baffles & utilities / cascade victims). Sandbox / tutorial = $0.
+   * Basin demolish in bulk auto-cascades its interior equipment (with
+   * salvage) — unlike single-basin which rejects when occupied — so a
+   * Shift-dragged plant block clears in one click.
+   */
+  public static bulkDemolish(
+    state: GameState,
+    sel: ConstructionSelection
+  ): { newState: GameState; success: boolean; reason?: string; refunded?: number; removed?: { basins:number; equipment:number; baffles:number; utilities:number } } {
+    const basinIds = (sel.basins ?? []).filter(id => (state.customBasins ?? []).some(b => b.id === id));
+    const equipIds = (sel.equipment ?? []).filter(id => (state.processEquipment ?? []).some(e => e.id === id));
+    const baffleIdsAll = (sel.baffles ?? []).filter(id => (state.customBaffles ?? []).some(b => b.id === id));
+    const utilIdsAll = (sel.utilities ?? []).filter(id => (state.utilityConnections ?? []).some(c => c.id === id));
+
+    const totalExplicit = basinIds.length + equipIds.length + baffleIdsAll.length + utilIdsAll.length;
+    if (totalExplicit === 0) return { newState: state, success: false, reason: 'Nothing selected' };
+
+    const basinSet = new Set(basinIds);
+    const equipSet = new Set(equipIds);
+
+    // cascade equipment inside selected basins (not already explicitly selected)
+    const cascadeEquip: ProcessEquipmentItem[] = [];
+    for (const e of state.processEquipment ?? []) {
+      if (equipSet.has(e.id)) continue;
+      const hostBasin = (state.customBasins ?? []).find(b => b.id && basinSet.has(b.id) && e.x >= b.x && e.x < b.x + b.w && e.y >= b.y && e.y < b.y + b.h);
+      if (hostBasin) cascadeEquip.push(e);
+    }
+    const allEquipIds = new Set([...equipIds, ...cascadeEquip.map(e => e.id)]);
+
+    // baffles: exclude those whose basin is being demolished (they cascade with basin)
+    const baffleIds = baffleIdsAll.filter(id => {
+      const bf = (state.customBaffles ?? []).find(b => b.id === id);
+      return bf ? !basinSet.has(bf.basinId) : false;
+    });
+    const cascadeBaffles = (state.customBaffles ?? []).filter(bf => basinSet.has(bf.basinId));
+
+    // utilities: cascade from selected basins + all equipment (explicit + cascade)
+    const cascadeFromBasins: UtilityConnection[] = [];
+    for (const c of state.utilityConnections ?? []) {
+      if (utilIdsAll.includes(c.id)) continue;
+      const touchesBasin = [...basinSet].some(bid => {
+        const b = (state.customBasins ?? []).find(x => x.id === bid);
+        return b ? ((c.ax >= b.x && c.ax < b.x + b.w && c.ay >= b.y && c.ay < b.y + b.h) || (c.bx >= b.x && c.bx < b.x + b.w && c.by >= b.y && c.by < b.y + b.h)) : false;
+      });
+      if (touchesBasin) cascadeFromBasins.push(c);
+    }
+    const cascadeFromEquip: UtilityConnection[] = [];
+    for (const c of state.utilityConnections ?? []) {
+      if (utilIdsAll.includes(c.id) || cascadeFromBasins.includes(c)) continue;
+      const touches = [...allEquipIds].some(eid => {
+        const e = (state.processEquipment ?? []).find(x => x.id === eid);
+        return e ? (c.ax === e.x && c.ay === e.y) || (c.bx === e.x && c.by === e.y) : false;
+      });
+      if (touches) cascadeFromEquip.push(c);
+    }
+    const utilSetExplicit = new Set(utilIdsAll);
+    // deduplicate cascade utils (basin+equip overlap) via id set
+    const cascadeUtilIds = new Set([...cascadeFromBasins, ...cascadeFromEquip].map(c => c.id));
+    // explicit utils that are also cascade should be counted only once (dedup to cascade)
+    const explicitUtilsRemaining = utilIdsAll.filter(id => !cascadeUtilIds.has(id));
+
+    const isSandbox = state.gameMode === 'sandbox' || state.tutorialActive;
+    let refund = 0;
+    if (!isSandbox) {
+      for (const bid of basinIds) {
+        const b = (state.customBasins ?? []).find(x => x.id === bid)!;
+        refund += Math.round(estimateBasinCAPEX(b) * GameManager.CUSTOM_BASIN_SALVAGE_RATE);
+      }
+      for (const eid of equipIds) {
+        const e = (state.processEquipment ?? []).find(x => x.id === eid)!;
+        refund += Math.round(estimateEquipmentCAPEX(e.typeId) * GameManager.EQUIPMENT_SALVAGE_RATE);
+      }
+      for (const e of cascadeEquip) {
+        refund += Math.round(estimateEquipmentCAPEX(e.typeId) * GameManager.EQUIPMENT_SALVAGE_RATE);
+      }
+      for (const bid of baffleIds) {
+        const bf = (state.customBaffles ?? []).find(x => x.id === bid)!;
+        const basin = (state.customBasins ?? []).find(b => b.id === bf.basinId);
+        if (basin) refund += Math.round(estimateBaffleCAPEX(basin, bf.orientation) * GameManager.BAFFLE_SALVAGE_RATE);
+      }
+      for (const bf of cascadeBaffles) {
+        const basin = (state.customBasins ?? []).find(b => b.id === bf.basinId);
+        if (basin) refund += Math.round(estimateBaffleCAPEX(basin, bf.orientation) * GameManager.BAFFLE_SALVAGE_RATE);
+      }
+      for (const uid of explicitUtilsRemaining) {
+        const c = (state.utilityConnections ?? []).find(x => x.id === uid)!;
+        refund += Math.round(estimateUtilityCAPEX(c.type, c.ax, c.ay, c.bx, c.by) * GameManager.UTILITY_SALVAGE_RATE);
+      }
+      for (const c of cascadeFromBasins) refund += Math.round(estimateUtilityCAPEX(c.type, c.ax, c.ay, c.bx, c.by) * GameManager.UTILITY_SALVAGE_RATE);
+      for (const c of cascadeFromEquip) refund += Math.round(estimateUtilityCAPEX(c.type, c.ax, c.ay, c.bx, c.by) * GameManager.UTILITY_SALVAGE_RATE);
+    }
+
+    const removed = {
+      basins: basinIds.length,
+      equipment: equipIds.length + cascadeEquip.length,
+      baffles: baffleIds.length + cascadeBaffles.length,
+      utilities: explicitUtilsRemaining.length + cascadeFromBasins.length + cascadeFromEquip.length,
+    };
+
+    const newState: GameState = {
+      ...state,
+      financials: { ...state.financials, cash: state.financials.cash + refund },
+      customBasins: (state.customBasins ?? []).filter(b => !basinSet.has(b.id)),
+      processEquipment: (state.processEquipment ?? []).filter(e => !allEquipIds.has(e.id)),
+      customBaffles: (state.customBaffles ?? []).filter(b => !basinSet.has(b.basinId) && !baffleIds.includes(b.id)),
+      utilityConnections: (state.utilityConnections ?? []).filter(c => !cascadeUtilIds.has(c.id) && !utilSetExplicit.has(c.id)),
+      selectedBaffleId: null,
+      selectedUtilityId: null,
+    };
+
+    return { newState, success: true, refunded: refund, removed };
   }
 
   // ── CONSTRUCTION-BUILDER P1 — BASIN DIRECT EDITING (depth + resize) ─────────

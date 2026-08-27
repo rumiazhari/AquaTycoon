@@ -27,6 +27,8 @@ import { UTILITY_TYPES, UtilityConnectionType, validateUtilityConnection } from 
 import { poweredEquipmentIds, aeratedDiffuserIds } from './design/ConstructionNetwork';
 import { filtrationLiveSets, chemicalLiveSets } from './design/ConstructionAdapter';
 import { validateBafflePlacement } from './design/BasinZone';
+import { emptySelection, selectionCount, toggleSelection, basinIdsSet, equipmentIdsSet, baffleIdsSet, utilityIdsSet, selectionSummaryLine } from './design/ConstructionSelection';
+import type { ConstructionSelection } from './design/ConstructionSelection';
 
 // UI Components
 import { HeaderHUD } from './ui/HeaderHUD';
@@ -37,6 +39,7 @@ import { EquipmentInspector } from './ui/EquipmentInspector';
 import { BaffleInspector } from './ui/BaffleInspector';
 import { ConstructionStatusChip } from './ui/ConstructionStatusChip';
 import { ProcessBadgeStrip } from './ui/ProcessBadgeStrip';
+import { BulkActionBar } from './ui/BulkActionBar';
 import { recognizeProcess } from './design/ProcessRecognition';
 import { PlantFlowDiagram } from './ui/PlantFlowDiagram';
 import { defaultMaterialForPipeType } from './design/PipeSizing';
@@ -190,6 +193,31 @@ export const App: React.FC = () => {
   const selectedBaffleIdRef = useRef<string | null>(null);
   selectedBaffleIdRef.current = selectedBaffleId;
 
+  // ── CONSTRUCTION-BUILDER P4: shift multi-select + bulk demolish ──────────
+  const [constructionSelection, setConstructionSelection] = useState<ConstructionSelection>(() => emptySelection());
+  const constructionSelectionRef = useRef<ConstructionSelection>(emptySelection());
+  constructionSelectionRef.current = constructionSelection;
+  const clearConstructionSelection = useCallback(() => {
+    setConstructionSelection(emptySelection());
+    setSelectedBasinId(null);
+    setSelectedEquipmentId(null);
+    setSelectedBaffleId(null);
+    setSelectedUtilityId(null);
+    const sm = sceneRef.current;
+    if (sm) {
+      const gs = gsRef.current;
+      sm.syncBasins(gs.customBasins ?? [], null);
+      sm.syncBaffles(gs.customBaffles ?? [], gs.customBasins ?? [], null);
+      sm.syncUtilityConnections(gs.utilityConnections ?? [], null);
+      sm.syncEquipment(
+        gs.processEquipment ?? [], gs.customBasins ?? [], null,
+        poweredEquipmentIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
+        aeratedDiffuserIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
+        filtrationLiveSets(gs.customBasins ?? [], gs.processEquipment ?? [], gs.utilityConnections ?? [], gs.customBaffles ?? [])
+      );
+    }
+  }, []);
+
   // Placement-time seed choice (backlog #1 follow-up): ON (default) hands over
   // a contractor-seeded reactor at full def.capex; OFF starts UNSEEDED at
   // def.capex − seed haul-in credit and lets the culture ramp over ~2 weeks.
@@ -272,6 +300,7 @@ export const App: React.FC = () => {
   const applyHistoryState = useCallback((state: GameState) => {
     setGameState(state);
     setMovingEquipmentId(null);
+    setConstructionSelection(emptySelection());
     sceneRef.current?.terrainGrid.setGhostPreview(0, 0, 1, 1, true, false);
     const sm = sceneRef.current;
     if (sm) {
@@ -647,7 +676,7 @@ export const App: React.FC = () => {
       }
       if (button === 0) {
         // LEFT CLICK: primary action
-        handleCanvasClick(e.clientX, e.clientY);
+        handleCanvasClick(e.clientX, e.clientY, { shiftKey: e.shiftKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey });
       }
     };
 
@@ -796,9 +825,9 @@ export const App: React.FC = () => {
     if (result.charged) setToast(`Pipe change order: +$${result.charged.toLocaleString()}.`);
   }, [pushHistory]);
 
-  const handleCanvasClick = (clientX: number, clientY: number) => {
+  const handleCanvasClick = (clientX: number, clientY: number, opts?: { shiftKey?: boolean; ctrlKey?: boolean; metaKey?: boolean }) => {
     try {
-      handleCanvasClickInner(clientX, clientY);
+      handleCanvasClickInner(clientX, clientY, opts);
     } catch (err) {
       // Never let a click die silently — surface it so nothing feels "broken"
       console.error('Canvas click error:', err);
@@ -806,9 +835,10 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleCanvasClickInner = (clientX: number, clientY: number) => {
+  const handleCanvasClickInner = (clientX: number, clientY: number, opts?: { shiftKey?: boolean; ctrlKey?: boolean; metaKey?: boolean }) => {
     const sm = sceneRef.current;
     if (!sm) return;
+    const isMulti = !!(opts?.shiftKey || opts?.ctrlKey || opts?.metaKey);
 
     const mode     = toolModeRef.current;
     const gs       = gsRef.current;
@@ -885,8 +915,59 @@ export const App: React.FC = () => {
     if (mode === 'select') {
       // P3 — construction-first pick priority: most specific (1-tile machine) wins over
       // area (basin) and legacy (unit). Order: equipment > baffle > utility > basin > unit.
+      // P4 — Shift/Ctrl/Cmd toggles multi-select; bare click replaces; empty click clears.
+      const pickedKind: keyof ConstructionSelection | null =
+        clickedEquipment ? 'equipment' :
+        clickedBaffle ? 'baffles' :
+        clickedUtility ? 'utilities' :
+        clickedBasin ? 'basins' : null;
+      const pickedId: string | null =
+        clickedEquipment ? clickedEquipment.id :
+        clickedBaffle ? clickedBaffle.id :
+        clickedUtility ? clickedUtility.id :
+        clickedBasin ? clickedBasin.id : null;
+
+      // Multi-select toggle path
+      if (isMulti && pickedKind && pickedId) {
+        const cur = constructionSelectionRef.current;
+        const already = (cur[pickedKind] as string[]).includes(pickedId);
+        const next = toggleSelection(cur, pickedKind, pickedId, already ? 'toggle' : 'add');
+        // Legacy unit picks remain single; shift on legacy just selects legacy alone
+        setConstructionSelection(next);
+        // Mirror singles to first entry of each kind for inspector compat
+        setSelectedEquipmentId(next.equipment[0] ?? null);
+        setSelectedBaffleId(next.baffles[0] ?? null);
+        setSelectedUtilityId(next.utilities[0] ?? null);
+        setSelectedBasinId(next.basins[0] ?? null);
+        setGameState(prev => ({ ...prev, selectedUnitId: null }));
+        SoundManager.playClick();
+        // Sync highlights for the whole selection
+        sm.syncBasins(gs.customBasins ?? [], basinIdsSet(next));
+        sm.syncBaffles(gs.customBaffles ?? [], gs.customBasins ?? [], baffleIdsSet(next));
+        sm.syncUtilityConnections(gs.utilityConnections ?? [], utilityIdsSet(next));
+        sm.syncEquipment(
+          gs.processEquipment ?? [], gs.customBasins ?? [], equipmentIdsSet(next),
+          poweredEquipmentIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
+          aeratedDiffuserIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
+          filtrationLiveSets(gs.customBasins ?? [], gs.processEquipment ?? [], gs.utilityConnections ?? [], gs.customBaffles ?? [])
+        );
+        const cnt = selectionCount(next);
+        if (cnt > 1) setToast(`${cnt} selected — ${selectionSummaryLine(next)} — Bulk Demolish in top bar or press Delete.`);
+        else if (clickedEquipment) setToast(`${EQUIPMENT_TYPES[clickedEquipment.typeId]?.name ?? 'Equipment'} — Shift+Click to add more.`);
+        else if (clickedBaffle) setToast(`${clickedBaffle.orientation} baffle — Shift+Click to add more.`);
+        else if (clickedUtility) setToast(`${UTILITY_TYPES[clickedUtility.type]?.name ?? 'Utility'} — Shift+Click to add more.`);
+        else if (clickedBasin) setToast(`Basin ${clickedBasin.w}×${clickedBasin.h} — Shift+Click to add more.`);
+        return;
+      }
+      if (isMulti && !pickedKind && !clickedUnit) {
+        // Shift+click on empty ground does not clear — keeps current multi selection
+        return;
+      }
+
       if (clickedEquipment) {
         // Phase 2: installed machines are inspectable too — highest priority.
+        const next: ConstructionSelection = { ...emptySelection(), equipment: [clickedEquipment.id] };
+        setConstructionSelection(next);
         SoundManager.playClick();
         setSelectedBasinId(null);
         setSelectedUtilityId(null);
@@ -894,7 +975,7 @@ export const App: React.FC = () => {
         setSelectedEquipmentId(clickedEquipment.id);
         setGameState(prev => ({ ...prev, selectedUnitId: null }));
         sm.syncEquipment(
-          gs.processEquipment ?? [], gs.customBasins ?? [], clickedEquipment.id,
+          gs.processEquipment ?? [], gs.customBasins ?? [], new Set([clickedEquipment.id]),
           poweredEquipmentIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
           aeratedDiffuserIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
           filtrationLiveSets(gs.customBasins ?? [], gs.processEquipment ?? [], gs.utilityConnections ?? [], gs.customBaffles ?? [])
@@ -910,19 +991,21 @@ export const App: React.FC = () => {
             ? aeratedDiffuserIds(gs.processEquipment ?? [], gs.utilityConnections ?? []).has(clickedEquipment.id)
             : poweredEquipmentIds(gs.processEquipment ?? [], gs.utilityConnections ?? []).has(clickedEquipment.id);
           const status = isDiffuser ? (live ? 'aerated ✓' : 'not aerated — needs air pipe from powered blower') : (eq.powerKw === 0 ? 'passive' : (live ? 'powered ✓' : 'UNPOWERED — needs Power cable'));
-          setToast(`${eq.name} — ${status} — $${eq.capexUsd.toLocaleString()} · ${eq.powerKw} kW · ${eq.blurb} Move/Rotate in panel — Demolish to remove.`);
+          setToast(`${eq.name} — ${status} — $${eq.capexUsd.toLocaleString()} · ${eq.powerKw} kW · ${eq.blurb} Shift+Click to multi-select · Move/Rotate in panel.`);
         } else {
-          setToast('Installed equipment. Move/Rotate in panel — Demolish to remove.');
+          setToast('Installed equipment. Shift+Click to add to selection.');
         }
       } else if (clickedBaffle) {
         // Phase 5: baffle walls are inspectable (above utility but below equipment)
+        const next: ConstructionSelection = { ...emptySelection(), baffles: [clickedBaffle.id] };
+        setConstructionSelection(next);
         SoundManager.playClick();
         setSelectedBasinId(null);
         setSelectedEquipmentId(null);
         setSelectedUtilityId(null);
         setSelectedBaffleId(clickedBaffle.id);
         setGameState(prev => ({ ...prev, selectedUnitId: null }));
-        sm.syncBaffles(gs.customBaffles ?? [], gs.customBasins ?? [], clickedBaffle.id);
+        sm.syncBaffles(gs.customBaffles ?? [], gs.customBasins ?? [], new Set([clickedBaffle.id]));
         sm.syncBasins(gs.customBasins ?? [], null);
         sm.syncEquipment(
           gs.processEquipment ?? [], gs.customBasins ?? [], null,
@@ -933,8 +1016,10 @@ export const App: React.FC = () => {
         sm.syncUtilityConnections(gs.utilityConnections ?? [], null);
         const basinOf = gs.customBasins?.find(b => b.id === clickedBaffle.basinId);
         const len = basinOf ? (clickedBaffle.orientation === 'vertical' ? basinOf.h : basinOf.w) * 6 : 0;
-        setToast(`${clickedBaffle.orientation === 'vertical' ? 'Vertical' : 'Horizontal'} baffle · ${len} m wall in ${basinOf ? `${basinOf.w}×${basinOf.h}` : 'basin'} · offset ${clickedBaffle.offsetTiles}. Demolish to remove.`);
+        setToast(`${clickedBaffle.orientation === 'vertical' ? 'Vertical' : 'Horizontal'} baffle · ${len} m wall in ${basinOf ? `${basinOf.w}×${basinOf.h}` : 'basin'} · offset ${clickedBaffle.offsetTiles}. Shift+Click to add more.`);
       } else if (clickedUtility) {
+        const next: ConstructionSelection = { ...emptySelection(), utilities: [clickedUtility.id] };
+        setConstructionSelection(next);
         SoundManager.playClick();
         setSelectedBasinId(null);
         setSelectedEquipmentId(null);
@@ -949,17 +1034,19 @@ export const App: React.FC = () => {
           aeratedDiffuserIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
           filtrationLiveSets(gs.customBasins ?? [], gs.processEquipment ?? [], gs.utilityConnections ?? [], gs.customBaffles ?? [])
         );
-        sm.syncUtilityConnections(gs.utilityConnections ?? [], clickedUtility.id);
+        sm.syncUtilityConnections(gs.utilityConnections ?? [], new Set([clickedUtility.id]));
         const util = UTILITY_TYPES[clickedUtility.type];
-        setToast(`${util.name}: (${clickedUtility.ax},${clickedUtility.ay}) → (${clickedUtility.bx},${clickedUtility.by}) · ${util.blurb} Switch to Demolish to remove.`);
+        setToast(`${util.name}: (${clickedUtility.ax},${clickedUtility.ay}) → (${clickedUtility.bx},${clickedUtility.by}) · ${util.blurb} Shift+Click to add more.`);
       } else if (clickedBasin) {
+        const next: ConstructionSelection = { ...emptySelection(), basins: [clickedBasin.id] };
+        setConstructionSelection(next);
         SoundManager.playClick();
         setSelectedEquipmentId(null);
         setSelectedUtilityId(null);
         setSelectedBaffleId(null);
         setSelectedBasinId(clickedBasin.id);
         setGameState(prev => ({ ...prev, selectedUnitId: null }));
-        sm.syncBasins(gs.customBasins ?? [], clickedBasin.id);
+        sm.syncBasins(gs.customBasins ?? [], new Set([clickedBasin.id]));
         sm.syncBaffles(gs.customBaffles ?? [], gs.customBasins ?? [], null);
         sm.syncEquipment(
           gs.processEquipment ?? [], gs.customBasins ?? [], null,
@@ -979,9 +1066,10 @@ export const App: React.FC = () => {
           const healthy = zones.length - septicZones;
           zoneHealth = septicZones>0 ? ` — ${healthy}/${zones.length} zones mixed, ${septicZones} septic` : ` — ${zones.length} zones, all mixed`;
         }
-        setToast(`Custom Basin: ${clickedBasin.w}×${clickedBasin.h} (${area}m², ${vol.toLocaleString()}m³, depth ${clickedBasin.depthM}m) · ${zones.length} zone${zones.length>1?'s':''}${zoneHealth}. Drag handles in panel to resize — depth slider to retune.`);
+        setToast(`Custom Basin: ${clickedBasin.w}×${clickedBasin.h} (${area}m², ${vol.toLocaleString()}m³, depth ${clickedBasin.depthM}m) · ${zones.length} zone${zones.length>1?'s':''}${zoneHealth}. Shift+Click to add to selection.`);
       } else if (clickedUnit) {
         SoundManager.playClick();
+        setConstructionSelection(emptySelection());
         setSelectedBasinId(null);
         setSelectedEquipmentId(null);
         setSelectedUtilityId(null);
@@ -989,7 +1077,18 @@ export const App: React.FC = () => {
         setGameState(prev => ({ ...prev, selectedUnitId: clickedUnit.instanceId }));
         const def = UNIT_DEFINITIONS[clickedUnit.typeId];
         setToast(`Inspecting (legacy): ${def?.name ?? clickedUnit.typeId} — prefab, Inspect-only heritage`);
+        // Clear construction highlights when inspecting legacy
+        sm.syncBasins(gs.customBasins ?? [], null);
+        sm.syncBaffles(gs.customBaffles ?? [], gs.customBasins ?? [], null);
+        sm.syncUtilityConnections(gs.utilityConnections ?? [], null);
+        sm.syncEquipment(
+          gs.processEquipment ?? [], gs.customBasins ?? [], null,
+          poweredEquipmentIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
+          aeratedDiffuserIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
+          filtrationLiveSets(gs.customBasins ?? [], gs.processEquipment ?? [], gs.utilityConnections ?? [], gs.customBaffles ?? [])
+        );
       } else {
+        setConstructionSelection(emptySelection());
         setSelectedBasinId(null);
         setSelectedEquipmentId(null);
         setSelectedUtilityId(null);
@@ -1580,6 +1679,33 @@ export const App: React.FC = () => {
         const k = e.key.toLowerCase();
         if (k === 'z' && !e.shiftKey) { e.preventDefault(); handleUndo(); return; }
         if (k === 'y' || (k === 'z' && e.shiftKey)) { e.preventDefault(); handleRedo(); return; }
+        if (k === 'a' && toolModeRef.current === 'select') {
+          e.preventDefault();
+          const gs = gsRef.current;
+          const all: ConstructionSelection = {
+            basins: (gs.customBasins ?? []).map(b => b.id),
+            equipment: (gs.processEquipment ?? []).map(e => e.id),
+            baffles: (gs.customBaffles ?? []).map(b => b.id),
+            utilities: (gs.utilityConnections ?? []).map(c => c.id),
+          };
+          if (selectionCount(all) === 0) { setToast('Nothing to select — build a basin first.'); return; }
+          setConstructionSelection(all);
+          setSelectedBasinId(all.basins[0] ?? null);
+          setSelectedEquipmentId(all.equipment[0] ?? null);
+          setSelectedBaffleId(all.baffles[0] ?? null);
+          setSelectedUtilityId(all.utilities[0] ?? null);
+          setGameState(prev => ({ ...prev, selectedUnitId: null }));
+          sceneRef.current?.syncBasins(gs.customBasins ?? [], basinIdsSet(all));
+          sceneRef.current?.syncBaffles(gs.customBaffles ?? [], gs.customBasins ?? [], baffleIdsSet(all));
+          sceneRef.current?.syncUtilityConnections(gs.utilityConnections ?? [], utilityIdsSet(all));
+          sceneRef.current?.syncEquipment(gs.processEquipment ?? [], gs.customBasins ?? [], equipmentIdsSet(all),
+            poweredEquipmentIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
+            aeratedDiffuserIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
+            filtrationLiveSets(gs.customBasins ?? [], gs.processEquipment ?? [], gs.utilityConnections ?? [], gs.customBaffles ?? []));
+          SoundManager.playClick();
+          setToast(`${selectionCount(all)} selected — ${selectionSummaryLine(all)} — press Delete to bulk demolish.`);
+          return;
+        }
       }
 
       switch (e.key) {
@@ -1596,6 +1722,11 @@ export const App: React.FC = () => {
           setToast('Rotated placement direction.');
           break;
         case 'Escape':
+          if (selectionCount(constructionSelectionRef.current) > 1) {
+            clearConstructionSelection();
+            setToast('Selection cleared.');
+            break;
+          }
           if (movingEquipmentIdRef.current) {
             cancelEquipmentMove();
           } else if (toolModeRef.current === 'connect_pipe' && pipeSourceRef.current) {
@@ -1624,6 +1755,7 @@ export const App: React.FC = () => {
             setSelectedBasinId(null);
             setSelectedUtilityId(null);
             setSelectedBaffleId(null);
+            setConstructionSelection(emptySelection());
             // clear construction selection hl with Phase 4 powered status
             sceneRef.current?.syncBasins(gsRef.current.customBasins ?? [], null);
             sceneRef.current?.syncBaffles(gsRef.current.customBaffles ?? [], gsRef.current.customBasins ?? [], null);
@@ -1637,6 +1769,43 @@ export const App: React.FC = () => {
             setToast('Select mode — click a unit to inspect.');
           }
           break;
+        case 'Delete':
+        case 'Backspace': {
+          const sel = constructionSelectionRef.current;
+          if (selectionCount(sel) > 0 && toolModeRef.current === 'select') {
+            e.preventDefault();
+            const gs = gsRef.current;
+            pushHistory(gs);
+            const res = GameManager.bulkDemolish(gs, sel);
+            if (!res.success) {
+              SoundManager.playWarning();
+              undoStackRef.current.pop();
+              setToast(res.reason ?? 'Cannot bulk demolish.');
+              break;
+            }
+            setConstructionSelection(emptySelection());
+            setSelectedBasinId(null);
+            setSelectedEquipmentId(null);
+            setSelectedBaffleId(null);
+            setSelectedUtilityId(null);
+            setGameState(prev => ({ ...prev, selectedUnitId: null }));
+            setGameState(res.newState);
+            sceneRef.current?.syncBasins(res.newState.customBasins ?? [], null);
+            sceneRef.current?.syncBaffles(res.newState.customBaffles ?? [], res.newState.customBasins ?? [], null);
+            sceneRef.current?.syncUtilityConnections(res.newState.utilityConnections ?? [], null);
+            sceneRef.current?.syncEquipment(
+              res.newState.processEquipment ?? [], res.newState.customBasins ?? [], null,
+              poweredEquipmentIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
+              aeratedDiffuserIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
+              filtrationLiveSets(res.newState.customBasins ?? [], res.newState.processEquipment ?? [], res.newState.utilityConnections ?? [], res.newState.customBaffles ?? [])
+            );
+            SoundManager.playDemolish();
+            const r = res.removed!;
+            const refund = res.refunded ?? 0;
+            setToast(`Bulk demolished: ${r.basins} basins · ${r.equipment} machines · ${r.baffles} baffles · ${r.utilities} utilities` + (refund ? ` — salvage $${refund.toLocaleString()}` : '') + ' (Ctrl+Z to undo)');
+          }
+          break;
+        }
         case 'w': case 'ArrowUp':    cam?.pan(0, -90);  break;
         case 's': case 'ArrowDown':  cam?.pan(0,  90);  break;
         case 'a': case 'ArrowLeft':  cam?.pan(-90, 0);  break;
@@ -1742,10 +1911,49 @@ export const App: React.FC = () => {
   // ─────────────────────────────────────────────────────────────────────────────
   // LEVEL CHANGE
   // ─────────────────────────────────────────────────────────────────────────────
+  const handleBulkDemolish = useCallback(() => {
+    const gs = gsRef.current;
+    const sel = constructionSelectionRef.current;
+    if (selectionCount(sel) === 0) { setToast('Nothing selected — Shift+Click basins, machines, baffles or utilities.'); return; }
+    pushHistory(gs);
+    const res = GameManager.bulkDemolish(gs, sel);
+    if (!res.success) {
+      SoundManager.playWarning();
+      undoStackRef.current.pop();
+      setToast(res.reason ?? 'Cannot bulk demolish.');
+      return;
+    }
+    setConstructionSelection(emptySelection());
+    setSelectedBasinId(null);
+    setSelectedEquipmentId(null);
+    setSelectedBaffleId(null);
+    setSelectedUtilityId(null);
+    setGameState(prev => ({ ...prev, selectedUnitId: null }));
+    setGameState(res.newState);
+    sceneRef.current?.syncBasins(res.newState.customBasins ?? [], null);
+    sceneRef.current?.syncBaffles(res.newState.customBaffles ?? [], res.newState.customBasins ?? [], null);
+    sceneRef.current?.syncUtilityConnections(res.newState.utilityConnections ?? [], null);
+    sceneRef.current?.syncEquipment(
+      res.newState.processEquipment ?? [], res.newState.customBasins ?? [], null,
+      poweredEquipmentIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
+      aeratedDiffuserIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
+      filtrationLiveSets(res.newState.customBasins ?? [], res.newState.processEquipment ?? [], res.newState.utilityConnections ?? [], res.newState.customBaffles ?? [])
+    );
+    SoundManager.playDemolish();
+    const r = res.removed!;
+    const refund = res.refunded ?? 0;
+    setToast(`Bulk demolished: ${r.basins} basins · ${r.equipment} machines · ${r.baffles} baffles · ${r.utilities} utilities` + (refund ? ` — salvage $${refund.toLocaleString()}` : '') + ' (Ctrl+Z to undo)');
+  }, [pushHistory]);
+
   const handleSelectLevel = useCallback((levelIndex: number, isSandbox: boolean) => {
     undoStackRef.current = [];
     redoStackRef.current = [];
     setMovingEquipmentId(null);
+    setConstructionSelection(emptySelection());
+    setSelectedBasinId(null);
+    setSelectedEquipmentId(null);
+    setSelectedBaffleId(null);
+    setSelectedUtilityId(null);
     sceneRef.current?.terrainGrid.setGhostPreview(0, 0, 1, 1, true, false);
     const next = GameManager.createInitialState(levelIndex, isSandbox);
     setGameState(next);
@@ -2013,6 +2221,17 @@ export const App: React.FC = () => {
       <ConstructionStatusChip stats={GameManager.constructionStats(gameState)} zoneStats={GameManager.basinZoneStats(gameState)} />
       {/* ── Phase 7: emergent process recognition badges (descriptive, read-only) ── */}
       <ProcessBadgeStrip badges={recognizeProcess(gameState.customBasins ?? [], gameState.customBaffles ?? [], gameState.processEquipment ?? [], gameState.utilityConnections ?? [])} />
+      {/* ── P4: multi-select bulk action bar (grouping cues + bulk demolish) ── */}
+      <BulkActionBar
+        selection={constructionSelection}
+        refundEstimate={(() => {
+          if (selectionCount(constructionSelection) <= 1) return 0;
+          const r = GameManager.bulkDemolish(gameState, constructionSelection);
+          return r.refunded ?? 0;
+        })()}
+        onBulkDemolish={handleBulkDemolish}
+        onClear={clearConstructionSelection}
+      />
 
       {/* ── Unit Inspector ──────────────────────────────────────────────────── */}
       {selectedUnit && (
@@ -2040,7 +2259,7 @@ export const App: React.FC = () => {
       )}
 
       {/* ── P1: Basin Inspector — direct depth + footprint editing + in-world dimensions ── */}
-      {selectedBasinId && (() => {
+      {selectedBasinId && selectionCount(constructionSelection) <= 1 && (() => {
         const basin = gameState.customBasins?.find(b => b.id === selectedBasinId);
         if (!basin) return null;
         const zoneCount = GameManager.zonesForBasin(gameState, basin.id).length || 1;
@@ -2125,7 +2344,7 @@ export const App: React.FC = () => {
       })()}
 
       {/* ── Phase 4: installed equipment inspector (power + aeration live status) ── */}
-      {selectedEquipmentId && (() => {
+      {selectedEquipmentId && selectionCount(constructionSelection) <= 1 && (() => {
         const item = gameState.processEquipment?.find(e => e.id === selectedEquipmentId);
         if (!item) return null;
         const powered = poweredEquipmentIds(gameState.processEquipment ?? [], gameState.utilityConnections ?? []).has(item.id);
@@ -2227,7 +2446,7 @@ export const App: React.FC = () => {
       })()}
 
       {/* ── Phase 5: baffle inspector (interior compartment wall) ── */}
-      {selectedBaffleId && (() => {
+      {selectedBaffleId && selectionCount(constructionSelection) <= 1 && (() => {
         const baffle = gameState.customBaffles?.find(b => b.id === selectedBaffleId);
         if (!baffle) return null;
         const basin = gameState.customBasins?.find(b => b.id === baffle.basinId);
