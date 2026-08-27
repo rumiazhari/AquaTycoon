@@ -77,6 +77,8 @@ export interface GameFinancials {
   dailySeasonalBonus?: number;
   /** Biosolids fertilizer offtake premium for closed sludge loop (USD/day) — tycoon iter 46. */
   dailyBiosolidsBonus?: number;
+  /** Green energy dividend for ≥50% self-sufficiency (USD/day) — tycoon iter 47. */
+  dailyGreenBonus?: number;
   totalTreatedM3: number;
   netDailyProfit: number;
 }

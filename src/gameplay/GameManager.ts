@@ -64,6 +64,10 @@ import {
   sludgeCircularBonusPerDay,
   sludgeCircularLabel,
 } from '../design/SludgeCircular';
+import {
+  greenDividendBonusPerDay,
+  greenDividendLabel,
+} from '../design/GreenDividend';
 
 /**
  * Municipal overdraft financing — tycoon polish iter 39.
@@ -256,6 +260,7 @@ export class GameManager {
       dailyTrustBonus: 0,
       dailySeasonalBonus: 0,
       dailyBiosolidsBonus: 0,
+      dailyGreenBonus: 0,
       totalTreatedM3: 0,
       netDailyProfit: 0
     };
@@ -960,6 +965,36 @@ export class GameManager {
         simResult.financials.dailyBiosolidsBonus = 0;
         if (simResult.overallStats.activeAlerts.some(a => a.id === 'biosolids_bonus')) {
           simResult.overallStats.activeAlerts = simResult.overallStats.activeAlerts.filter(a => a.id !== 'biosolids_bonus');
+        }
+      }
+    }
+
+    // ── TYCOON GREEN DIVIDEND iter 47 — energy independence subsidy ──────────
+    // City pays a tariff premium when the plant is ≥50% self-sufficient
+    // (biogas CHP + solar + wind offsetting demand). Flow×tariff×8% gated on
+    // selfPct>=50, flow>10, tariff>0. Stacks with all other dividends.
+    {
+      const flowG = simResult.finalEffluent.flowRate;
+      const selfPct = simResult.overallStats.energySelfSufficiencyPercent;
+      const tariffG = state.currentLevel.tariffPerM3;
+      const bonus = greenDividendBonusPerDay(flowG, tariffG, selfPct);
+      if (bonus > 0.5 && flowG > 10) {
+        simResult.financials.dailyGreenBonus = bonus;
+        simResult.financials.dailyRevenue += bonus;
+        simResult.financials.netDailyProfit += bonus;
+        const label = greenDividendLabel(selfPct);
+        if (!simResult.overallStats.activeAlerts.some(a => a.id === 'green_bonus')) {
+          simResult.overallStats.activeAlerts.push({
+            id: 'green_bonus',
+            type: 'success' as const,
+            message: `Green energy dividend: +$${bonus.toFixed(0)}/d subsidy (${label} — ${Math.round(selfPct)}% self-sufficiency offsets grid!)`,
+            timestamp: Date.now(),
+          });
+        }
+      } else {
+        simResult.financials.dailyGreenBonus = 0;
+        if (simResult.overallStats.activeAlerts.some(a => a.id === 'green_bonus')) {
+          simResult.overallStats.activeAlerts = simResult.overallStats.activeAlerts.filter(a => a.id !== 'green_bonus');
         }
       }
     }
