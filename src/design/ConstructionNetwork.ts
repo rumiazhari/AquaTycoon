@@ -150,6 +150,11 @@ export interface ConstructionStats {
   poweredRoSkids: number;
   totalBrineTanks: number;
   poweredBrineTanks: number;
+  /** TYCOON CHP — construction-built biogas engine (ground, needs grid cable) */
+  totalChpUnits: number;
+  poweredChpUnits: number;
+  totalChpSkids: number;
+  poweredChpSkids: number;
   /** Nameplate power of *powered* machines only (kW) — what the grid actually feeds. */
   livePowerKw: number;
   /** Nameplate power of all installed machines (kW). */
@@ -221,6 +226,10 @@ export function constructionStats(
     poweredRoSkids: equipment.filter(e => e.typeId === 'ro_skid' && powered.has(e.id)).length,
     totalBrineTanks: equipment.filter(e => e.typeId === 'brine_tank').length,
     poweredBrineTanks: equipment.filter(e => e.typeId === 'brine_tank' && powered.has(e.id)).length,
+    totalChpUnits: equipment.filter(e => e.typeId === 'biogas_chp_skid').length,
+    poweredChpUnits: equipment.filter(e => e.typeId === 'biogas_chp_skid' && powered.has(e.id)).length,
+    totalChpSkids: equipment.filter(e => e.typeId === 'biogas_chp_skid').length,
+    poweredChpSkids: equipment.filter(e => e.typeId === 'biogas_chp_skid' && powered.has(e.id)).length,
     livePowerKw,
     installedPowerKw,
     liveOpexPerDay,
@@ -241,6 +250,7 @@ export function constructionSummaryLine(s: ConstructionStats): string {
   if (s.totalSensors > 0) parts.push(`${s.poweredSensors}/${s.totalSensors} sensors live`);
   if (s.totalChemicalUnits > 0) parts.push(`${s.poweredChemicalUnits}/${s.totalChemicalUnits} dosing live`);
   if (s.totalRoUnits > 0) parts.push(`${s.poweredRoUnits}/${s.totalRoUnits} RO live`);
+  if (s.totalChpUnits > 0) parts.push(`${s.poweredChpUnits}/${s.totalChpUnits} CHP live`);
   if (s.totalUtilityConnections > 0) parts.push(`${s.totalUtilityConnections} utility line${s.totalUtilityConnections > 1 ? 's' : ''}`);
   if (parts.length === 0) return 'No custom construction yet — draw a basin to start.';
   return parts.join(' · ');

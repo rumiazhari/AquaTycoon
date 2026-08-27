@@ -1081,6 +1081,7 @@ export class SceneManager {
       const isDosing = it.typeId === 'chemical_dosing_pump';
       const isRoSkid = it.typeId === 'ro_skid';
       const isBrine = it.typeId === 'brine_tank';
+      const isChp = it.typeId === 'biogas_chp_skid';
       const isPowered = !poweredIds || poweredIds.has(it.id);
       const isAerated = !aeratedIds || !isDiffuser || aeratedIds.has(it.id);
       // Phase 6 slice 2 filtration status for tinting
@@ -1178,6 +1179,15 @@ export class SceneManager {
               } else {
                 m.emissive.setHex(0xd97706);
                 m.emissiveIntensity = 0.42;
+              }
+            } else if (isChp) {
+              // CHP engine: powered = green biogas shimmer (sludge→energy), unpowered = dark red
+              if (!isPowered) {
+                m.emissive.setHex(0x5a1a1a);
+                m.emissiveIntensity = 0.52;
+              } else {
+                m.emissive.setHex(0x16a34a);
+                m.emissiveIntensity = 0.52;
               }
             } else if (isDiffuser) {
               // Diffusers: aerated = blue shimmer, idle = no glow
@@ -1543,6 +1553,48 @@ export class SceneManager {
         const discharge = add(new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.11, 0.85, 10), steel));
         discharge.rotation.z = Math.PI / 2;
         discharge.position.set(1.15, 0.62, 0);
+        break;
+      }
+      case 'biogas_chp_skid': {
+        // Containerised biogas CHP engine: 20-ft ISO container with exhaust
+        // stack, radiator, and gas train — the sludge→energy closer.
+        // Distinct emergency-green / yellow genset palette.
+        const containerMat = new THREE.MeshStandardMaterial({ color: 0x16a34a, roughness: 0.5, metalness: 0.15 });
+        const yellowMat = new THREE.MeshStandardMaterial({ color: 0xfacc15, roughness: 0.4 });
+        const exhaustMat = new THREE.MeshStandardMaterial({ color: 0x44403c, roughness: 0.7, metalness: 0.55 });
+        (containerMat as any)._equipBase = true;
+        (yellowMat as any)._equipBase = true;
+        const base = add(new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.28, 2.0), plinth));
+        base.position.set(0, 0.14, 0);
+        const container = add(new THREE.Mesh(new THREE.BoxGeometry(2.8, 1.25, 1.55), containerMat));
+        container.position.set(0, 0.92, 0);
+        // Yellow genset doors + vents
+        const door = add(new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.95, 1.2), yellowMat));
+        door.position.set(1.41, 0.92, 0);
+        for (let i = 0; i < 3; i++) {
+          const vent2 = add(new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.08, 0.22), dark));
+          vent2.position.set(-0.75 + i * 0.75, 1.05, 0.80);
+        }
+        // Exhaust stack with heat shimmer hint
+        const stack = add(new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 1.1, 14), exhaustMat));
+        stack.position.set(-0.95, 1.95, -0.45);
+        const stackCap = add(new THREE.Mesh(new THREE.ConeGeometry(0.20, 0.18, 14), dark));
+        stackCap.position.set(-0.95, 2.55, -0.45);
+        // Radiator at rear
+        const radiator = add(new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.65, 1.35), dark));
+        radiator.position.set(1.05, 0.92, 0);
+        const fan = add(new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, 0.12, 16), steel));
+        fan.rotation.x = Math.PI / 2;
+        fan.position.set(1.33, 0.92, 0);
+        // Small control cabinet + green status lamp
+        const cabinet = add(new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.55, 0.32), dark));
+        cabinet.position.set(0, 0.58, 0.95);
+        const lamp = add(new THREE.Mesh(new THREE.SphereGeometry(0.07, 8, 6), new THREE.MeshStandardMaterial({ color: 0x22c55e, emissive: 0x16a34a, emissiveIntensity: 0.9 })));
+        lamp.position.set(0, 0.88, 1.11);
+        // Gas inlet pipe stub
+        const gasPipe = add(new THREE.Mesh(new THREE.CylinderGeometry(0.10, 0.10, 0.9, 10), yellowMat));
+        gasPipe.rotation.z = Math.PI / 2;
+        gasPipe.position.set(-1.70, 0.62, -0.15);
         break;
       }
       default: {

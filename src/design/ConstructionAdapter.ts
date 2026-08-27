@@ -78,6 +78,26 @@ export const RO_BRINE_RECOVERY_RATIO = 0.75;
 export const RO_BRINE_DISPOSAL_COST_PER_M3_HANDLED = 0.005;
 export const RO_BRINE_DISPOSAL_COST_PER_M3_UNHANDLED = 0.022;
 
+/**
+ * TYCOON CHP iter 57 — sludge→energy circular: construction-built biogas engine.
+ * Each powered biogas_chp_skid on open ground (needs a power_cable to be grid-
+ * connected) burns digester biogas to generate green electricity.
+ * Generation is gated on: at least one basin exists, plant flow >10 m³/d,
+ * and a legacy anaerobic_digester is present on site (sludge loop closed).
+ * One skid ≈ 14 kW green (covers ~$50/d avoided grid at $0.15/kWh).
+ * 2 skids ≈ 28 kW, 3 skids ≈ 42 kW — enough to push a typical 80–100 kW plant
+ * over the 50% self-sufficiency line when combined with legacy digester + solar.
+ * Parasitic draw is already counted in livePowerKw (1.8 kW per skid); green is
+ * reported separately as extraGreenKw and added to totalGreenGenerationKw.
+ */
+export const CHP_GREEN_KW_PER_SKID = 14;
+export const CHP_CHP_CAPE_PARASITIC_KW = 1.8; // already in EQUIPMENT_TYPES powerKw — informational
+
+export function chpGreenKw(liveChpSkids: number): number {
+  if (!Number.isFinite(liveChpSkids) || liveChpSkids <= 0) return 0;
+  return liveChpSkids * CHP_GREEN_KW_PER_SKID;
+}
+
 export function brineDisposalOpexPerDay(liveRoSkids: number, poweredBrineTanks: number, flowM3d: number): number {
   if (liveRoSkids <= 0 || flowM3d <= 0) return 0;
   const handled = Math.min(liveRoSkids, Math.max(0, poweredBrineTanks));
@@ -170,6 +190,11 @@ export interface ConstructionTickEffect {
   liveRoSkids: number;
   totalBrineTanks: number;
   poweredBrineTanks: number;
+  /** TYCOON CHP iter 57 — construction-built biogas engine (sludge→energy). */
+  totalChpSkids: number;
+  poweredChpSkids: number;
+  liveChpSkids: number;
+  extraGreenKw: number;
   /** TYCOON DIVIDEND iter 43 — reclaimed water premium (potable reuse). */
   reuseBonusPerDay: number;
   reuseBonusRate: number;
@@ -213,6 +238,7 @@ function mixerInZone(
  * reagent consumable cost. Default 0 keeps backward compat (no reagent).
  * @param tariffPerM3 optional iter 43 — level tariff for reclaimed water bonus.
  * @param effluent optional iter 43 — polished effluent for bonus quality gate.
+ * @param hasDigester optional iter 57 — legacy sludge loop closure for CHP green generation (true when a digester exists on site). Default false keeps pure tests green.
  */
 export function evaluateConstructionEffects(
   basins: CustomBasin[],
@@ -222,6 +248,7 @@ export function evaluateConstructionEffects(
   flowM3d: number = 0,
   tariffPerM3: number = 0,
   effluent?: { tss: number; pathogens: number; turbidity: number; toxicIndex: number } | null,
+  hasDigester: boolean = false,
 ): ConstructionTickEffect {
   const bs = basins ?? [];
   const eq = equipment ?? [];
@@ -614,6 +641,18 @@ export function evaluateConstructionEffects(
   const handledBrineSkids = brineHandling.handledBrineSkids;
   const unhandledBrineSkids = brineHandling.unhandledBrineSkids;
 
+  // ── TYCOON CHP iter 57 — sludge→energy circular (construction-built biogas engine) ──
+  // Each powered biogas_chp_skid on open ground (needs power_cable grid connection)
+  // generates green kW when the plant has a legacy digester, basins, and flow.
+  // Zero construction / no digester / no flow → 0 green (backward compat).
+  const totalChpSkids = eq.filter(e => e.typeId === 'biogas_chp_skid').length;
+  const poweredChpSkids = (() => {
+    const pSet = poweredEquipmentIds(eq as any, uc as any);
+    return eq.filter(e => e.typeId === 'biogas_chp_skid' && pSet.has(e.id)).length;
+  })();
+  const liveChpSkids = (bs.length > 0 && hasDigester && flowM3d > 10) ? poweredChpSkids : 0;
+  const extraGreenKw = chpGreenKw(liveChpSkids);
+
   // ── TYCOON DIVIDEND iter 43 — reclaimed water premium (potable reuse) ──────
   // Bonus is effluent-quality-gated and flow-scaled; only live when the polished
   // effluent is already reclaimed-grade (rewards upstream + RO investment).
@@ -650,6 +689,8 @@ export function evaluateConstructionEffects(
   }
   if (bs.length > 0 && liveRoSkids > 0) parts.push(`${liveRoSkids} RO skid${liveRoSkids>1?'s':''} polishing`);
   else if (bs.length > 0 && poweredRoSkids > 0) parts.push(`${poweredRoSkids} RO skid${poweredRoSkids>1?'s':''} dormant`);
+  if (liveChpSkids > 0) parts.push(`${liveChpSkids} CHP live (${extraGreenKw} kW green)`);
+  else if (poweredChpSkids > 0) parts.push(`${poweredChpSkids} CHP dormant${hasDigester ? '' : ' — needs digester'}`);
   if (extraPowerKw > 0) parts.push(`${extraPowerKw} kW live`);
   if (reagentOpexPerDay > 0) parts.push(`$${Math.round(reagentOpexPerDay)}/d reagent`);
   if (brineOpexPerDay > 0) {
@@ -701,6 +742,10 @@ export function evaluateConstructionEffects(
     liveRoSkids,
     totalBrineTanks,
     poweredBrineTanks,
+    totalChpSkids,
+    poweredChpSkids,
+    liveChpSkids,
+    extraGreenKw,
     reuseBonusPerDay,
     reuseBonusRate,
     bodMultiplier: bodMul,

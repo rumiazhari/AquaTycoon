@@ -372,6 +372,27 @@ export function recognizeProcess(
     }
   }
 
+  // ── 13. TYCOON CHP — sludge→energy circular (biogas engine on digester biogas) ──
+  {
+    const chpItems = eq.filter(e => e.typeId === 'biogas_chp_skid');
+    const poweredChp = chpItems.filter(e => poweredSet.has(e.id)).length;
+    if (poweredChp > 0) {
+      badges.push({
+        id: 'chp-live',
+        label: 'Sludge→Energy (CHP live)',
+        detail: `${poweredChp} CHP skid${poweredChp>1?'s':''} live — biogas to ${poweredChp * 14} kW green (needs digester + basin + flow)`,
+        tone: 'emerald',
+      });
+    } else if (chpItems.length > 0) {
+      badges.push({
+        id: 'chp-dormant',
+        label: 'CHP (dormant)',
+        detail: `${chpItems.length} CHP skid${chpItems.length>1?'s':''} — needs Power cable on tile`,
+        tone: 'amber',
+      });
+    }
+  }
+
   return badges;
 }
 

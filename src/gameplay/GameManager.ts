@@ -675,12 +675,17 @@ export class GameManager {
     {
       // Reagent cost is flow-scaled — solve the plant first, then ask what it really costs to treat that flow
       const flowForReagent = simResult.finalEffluent.flowRate;
+      // CHP green generation needs to know if the sludge loop is closed (digester present)
+      const hasDigesterForChp = simResult.updatedUnits.some(u => u.typeId === 'anaerobic_digester');
       const ce = evaluateConstructionEffects(
         state.customBasins ?? [],
         state.processEquipment ?? [],
         state.utilityConnections ?? [],
         state.customBaffles ?? [],
         flowForReagent,
+        state.currentLevel.tariffPerM3 ?? 0,
+        simResult.finalEffluent as any,
+        hasDigesterForChp,
       );
       const hasFlow = simResult.finalEffluent.flowRate > 10;
       let effChanged = false;
@@ -714,7 +719,8 @@ export class GameManager {
       // RO SLICE 3 adds flow-scaled brine haulage (one powered brine_tank handles one skid cheaply, otherwise premium).
       const reagentCost = (ce as any).reagentOpexPerDay ?? 0;
       const brineCost = (ce as any).brineOpexPerDay ?? 0;
-      if (ce.extraPowerKw !== 0 || ce.extraOpexPerDay !== 0 || reagentCost !== 0 || brineCost !== 0) {
+      const extraGreenKw = (ce as any).extraGreenKw ?? 0;
+      if (ce.extraPowerKw !== 0 || ce.extraOpexPerDay !== 0 || reagentCost !== 0 || brineCost !== 0 || extraGreenKw !== 0) {
         const powerCostPerKwh = 0.15;
         const extraPowerCost = ce.extraPowerKw * 24 * powerCostPerKwh;
         // DailyOpex is power + chemicals/opex. Construction static OPEX is treated like
@@ -728,6 +734,9 @@ export class GameManager {
         simResult.financials.netDailyProfit = simResult.financials.dailyRevenue - simResult.financials.dailyOpex - simResult.financials.dailyFines;
         // Power demand and self-sufficiency
         simResult.overallStats.totalPowerDemandKw += ce.extraPowerKw;
+        if (extraGreenKw !== 0) {
+          simResult.overallStats.totalGreenGenerationKw += extraGreenKw;
+        }
         const gen = simResult.overallStats.totalGreenGenerationKw;
         const dem = simResult.overallStats.totalPowerDemandKw;
         const selfConsumed = Math.min(gen, dem);

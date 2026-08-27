@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, Wind, Trash2, Droplets, Fan, Cog, Waves, AlertTriangle, CheckCircle2, Columns3, ShieldCheck, Hexagon, Gauge, Activity, Ruler, FlaskConical, Beaker, Filter, Cylinder, Move, RotateCw } from 'lucide-react';
+import { X, Wind, Trash2, Droplets, Fan, Cog, Waves, AlertTriangle, CheckCircle2, Columns3, ShieldCheck, Hexagon, Gauge, Activity, Ruler, FlaskConical, Beaker, Filter, Cylinder, Move, RotateCw, Flame } from 'lucide-react';
 import { EQUIPMENT_TYPES } from '../design/ProcessEquipment';
 import type { ProcessEquipmentItem } from '../design/ProcessEquipment';
 import type { BasinZone } from '../design/BasinZone';
@@ -19,6 +19,7 @@ const ICONS: Record<string, React.ComponentType<{ size?: number; className?: str
   chemical_dosing_pump: Beaker,
   ro_skid: Filter,
   brine_tank: Cylinder,
+  biogas_chp_skid: Flame,
 };
 
 interface EquipmentInspectorProps {
@@ -218,6 +219,18 @@ export const EquipmentInspector: React.FC<EquipmentInspectorProps> = ({ item, po
                 <>
                   <span className="text-xs font-bold text-amber-300">Dark — needs a Power cable on this ground tile</span>
                   <span className="text-[11px] text-slate-400">Run a Power cable here to keep the recirculation agitator live (red while dark, amber when active).</span>
+                </>
+              )
+            ) : item.typeId === 'biogas_chp_skid' ? (
+              powered ? (
+                <>
+                  <span className="text-xs font-bold text-emerald-300">CHP live — biogas to green power (emerald shimmer)</span>
+                  <span className="text-[11px] text-slate-400">Containerized CHP burning digester biogas — ~14 kW green when grid-connected via Power cable and sludge loop closed (needs a digester + basin + flow). Stack to push over 50% self-sufficiency for the green dividend.</span>
+                </>
+              ) : (
+                <>
+                  <span className="text-xs font-bold text-amber-300">Dark — needs a Power cable on this ground tile</span>
+                  <span className="text-[11px] text-slate-400">Run a Power cable here to export biogas power (red while dark, emerald when live). Ground-installed outside basins.</span>
                 </>
               )
             ) : needsPower ? (

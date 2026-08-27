@@ -155,6 +155,16 @@ export const EQUIPMENT_TYPES: Record<string, EquipmentTypeDef> = {
     powerKw: 1.5, // agitator/recirc — needs power to handle concentrate
     blurb: 'Ground bunded brine tank. Stores RO concentrate for evaporation/hauling — completes the zero-liquid reuse loop.',
   },
+  // ── TYCOON CHP — sludge→energy circular: construction-built biogas engine ───
+  biogas_chp_skid: {
+    id: 'biogas_chp_skid',
+    name: 'Biogas CHP Engine Skid',
+    mounting: 'ground',
+    capexUsd: 36_500,
+    opexUsdPerDay: 16,
+    powerKw: 1.8, // parasitic controls/parasite — needs a power_cable to be grid-connected; generation is via ConstructionAdapter (green kW)
+    blurb: 'Containerized biogas CHP skid. Burns digester biogas to generate ~14 kW green power when grid-connected via power cable and fed by an anaerobic digester.',
+  },
 };
 
 /** One installed machine. Occupies exactly ONE grid tile. */

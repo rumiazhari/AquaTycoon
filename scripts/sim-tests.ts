@@ -49,6 +49,7 @@ import {
   constructionStats,
   constructionSummaryLine,
 } from '../src/design/ConstructionNetwork';
+import { EQUIPMENT_TYPES } from '../src/design/ProcessEquipment';
 import { evaluateConstructionEffects, filtrationLiveSets, chemicalReagentOpexPerDay, CHEMICAL_REAGENT_COST_PER_M3_PER_PUMP, brineDisposalOpexPerDay, RO_BRINE_DISPOSAL_COST_PER_M3_HANDLED, RO_BRINE_DISPOSAL_COST_PER_M3_UNHANDLED, reclaimedWaterBonusPerDay, RECLAIMED_BONUS_RATE_PER_SKID, RECLAIMED_BONUS_MAX_RATE, RECLAIMED_BONUS_TSS_THRESHOLD, RECLAIMED_BONUS_PATHOGEN_THRESHOLD } from '../src/design/ConstructionAdapter';
 import { seasonalTariffMultiplier, seasonalBonusPerDay, seasonalLabel, SEASONAL_TARIFF_AMPLITUDE } from '../src/design/SeasonalProfile';
 import {
@@ -5828,6 +5829,191 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
   assert(res.success, 'BM06. multi-kind batch success');
   assert(res.removed!.basins === 1 && res.removed!.equipment === 1 && res.removed!.baffles === 1, 'BM06b. removed counts 1+1+1 ('+JSON.stringify(res.removed)+')');
   assert(res.newState.customBasins.length === 1 && res.newState.customBasins[0].id === bid, 'BM06d. correct basin remains');
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// TYCOON CHP — biogas engine (sludge→energy circular) iter 57
+// ═════════════════════════════════════════════════════════════════════════════
+{
+  // CHP01: catalog entry — ground mounting, exact CAPEX/power/opex
+  const def = EQUIPMENT_TYPES['biogas_chp_skid'];
+  assert(!!def, 'CHP01. biogas_chp_skid catalog exists');
+  assert(def.mounting === 'ground', 'CHP01b. CHP is ground-mounted (dry-installed)');
+  assert(def.capexUsd === 36500, 'CHP01c. CAPEX $36.5k exact (got $'+def.capexUsd+')');
+  assert(Math.abs(def.powerKw - 1.8) < 0.01, 'CHP01d. parasitic 1.8 kW (got '+def.powerKw+')');
+  assert(def.opexUsdPerDay === 16, 'CHP01e. OPEX $16/d');
+}
+{
+  // CHP02: ground mounting validated — inside basin rejected, open ground OK
+  let gs = GameManager.createInitialState(0,true);
+  let rr = GameManager.placeCustomBasin(gs, {x:5,y:5,w:3,h:3}); gs=rr.newState;
+  const inside = GameManager.placeProcessEquipment(gs, 'biogas_chp_skid', 6,6);
+  assert(!inside.success && (inside.reason??'').includes('open ground'), 'CHP02. CHP inside basin rejected');
+  const outside = GameManager.placeProcessEquipment(gs, 'biogas_chp_skid', 10,10);
+  assert(outside.success, 'CHP02b. CHP on open ground allowed');
+}
+{
+  // CHP03: tile exclusivity — second CHP on same tile blocked, distinct tile allows
+  let gs = GameManager.createInitialState(0,true);
+  let r1 = GameManager.placeProcessEquipment(gs, 'biogas_chp_skid', 10,10); gs=r1.newState;
+  assert(r1.success, 'CHP03. first CHP placed');
+  const dup = GameManager.placeProcessEquipment(gs, 'biogas_chp_skid', 10,10);
+  assert(!dup.success && (dup.reason??'').includes('already holds'), 'CHP03b. same tile blocked');
+  const distinct = GameManager.placeProcessEquipment(gs, 'biogas_chp_skid', 11,10);
+  assert(distinct.success, 'CHP03c. distinct tile allowed');
+}
+{
+  // CHP04: campaign CAPEX charge + unaffordable rejection, sandbox $0
+  let gs = GameManager.createInitialState(0,false); // campaign L1 budget
+  const chpCapex = EQUIPMENT_TYPES['biogas_chp_skid'].capexUsd;
+  const cashBefore = gs.financials.cash;
+  let r = GameManager.placeProcessEquipment(gs, 'biogas_chp_skid', 10,10); gs=r.newState;
+  assert(r.success && (r.charged??0) === chpCapex, 'CHP04. campaign charges exact $'+chpCapex);
+  assert(gs.financials.cash === cashBefore - chpCapex, 'CHP04b. cash debited');
+  // sandbox pays $0
+  let sbox = GameManager.createInitialState(0,true);
+  let sr = GameManager.placeProcessEquipment(sbox, 'biogas_chp_skid', 10,10); sbox=sr.newState;
+  assert(sr.success && (sr.charged??1) === 0, 'CHP04c. sandbox charge $0');
+  // unaffordable
+  let broke = GameManager.createInitialState(0,false);
+  broke.financials.cash = 100;
+  const poor = GameManager.placeProcessEquipment(broke, 'biogas_chp_skid', 10,10);
+  assert(!poor.success, 'CHP04d. unaffordable CHP rejected');
+}
+{
+  // CHP05: powered model — needs power_cable on its tile; unpowered draws 0 livePower
+  const mkChp = (id:string,x:number,y:number)=>({ id, typeId:'biogas_chp_skid', x, y, createdAtDay:0 } as any);
+  const cable = (ax:number,ay:number,bx:number,by:number)=>({ type:'power_cable', ax, ay, bx, by } as any);
+  const { constructionStats } = await import('../src/design/ConstructionNetwork.js');
+  const chp = mkChp('chp1',10,10);
+  let stNone = constructionStats([], [chp], []);
+  assert(stNone.livePowerKw === 0, 'CHP05. no cable -> livePower 0 (parasitic dark)');
+  assert(stNone.poweredChpSkids === 0, 'CHP05b. poweredChp 0 when dark');
+  let stLive = constructionStats([], [chp], [cable(10,10,20,5)]);
+  assert(stLive.poweredChpSkids === 1, 'CHP05c. cabled -> 1 powered CHP');
+  assert(Math.abs(stLive.livePowerKw - 1.8) < 0.01, 'CHP05d. livePower +1.8 parasitic (got '+stLive.livePowerKw+')');
+  assert(stLive.totalChpSkids === 1, 'CHP05e. totalChp 1');
+}
+{
+  // CHP06: pure ConstructionAdapter — gating on basins + digester + flow
+  const basin = { id:'b1', x:5, y:5, w:3, h:3, depthM:4 } as any;
+  const chp = { id:'chp1', typeId:'biogas_chp_skid', x:10, y:10, createdAtDay:0 } as any;
+  const cable = { type:'power_cable', ax:10, ay:10, bx:20, by:5 } as any;
+  // no basin -> live 0 even if powered+digester+flow
+  let ceNoBasin = evaluateConstructionEffects([], [chp], [cable], [], 3500, 0.45, null as any, true);
+  assert(ceNoBasin.liveChpSkids === 0 && ceNoBasin.extraGreenKw === 0, 'CHP06. no basin -> live 0');
+  // no digester -> 0
+  let ceNoDig = evaluateConstructionEffects([basin], [chp], [cable], [], 3500, 0.45, null as any, false);
+  assert(ceNoDig.liveChpSkids === 0 && ceNoDig.extraGreenKw === 0, 'CHP06b. no digester -> 0');
+  // no flow -> 0
+  let ceNoFlow = evaluateConstructionEffects([basin], [chp], [cable], [], 0, 0.45, null as any, true);
+  assert(ceNoFlow.liveChpSkids === 0 && ceNoFlow.extraGreenKw === 0, 'CHP06c. no flow -> 0');
+  // powered + basin + digester + flow -> live 1 => 14 kW
+  let ceLive = evaluateConstructionEffects([basin], [chp], [cable], [], 3500, 0.45, null as any, true);
+  assert(ceLive.liveChpSkids === 1 && ceLive.extraGreenKw === 14, 'CHP06d. live 1 CHP -> 14 kW green (got '+ceLive.extraGreenKw+')');
+  assert(ceLive.poweredChpSkids === 1, 'CHP06e. powered 1');
+  // unpowered -> 0 even with digester
+  let ceDark = evaluateConstructionEffects([basin], [chp], [], [], 3500, 0.45, null as any, true);
+  assert(ceDark.liveChpSkids === 0 && ceDark.extraGreenKw === 0, 'CHP06f. unpowered -> 0');
+  // two CHP live -> 28 kW stacking
+  const chp2 = { id:'chp2', typeId:'biogas_chp_skid', x:11, y:10, createdAtDay:0 } as any;
+  const cable2 = { type:'power_cable', ax:11, ay:10, bx:20, by:5 } as any;
+  let ceTwo = evaluateConstructionEffects([basin], [chp, chp2], [cable, cable2], [], 3500, 0.45, null as any, true);
+  assert(ceTwo.liveChpSkids === 2 && ceTwo.extraGreenKw === 28, 'CHP06g. 2 live CHP -> 28 kW');
+  // summary includes CHP live
+  assert(ceLive.summary.includes('CHP live'), 'CHP06h. summary has CHP live');
+}
+{
+  // CHP07: ProcessRecognition badges — dormant vs live
+  const { recognizeProcess } = await import('../src/design/ProcessRecognition.js');
+  const basin = { id:'b1', x:5, y:5, w:3, h:3, depthM:4 } as any;
+  const cable = { type:'power_cable', ax:10, ay:10, bx:20, by:5 } as any;
+  const chp = { id:'chp1', typeId:'biogas_chp_skid', x:10, y:10, createdAtDay:0 } as any;
+  // single dark CHP -> dormant amber badge when basin exists
+  let bdDark = recognizeProcess([basin], [], [chp], []);
+  assert(bdDark.some(b=>b.id==='chp-dormant'), 'CHP07. dormant CHP badge when unpowered');
+  let bdLive = recognizeProcess([basin], [], [chp], [cable]);
+  assert(bdLive.some(b=>b.id==='chp-live' && b.tone==='emerald'), 'CHP07b. live CHP emerald badge when powered');
+  // no basin -> no badge (early return)
+  let bdNoBasin = recognizeProcess([], [], [chp], [cable]);
+  assert(bdNoBasin.length === 0, 'CHP07c. no basin -> no badge');
+}
+{
+  // CHP08: basin integrity — ground CHP does NOT block basin demolish (unlike in-basin kit)
+  let gs = GameManager.createInitialState(0,true);
+  let rr = GameManager.placeCustomBasin(gs, {x:5,y:5,w:3,h:3}); gs=rr.newState;
+  const bid = gs.customBasins[0].id;
+  let er = GameManager.placeProcessEquipment(gs, 'biogas_chp_skid', 12,12); gs=er.newState; // ground far from basin
+  assert(er.success, 'CHP08 setup CHP far ground');
+  const demOk = GameManager.demolishCustomBasin(gs, bid);
+  assert(demOk.success, 'CHP08b. ground CHP does not block basin demolish');
+  // in-basin diffuser DOES block
+  let gs2 = GameManager.createInitialState(0,true);
+  let rr2 = GameManager.placeCustomBasin(gs2, {x:5,y:5,w:3,h:3}); gs2=rr2.newState;
+  const b2 = gs2.customBasins[0].id;
+  let er2 = GameManager.placeProcessEquipment(gs2, 'fine_bubble_diffuser', 6,6); gs2=er2.newState;
+  const blocked = GameManager.demolishCustomBasin(gs2, b2);
+  assert(!blocked.success, 'CHP08c. in-basin diffuser DOES block basin demolish');
+}
+{
+  // CHP09: 70% salvage on demolish
+  let gs = GameManager.createInitialState(0,false);
+  let er = GameManager.placeProcessEquipment(gs, 'biogas_chp_skid', 10,10); gs=er.newState;
+  const eid = gs.processEquipment[0].id;
+  const capex = EQUIPMENT_TYPES['biogas_chp_skid'].capexUsd;
+  const expectedRefund = Math.round(capex * 0.7);
+  const cashBefore = gs.financials.cash;
+  const dr = GameManager.demolishProcessEquipment(gs, eid);
+  assert(dr.success && dr.refunded === expectedRefund, 'CHP09. CHP salvage 70% '+dr.refunded+' vs '+expectedRefund);
+  assert(dr.newState.financials.cash === cashBefore + expectedRefund, 'CHP09b. cash refunded');
+  assert(dr.newState.processEquipment.length === 0, 'CHP09c. CHP removed');
+}
+{
+  // CHP10: tick integrates CHP green into totalGreenGenerationKw and self-sufficiency
+  let gs = GameManager.createInitialState(0,true); // sandbox
+  // Place a basin so CHP can be live (basins>0 gate)
+  let rr = GameManager.placeCustomBasin(gs, {x:5,y:5,w:3,h:3}); gs=rr.newState;
+  let er = GameManager.placeProcessEquipment(gs, 'biogas_chp_skid', 12,12); gs=er.newState;
+  let ur = GameManager.placeUtilityConnection(gs, 'power_cable', 12,12, 6,6); gs=ur.newState;
+  assert(ur.success, 'CHP10 setup CHP+ cable');
+  const mkU = (id:string,type:string,x:number,y:number)=>({ instanceId:id, typeId:type, gridX:x, gridY:y, rotation:0, volume:200, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:0, lastOpexActual:0 } as any);
+  const mkP = (id:string,from:string,fp:string,to:string,tp:string,pt='liquid')=>({ id, fromUnitId:from, fromPortId:fp, toUnitId:to, toPortId:tp, pipeType:pt, flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, cachedHydraulics:{ headlossM:0, velocityMps:0, condition:'ok' } } as any);
+  const unitsCHP = [
+    mkU('inl','influent_inlet',2,10),
+    mkU('scr','bar_screen',5,10),
+    mkU('grt','grit_chamber',8,10),
+    mkU('pri','primary_clarifier_circular',11,9),
+    mkU('cas','activated_sludge_cas',15,9),
+    mkU('clr','secondary_clarifier',17,13),
+    mkU('uv','uv_disinfection',20,10),
+    mkU('outf','effluent_outfall',24,10),
+    mkU('thk','sludge_thickener',30,12),
+    mkU('dig','anaerobic_digester',36,0),
+  ];
+  const pipesCHP = [
+    mkP('p_a','inl','outlet','scr','inlet'),
+    mkP('p_b','scr','outlet','grt','inlet'),
+    mkP('p_c','grt','outlet','pri','inlet'),
+    mkP('p_d','pri','outlet','cas','inlet'),
+    mkP('p_e','cas','outlet','clr','inlet'),
+    mkP('p_f','clr','outlet','uv','inlet'),
+    mkP('p_g','uv','outlet','outf','inlet'),
+    mkP('p_h','clr','was_outlet','thk','inlet','sludge'),
+    mkP('p_i','thk','sludge_outlet','dig','inlet','sludge'),
+    mkP('p_r','clr','sludge_outlet','cas','ras_inlet','ras'),
+  ];
+  gs.units = unitsCHP; gs.pipes = pipesCHP;
+  const beforeGreen = (()=>{
+    let g=GameManager.createInitialState(0,true); g.units=unitsCHP; g.pipes=pipesCHP; g = GameManager.tick(g, 0.5); return g.overallStats.totalGreenGenerationKw;
+  })();
+  let after = GameManager.tick(gs, 0.5);
+  const greenWith = after.overallStats.totalGreenGenerationKw;
+  assert(greenWith >= beforeGreen + 13.9, 'CHP10. tick green '+greenWith.toFixed(1)+' >= baseline '+beforeGreen.toFixed(1)+' +14');
+  assert(after.overallStats.energySelfSufficiencyPercent >= 0, 'CHP10b. self% '+after.overallStats.energySelfSufficiencyPercent.toFixed(1)+'%');
+  // Without basin, same CHP should give no green (gating)
+  let gsNoBasin = { ...gs, customBasins: [] } as any;
+  let afterNoBasin = GameManager.tick(gsNoBasin, 0.5);
+  assert(afterNoBasin.overallStats.totalGreenGenerationKw < greenWith - 5, 'CHP10c. no basin -> green drops vs live CHP');
 }
 
 console.log(failures === 0 ? "\nALL TESTS PASSED" : `\n${failures} TEST(S) FAILED`);

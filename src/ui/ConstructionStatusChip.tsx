@@ -1,7 +1,7 @@
 import React from 'react';
 import { ConstructionStats } from '../design/ConstructionNetwork';
 import { BasinZoneStats } from '../design/BasinZone';
-import { Zap, Waves, Droplets, Cable, Columns3, ShieldCheck, Hexagon, Gauge, FlaskConical, Filter, Cylinder } from 'lucide-react';
+import { Zap, Waves, Droplets, Cable, Columns3, ShieldCheck, Hexagon, Gauge, FlaskConical, Filter, Cylinder, Flame } from 'lucide-react';
 
 interface Props {
   stats: ConstructionStats;
@@ -67,6 +67,13 @@ export const ConstructionStatusChip: React.FC<Props> = ({ stats, zoneStats }) =>
           <Filter size={12} className={stats.poweredRoUnits>0 ? "text-sky-400" : "text-amber-400"} />
           <span className="font-bold">{stats.poweredRoSkids}/{stats.totalRoSkids} RO skid{stats.totalRoSkids!==1?'s':''} live</span>
           {stats.totalBrineTanks>0 && <><span className="opacity-50">·</span><Cylinder size={12} className={stats.poweredBrineTanks>0 ? "text-amber-300" : "text-amber-400"} /><span className="font-bold">{stats.poweredBrineTanks}/{stats.totalBrineTanks} brine</span></>}
+        </span>
+      )}
+      {stats.totalChpUnits > 0 && (
+        <span className={`pointer-events-auto inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-mono shadow-lg ${stats.poweredChpUnits > 0 ? 'bg-emerald-950/40 border-emerald-500/30 text-emerald-200' : 'bg-amber-950/30 border-amber-500/30 text-amber-200'}`}>
+          <Flame size={12} className={stats.poweredChpUnits>0 ? "text-emerald-400" : "text-amber-400"} />
+          <span className="font-bold">{stats.poweredChpUnits}/{stats.totalChpUnits} CHP live</span>
+          <span className="opacity-70 hidden sm:inline">· {stats.poweredChpUnits * 14} kW green</span>
         </span>
       )}
       {stats.totalUtilityConnections > 0 && (
