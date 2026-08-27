@@ -1681,6 +1681,82 @@ export class GameManager {
     return { newState: { ...state, processEquipment: next }, success: true };
   }
 
+  /**
+   * CONSTRUCTION-BUILDER P5 slice 2: group move — relocates a Shift-selected
+   * block of machines preserving their relative offsets from an anchor tile.
+   * Free move, utility-gated per member, and validation is group-aware:
+   * destination tiles are checked as if ALL group members vacate their sources
+   * simultaneously so members don't block each other. Overlap among targets
+   * (two members landing same tile) is rejected. Returns the moved state or
+   * the first failure reason (utility or placement). Same-tile no-op for the
+   * anchor short-circuits.
+   */
+  public static moveEquipmentGroup(
+    state: GameState,
+    equipmentIds: string[],
+    anchorId: string,
+    targetX: number,
+    targetY: number
+  ): { newState: GameState; success: boolean; reason?: string } {
+    const ids = [...new Set(equipmentIds)];
+    if (ids.length === 0) return { newState: state, success: false, reason: 'Nothing selected' };
+    if (!ids.includes(anchorId)) return { newState: state, success: false, reason: 'Anchor not in group' };
+    const members = ids.map(id => (state.processEquipment ?? []).find(e => e.id === id) ?? null);
+    if (members.some(m => !m)) return { newState: state, success: false, reason: 'Unknown equipment in group' };
+    const anchor = members.find(m => m!.id === anchorId)!;
+    if (anchor.x === targetX && anchor.y === targetY) return { newState: state, success: true };
+    // utility gate — any member with a cable/pipe attached blocks the whole block
+    for (const m of members as ProcessEquipmentItem[]) {
+      const attached = (state.utilityConnections ?? []).filter(c => (c.ax === m.x && c.ay === m.y) || (c.bx === m.x && c.by === m.y));
+      if (attached.length > 0) return { newState: state, success: false, reason: `Remove utility connections first — ${EQUIPMENT_TYPES[m.typeId]?.name ?? m.typeId} still has a pipe/cable attached` };
+    }
+    const dx = targetX - anchor.x;
+    const dy = targetY - anchor.y;
+    const targets = new Map<string, { x: number; y: number }>();
+    for (const m of members as ProcessEquipmentItem[]) {
+      targets.set(m.id, { x: m.x + dx, y: m.y + dy });
+    }
+    // inter-target collision: two members landing same tile
+    const seen = new Set<string>();
+    for (const { x, y } of targets.values()) {
+      const key = `${x},${y}`;
+      if (seen.has(key)) return { newState: state, success: false, reason: 'Group move overlaps — two machines would land on the same tile' };
+      seen.add(key);
+    }
+    // Build block-aware context: units + non-group ground kit as pseudo-unit rects
+    const groupSet = new Set(ids);
+    const unitRects = state.units.map(u => {
+      const [uw, ul] = resolveFootprint(u);
+      return { x: u.gridX, y: u.gridY, w: uw, h: ul };
+    });
+    for (const e of state.processEquipment ?? []) {
+      if (!groupSet.has(e.id) && EQUIPMENT_TYPES[e.typeId]?.mounting === 'ground') {
+        unitRects.push({ x: e.x, y: e.y, w: 1, h: 1 });
+      }
+    }
+    // Remaining equipment list without group (for occupancy check)
+    const remainingEquipment = (state.processEquipment ?? []).filter(e => !groupSet.has(e.id));
+    // Validate each member destination
+    for (const m of members as ProcessEquipmentItem[]) {
+      const t = targets.get(m.id)!;
+      // allow any group member's old position to be considered empty, but not the check for "Tile already holds equipment" against other group targets — we already checked inter-target, so remainingEquipment is correct base
+      const v = validateEquipmentPlacement(
+        m.typeId, t.x, t.y,
+        state.currentLevel.mapSize,
+        state.customBasins ?? [],
+        remainingEquipment,
+        unitRects
+      );
+      if (!v.ok) return { newState: state, success: false, reason: v.reason };
+      // Additionally prevent landing on another group's target tile (already distinct) but also prevent landing on a non-group equipment's tile is already covered by remainingEquipment check; ground vs basin mounting already in validator
+    }
+    const next = (state.processEquipment ?? []).map(e => {
+      const t = targets.get(e.id);
+      return t ? { ...e, x: t.x, y: t.y } : e;
+    });
+    return { newState: { ...state, processEquipment: next }, success: true };
+  }
+
   /** Rotates one installed machine 90° clockwise — free, 1×1 so no footprint/validation needed. Ground kit shows orientation; in-basin also rotates for visual variety. */
   public static rotateProcessEquipment(
     state: GameState,

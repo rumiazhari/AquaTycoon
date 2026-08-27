@@ -278,7 +278,7 @@ export const EquipmentInspector: React.FC<EquipmentInspectorProps> = ({ item, po
         </div>
         {moving && <span className="text-[10px] text-cyan-400 font-mono text-center">Click a valid tile to relocate — green = OK · red = blocked. Esc cancels. {(item.rotation ?? 0) !== 0 ? `Now at ${item.rotation}°` : `Facing ${item.rotation ?? 0}° — Rotate to turn.`}</span>}
         {!moving && (item.rotation ?? 0) !== 0 && <span className="text-[10px] text-slate-500 font-mono text-center">Facing {item.rotation}° · use Rotate to re-orient the machine in-world.</span>}
-        {!moving && <span className="text-[10px] text-amber-400/80 font-mono text-center">Tip: drag the amber handle above the selected machine to move directly — free reposition with live green/red ghost (Esc cancels).</span>}
+        {!moving && <span className="text-[10px] text-amber-400/80 font-mono text-center">Tip: drag the amber handle above the selected machine to move directly — free reposition with live green/red ghost (Esc cancels). Shift+Click to select multiple, then drag any handle to move the block as one ($/kW aggregated in ghost).</span>}
 
         <button
           onClick={() => { SoundManager.playDemolish(); onDemolish(item.id); }}

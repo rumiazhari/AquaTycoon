@@ -198,19 +198,22 @@ export const App: React.FC = () => {
     if (!silent) setToast('Wall drag cancelled — basin unchanged.');
   }, []);
 
-  // P5: in-world equipment drag-handle — grab amber handle to move machine with live ghost
-  const equipHandleDragRef = useRef<{ equipmentId: string; startTile: { x:number; y:number }; typeId: string } | null>(null);
+  // P5: in-world equipment drag-handle — grab amber handle to move machine(s) with live ghost
+  // Slice 2: group handle — Shift-selected block moves as one, preserving offsets
+  const equipHandleDragRef = useRef<{ anchorId: string; groupIds: string[]; anchorStart: { x:number; y:number }; typeId: string } | null>(null);
   const cancelEquipHandleDrag = useCallback((silent:boolean=false) => {
     equipHandleDragRef.current = null;
     sceneRef.current?.terrainGrid.setGhostPreview(0,0,1,1,true,false);
-    if (!silent) setToast('Equipment drag cancelled — machine stays.');
+    if (!silent) setToast('Equipment drag cancelled — machines stay.');
   }, []);
   const syncEquipHandleVisual = useCallback(() => {
     const sm = sceneRef.current;
     if (!sm) return;
     const sel = constructionSelectionRef.current;
-    if (selectionCount(sel) === 1 && sel.equipment.length === 1) {
-      const eq = gsRef.current.processEquipment?.find(e => e.id === sel.equipment[0]) ?? null;
+    if (sel.equipment.length >= 1) {
+      // Show handle at the first selected equipment (anchor for group drag when Shift-selected)
+      const anchorId = sel.equipment[0];
+      const eq = gsRef.current.processEquipment?.find(e => e.id === anchorId) ?? null;
       sm.syncEquipmentDragHandle(eq ? { x: eq.x, y: eq.y, typeId: eq.typeId } : null, gsRef.current.customBasins ?? []);
     } else {
       sm.syncEquipmentDragHandle(null);
@@ -494,17 +497,22 @@ export const App: React.FC = () => {
       pointerStart.current  = { x: e.clientX, y: e.clientY };
       pointerLast.current   = { x: e.clientX, y: e.clientY };
       pointerDist.current   = 0;
-      // P5: detect grab of equipment drag-handle when a single machine is selected.
-      // Any click on the lone selected machine's tile grabs the handle — forgiving,
-      // matches basin wall-handle ergonomics; shift/ctrl preserve multi-select.
+      // P5: detect grab of equipment drag-handle when equipment is selected.
+      // Slice 2: group handle — any selected equipment tile is a grab point;
+      // the whole Shift-selected block moves as one, preserving offsets.
+      // Lone machine (selectionCount 1) keeps forgiving handle; multi also grabs.
       if (e.button === 0 && toolModeRef.current === 'select' && !movingEquipmentIdRef.current && !basinHandleDragRef.current && !equipHandleDragRef.current && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
         const sm2 = sceneRef.current;
         const tile2 = sm2?.getGridTileFromScreen(e.clientX, e.clientY) ?? null;
         const sel = constructionSelectionRef.current;
-        if (tile2 && selectionCount(sel) === 1 && sel.equipment.length === 1) {
-          const eq = gsRef.current.processEquipment?.find(en => en.id === sel.equipment[0]) ?? null;
-          if (eq && eq.x === tile2.x && eq.y === tile2.y) {
-            equipHandleDragRef.current = { equipmentId: eq.id, startTile: { x: eq.x, y: eq.y }, typeId: eq.typeId };
+        if (tile2 && sel.equipment.length >= 1) {
+          const hitId = sel.equipment.find(id => {
+            const eq = gsRef.current.processEquipment?.find(en => en.id === id);
+            return eq ? (eq.x === tile2.x && eq.y === tile2.y) : false;
+          }) ?? null;
+          if (hitId) {
+            const hit = gsRef.current.processEquipment?.find(en => en.id === hitId)!;
+            equipHandleDragRef.current = { anchorId: hit.id, groupIds: [...sel.equipment], anchorStart: { x: hit.x, y: hit.y }, typeId: hit.typeId };
           }
         }
       }
@@ -539,34 +547,45 @@ export const App: React.FC = () => {
       if (!sm) return;
 
       // P5: active equipment drag — live green/red ghost, utility-gated, mount-aware, blocks pan
+      // Slice 2: group drag — Shift-selected block moves preserving offsets; ghost shows collective validity
       if (equipHandleDragRef.current && pointerDown.current) {
         const tile = sm.getGridTileFromScreen(e.clientX, e.clientY);
-        const dx = e.clientX - pointerLast.current.x;
-        const dy = e.clientY - pointerLast.current.y;
+        const dxP = e.clientX - pointerLast.current.x;
+        const dyP = e.clientY - pointerLast.current.y;
         pointerLast.current = { x: e.clientX, y: e.clientY };
-        pointerDist.current += Math.hypot(dx, dy);
+        pointerDist.current += Math.hypot(dxP, dyP);
         const drag = equipHandleDragRef.current;
-        const eq = gsRef.current.processEquipment?.find(en => en.id === drag.equipmentId);
-        if (!eq) { sm.terrainGrid.setGhostPreview(drag.startTile.x, drag.startTile.y, 1, 1, false, true); return; }
+        const anchor = gsRef.current.processEquipment?.find(en => en.id === drag.anchorId);
+        if (!anchor) { sm.terrainGrid.setGhostPreview(drag.anchorStart.x, drag.anchorStart.y, 1, 1, false, true); return; }
         if (!tile) {
-          sm.terrainGrid.setGhostPreview(drag.startTile.x, drag.startTile.y, 1, 1, false, true);
+          sm.terrainGrid.setGhostPreview(drag.anchorStart.x, drag.anchorStart.y, 1, 1, false, true);
           return;
         }
+        const groupIds: string[] = (drag as any).groupIds ?? [drag.anchorId];
+        const isGroup = groupIds.length > 1;
         // Same-tile = valid (no-op preview)
-        if (tile.x === eq.x && tile.y === eq.y) {
+        if (tile.x === anchor.x && tile.y === anchor.y) {
           sm.terrainGrid.setGhostPreview(tile.x, tile.y, 1, 1, true, true);
-          setHoverHint(`↔ Dragging ${EQUIPMENT_TYPES[eq.typeId]?.name ?? 'equipment'} — release same tile to cancel · Esc cancels`);
+          const n = groupIds.length;
+          const nm = isGroup ? `${n} machines` : (EQUIPMENT_TYPES[anchor.typeId]?.name ?? 'equipment');
+          setHoverHint(`↔ Dragging ${nm} — release same tile to cancel · Esc cancels`);
           return;
         }
-        // Utility still attached -> blocked (must cut cable first)
-        const attached = (gsRef.current.utilityConnections ?? []).filter(c =>
-          (c.ax === eq.x && c.ay === eq.y) || (c.bx === eq.x && c.by === eq.y)
-        );
-        if (attached.length > 0) {
+        // Utility still attached on ANY member -> blocked (must cut cable first)
+        const attachedGroup = groupIds.filter(id => {
+          const m = gsRef.current.processEquipment?.find(en => en.id === id);
+          if (!m) return false;
+          return (gsRef.current.utilityConnections ?? []).some(c => (c.ax === m.x && c.ay === m.y) || (c.bx === m.x && c.by === m.y));
+        });
+        if (attachedGroup.length > 0) {
           sm.terrainGrid.setGhostPreview(tile.x, tile.y, 1, 1, false, true);
-          setHoverHint(`⛔ Move blocked — ${attached.length} utility line${attached.length>1?'s':''} still attached (cut pipes/cables first) · Esc cancels`);
+          setHoverHint(`⛔ Move blocked — ${attachedGroup.length} machine${attachedGroup.length>1?'s':''} still have utility lines attached (cut pipes/cables first) · Esc cancels`);
           return;
         }
+        // Group-aware validation — all members vacate simultaneously
+        const ddx = tile.x - anchor.x;
+        const ddy = tile.y - anchor.y;
+        const groupSet = new Set(groupIds);
         const [mapW2, mapH2] = gsRef.current.currentLevel.mapSize;
         const unitRects2 = gsRef.current.units.map(u => {
           const d = (UNIT_DEFINITIONS as any)[u.typeId];
@@ -574,11 +593,38 @@ export const App: React.FC = () => {
           return { x: u.gridX, y: u.gridY, w: uw, h: ul };
         });
         for (const o of gsRef.current.processEquipment ?? []) {
-          if (o.id !== eq.id && (EQUIPMENT_TYPES as any)[o.typeId]?.mounting === 'ground') unitRects2.push({ x: o.x, y: o.y, w: 1, h: 1 });
+          if (!groupSet.has(o.id) && (EQUIPMENT_TYPES as any)[o.typeId]?.mounting === 'ground') unitRects2.push({ x: o.x, y: o.y, w: 1, h: 1 });
         }
-        const vr = validateEquipmentPlacement(eq.typeId, tile.x, tile.y, [mapW2, mapH2], gsRef.current.customBasins ?? [], gsRef.current.processEquipment ?? [], unitRects2, eq.id);
-        sm.terrainGrid.setGhostPreview(tile.x, tile.y, 1, 1, vr.ok, true);
-        setHoverHint(vr.ok ? `↔ Dragging ${EQUIPMENT_TYPES[eq.typeId]?.name ?? 'equipment'} → (${tile.x},${tile.y}) · green = valid · red = blocked · Esc cancels` : `⛔ ${vr.reason} · Esc cancels`);
+        const remainingEquip = (gsRef.current.processEquipment ?? []).filter(e => !groupSet.has(e.id));
+        let firstReason: string | null = null;
+        let allOk = true;
+        for (const id of groupIds) {
+          const m = gsRef.current.processEquipment?.find(en => en.id === id)!;
+          const tx = m.x + ddx;
+          const ty = m.y + ddy;
+          const vr = validateEquipmentPlacement(m.typeId, tx, ty, [mapW2, mapH2], gsRef.current.customBasins ?? [], remainingEquip, unitRects2);
+          if (!vr.ok) { allOk = false; firstReason = vr.reason ?? 'Blocked'; break; }
+        }
+        // inter-target duplicate check (defensive)
+        if (allOk && isGroup) {
+          const seen = new Set<string>();
+          for (const id of groupIds) {
+            const m = gsRef.current.processEquipment?.find(en => en.id === id)!;
+            const key = `${m.x + ddx},${m.y + ddy}`;
+            if (seen.has(key)) { allOk = false; firstReason = 'Group would overlap — two machines same tile'; break; }
+            seen.add(key);
+          }
+        }
+        sm.terrainGrid.setGhostPreview(tile.x, tile.y, 1, 1, allOk, true);
+        if (allOk) {
+          const nm = isGroup ? `${groupIds.length} machines` : (EQUIPMENT_TYPES[anchor.typeId]?.name ?? 'equipment');
+          const costAgg = isGroup ? (() => {
+            let c=0, p=0; for (const id of groupIds){ const mm = gsRef.current.processEquipment?.find(e=>e.id===id); if(mm){ const d=EQUIPMENT_TYPES[mm.typeId]; if(d){ c+=d.capexUsd; p+=d.powerKw; } } } return ` · $${c.toLocaleString()} · ${p} kW`;
+          })() : '';
+          setHoverHint(`↔ Dragging ${nm}${costAgg} → (${tile.x},${tile.y}) · green = valid · red = blocked · Esc cancels`);
+        } else {
+          setHoverHint(`⛔ ${firstReason} · Esc cancels`);
+        }
         return;
       }
 
@@ -817,13 +863,23 @@ export const App: React.FC = () => {
             const sel = constructionSelectionRef.current;
             const loneBasin = selId && sel.basins.length===1 && sel.basins[0]===selId && selectionCount(sel)===1 ? (gsRef.current.customBasins ?? []).find(b=>b.id===selId) ?? null : null;
             const handleDir = loneBasin ? basinHandleDirForTile(loneBasin, tile) : null;
-            // P5: equipment drag handle has priority when hovering the lone selected machine's tile
-            const loneEquipId = sel.equipment.length===1 && selectionCount(sel)===1 ? sel.equipment[0] : null;
-            const loneEquip = loneEquipId ? gsRef.current.processEquipment?.find(e=>e.id===loneEquipId) ?? null : null;
-            const onLoneEquipTile = loneEquip ? (loneEquip.x === tile.x && loneEquip.y === tile.y) : false;
-            if (onLoneEquipTile) {
-              const eqN = EQUIPMENT_TYPES[loneEquip!.typeId]?.name ?? loneEquip!.typeId;
-              hint = `▸ Drag ${eqN} — hold amber handle and drag to new tile (green = valid · red = blocked · Shift+Click to add)`;
+            // P5: equipment drag handle has priority when hovering any selected machine's tile
+            // Slice 2: group handle — Shift block drag preserves offsets
+            const equipSel = sel.equipment;
+            const onSelectedEquipTile = equipSel.length >= 1 && equipSel.some(id => {
+              const eq = gsRef.current.processEquipment?.find(e=>e.id===id);
+              return eq ? (eq.x === tile.x && eq.y === tile.y) : false;
+            });
+            const loneEquipIdForHint = equipSel.length===1 && selectionCount(sel)===1 ? equipSel[0] : null;
+            const loneEquip = loneEquipIdForHint ? gsRef.current.processEquipment?.find(e=>e.id===loneEquipIdForHint) ?? null : null;
+            if (onSelectedEquipTile) {
+              if (equipSel.length > 1) {
+                let aggC=0, aggP=0; for (const id of equipSel){ const mm=gsRef.current.processEquipment?.find(e=>e.id===id); if(mm){ const d=EQUIPMENT_TYPES[mm.typeId]; if(d){ aggC+=d.capexUsd; aggP+=d.powerKw; } } }
+                hint = `▸ Drag ${equipSel.length} machines · $${aggC.toLocaleString()} · ${aggP} kW — hold amber handle and drag as block (green = valid)`;
+              } else {
+                const eqN = EQUIPMENT_TYPES[loneEquip!.typeId]?.name ?? loneEquip!.typeId;
+                hint = `▸ Drag ${eqN} — hold amber handle and drag to new tile (green = valid · red = blocked · Shift+Click to add)`;
+              }
             } else if (handleDir && !hEquip && !hBaffle) {
               const dirLabel = ({n:'North wall',s:'South wall',e:'East wall',w:'West wall',nw:'NW corner',ne:'NE corner',sw:'SW corner',se:'SE corner'} as any)[handleDir] ?? handleDir;
               hint = `▸ Drag ${dirLabel} to resize — hold and drag wall/corner (Shift+Click to add to selection)`;
@@ -851,10 +907,11 @@ export const App: React.FC = () => {
         } else {
           // During an active drag, keep the hint pinned to the drag
           if (equipHandleDragRef.current) {
-            const eqId = equipHandleDragRef.current.equipmentId;
-            const eqt = gsRef.current.processEquipment?.find(e=>e.id===eqId);
+            const d = equipHandleDragRef.current;
+            const eqt = gsRef.current.processEquipment?.find(e=>e.id===d.anchorId);
             const n = eqt ? (EQUIPMENT_TYPES[eqt.typeId]?.name ?? 'equipment') : 'equipment';
-            setHoverHint(`↔ Dragging ${n} — release on target tile · green = valid · red = blocked (Esc cancels)`);
+            const grp = (d as any).groupIds?.length > 1 ? ` · ${ (d as any).groupIds.length } machines as block` : '';
+            setHoverHint(`↔ Dragging ${n}${grp} — release on target tile · green = valid · red = blocked (Esc cancels)`);
           } else if (basinHandleDragRef.current) {
             const d = basinHandleDragRef.current;
             const dirLabel = ({n:'North',s:'South',e:'East',w:'West',nw:'NW',ne:'NE',sw:'SW',se:'SE'} as any)[d.dir] ?? d.dir;
@@ -875,6 +932,7 @@ export const App: React.FC = () => {
       }
 
       // P5: equipment drag-handle commit (direct in-world move with live ghost, free, undoable)
+      // Slice 2: group handle — Shift block moves preserving offsets
       // Has priority alongside basin wall drag — both swallow pan and wasDrag >6.
       if (equipHandleDragRef.current) {
         const drag = equipHandleDragRef.current;
@@ -888,24 +946,31 @@ export const App: React.FC = () => {
           setToast('Equipment drag cancelled — release over a tile.');
           return;
         }
-        const eq = gs.processEquipment?.find(en => en.id === drag.equipmentId) ?? null;
-        if (!eq) { sceneRef.current?.terrainGrid.setGhostPreview(0,0,1,1,true,false); return; }
-        if (tile.x === eq.x && tile.y === eq.y) {
+        const groupIds: string[] = (drag as any).groupIds ?? [drag.anchorId];
+        const anchor = gs.processEquipment?.find(en => en.id === drag.anchorId) ?? null;
+        if (!anchor) { sceneRef.current?.terrainGrid.setGhostPreview(0,0,1,1,true,false); return; }
+        if (tile.x === anchor.x && tile.y === anchor.y) {
           sceneRef.current?.terrainGrid.setGhostPreview(0,0,1,1,true,false);
           return; // same-tile no-op (suppress wasDrag click)
         }
-        // Check attached utilities first (same guard as Move button)
-        const attached = (gs.utilityConnections ?? []).filter(c =>
-          (c.ax === eq.x && c.ay === eq.y) || (c.bx === eq.x && c.by === eq.y)
-        );
-        if (attached.length > 0) {
+        // utility gate already checked in ghost, re-check quickly
+        const attachedAny = groupIds.some(id => {
+          const m = gs.processEquipment?.find(en => en.id === id);
+          return m ? (gs.utilityConnections ?? []).some(c => (c.ax === m.x && c.ay === m.y) || (c.bx === m.x && c.by === m.y)) : false;
+        });
+        if (attachedAny) {
           SoundManager.playWarning();
           sceneRef.current?.terrainGrid.setGhostPreview(0,0,1,1,true,false);
-          setToast(`⛔ Move blocked — ${attached.length} utility line${attached.length>1?'s':''} still attached (cut pipes/cables first).`);
+          setToast(`⛔ Move blocked — utility lines still attached (cut pipes/cables first).`);
           return;
         }
         pushHistory(gs);
-        const res = GameManager.moveProcessEquipment(gs, drag.equipmentId, tile.x, tile.y);
+        let res: { newState: typeof gs; success: boolean; reason?: string };
+        if (groupIds.length > 1) {
+          res = GameManager.moveEquipmentGroup(gs, groupIds, drag.anchorId, tile.x, tile.y);
+        } else {
+          res = GameManager.moveProcessEquipment(gs, drag.anchorId, tile.x, tile.y);
+        }
         if (!res.success) {
           undoStackRef.current.pop();
           SoundManager.playWarning();
@@ -914,9 +979,10 @@ export const App: React.FC = () => {
           return;
         }
         setGameState(res.newState);
-        // keep same equipment selected at its new tile, refresh handle position
+        // keep same equipment selected (group preserved) at new tiles, refresh handle position
+        const anchorIdsSet = new Set(groupIds);
         sceneRef.current?.syncEquipment(
-          res.newState.processEquipment ?? [], res.newState.customBasins ?? [], new Set([drag.equipmentId]),
+          res.newState.processEquipment ?? [], res.newState.customBasins ?? [], anchorIdsSet,
           poweredEquipmentIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
           aeratedDiffuserIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
           filtrationLiveSets(res.newState.customBasins ?? [], res.newState.processEquipment ?? [], res.newState.utilityConnections ?? [], res.newState.customBaffles ?? []),
@@ -925,13 +991,18 @@ export const App: React.FC = () => {
         sceneRef.current?.syncUtilityConnections(res.newState.utilityConnections ?? [], null);
         sceneRef.current?.syncBaffles(res.newState.customBaffles ?? [], res.newState.customBasins ?? [], null);
         sceneRef.current?.syncBasins(res.newState.customBasins ?? [], null);
-        // refresh handle at new position
-        const moved = res.newState.processEquipment?.find(en => en.id === drag.equipmentId) ?? null;
+        // refresh handle at new anchor position
+        const moved = res.newState.processEquipment?.find(en => en.id === drag.anchorId) ?? null;
         sceneRef.current?.syncEquipmentDragHandle(moved ? { x: moved.x, y: moved.y, typeId: moved.typeId } : null, res.newState.customBasins ?? []);
         sceneRef.current?.syncSelectionBrackets(bracketRectsForSelection(constructionSelectionRef.current, res.newState.customBasins ?? [], res.newState.customBaffles ?? [], res.newState.utilityConnections ?? [], res.newState.processEquipment ?? []));
         sceneRef.current?.terrainGrid.setGhostPreview(0,0,1,1,true,false);
         SoundManager.playPlace();
-        setToast(`${EQUIPMENT_TYPES[eq.typeId]?.name ?? 'Equipment'} dragged to (${tile.x},${tile.y}) — free reposition (Ctrl+Z to undo).`);
+        if (groupIds.length > 1) {
+          let aggC=0, aggP=0; for (const id of groupIds){ const mm=res.newState.processEquipment?.find(e=>e.id===id); if(mm){ const d=EQUIPMENT_TYPES[mm.typeId]; if(d){ aggC+=d.capexUsd; aggP+=d.powerKw; } } }
+          setToast(`${groupIds.length} machines dragged as block to (${tile.x},${tile.y}) · $${aggC.toLocaleString()} · ${aggP} kW — free reposition (Ctrl+Z to undo).`);
+        } else {
+          setToast(`${EQUIPMENT_TYPES[anchor.typeId]?.name ?? 'Equipment'} dragged to (${tile.x},${tile.y}) — free reposition (Ctrl+Z to undo).`);
+        }
         return;
       }
 
