@@ -6552,7 +6552,7 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
 
 // ── TERRAIN FOUNDATION — basin excavation cost varies with ground (iter 62) ───────
 {
-  const { terrainFactorForTile, terrainFactorForRect, estimateBasinCAPEXWithTerrain, basinFoundationBreakdown, foundationConditionLabel, foundationConditionTone, TERRAIN_FOUNDATION_MIN, TERRAIN_FOUNDATION_MAX } = await import('../src/design/TerrainFoundation.js');
+  const { terrainFactorForTile, terrainFactorForRect, estimateBasinCAPEXWithTerrain, basinFoundationBreakdown, foundationConditionLabel, foundationConditionTone, TERRAIN_FOUNDATION_MIN, TERRAIN_FOUNDATION_MAX, FOUNDATION_TONE_HEX, foundationToneHex, foundationHexForFactor, foundationHexForRect } = await import('../src/design/TerrainFoundation.js');
   const { estimateBasinCAPEX } = await import('../src/design/CustomBasin.js');
   // TF01. deterministic: same tile same factor
   {
@@ -6686,6 +6686,52 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
     assert(c1 !== c2 || terrainFactorForRect(s1.basins[0] as any) !== terrainFactorForRect(s2.basins[0] as any) || true, `TF12b. stamped costs may vary by terrain $${c1} vs $${c2} (factors ${terrainFactorForRect(s1.basins[0] as any).toFixed(3)} vs ${terrainFactorForRect(s2.basins[0] as any).toFixed(3)})`);
     // at least factors are in bounds
     assert(c1 >= Math.round(estimateBasinCAPEX(s1.basins[0] as any)*0.92) && c1 <= Math.round(estimateBasinCAPEX(s1.basins[0] as any)*1.18), 'TF12c. s1 cost in band');
+  }
+  // TF13. FOUNDATION_TONE_HEX maps tones to expected hexes
+  {
+    assert(FOUNDATION_TONE_HEX.emerald === 0x34d399, `TF13. emerald hex 0x34d399 (got 0x${FOUNDATION_TONE_HEX.emerald.toString(16)})`);
+    assert(FOUNDATION_TONE_HEX.sky === 0x38bdf8, `TF13b. sky hex 0x38bdf8 (got 0x${FOUNDATION_TONE_HEX.sky.toString(16)})`);
+    assert(FOUNDATION_TONE_HEX.amber === 0xf59e0b, `TF13c. amber hex 0xf59e0b (got 0x${FOUNDATION_TONE_HEX.amber.toString(16)})`);
+    assert(FOUNDATION_TONE_HEX.rose === 0xfb7185, `TF13d. rose hex 0xfb7185 (got 0x${FOUNDATION_TONE_HEX.rose.toString(16)})`);
+  }
+  // TF14. foundationToneHex / foundationHexForFactor / foundationHexForRect single source
+  {
+    assert(foundationToneHex('emerald') === 0x34d399, 'TF14. toneHex emerald');
+    assert(foundationToneHex('rose') === 0xfb7185, 'TF14b. toneHex rose');
+    assert(foundationHexForFactor(0.93) === 0x34d399, 'TF14c. 0.93 soft -> emerald');
+    assert(foundationHexForFactor(0.99) === 0x38bdf8, 'TF14d. 0.99 avg -> sky');
+    assert(foundationHexForFactor(1.05) === 0xf59e0b, 'TF14e. 1.05 firm -> amber');
+    assert(foundationHexForFactor(1.14) === 0xfb7185, 'TF14f. 1.14 rocky -> rose');
+    const rect = { x: 3, y: 7, w: 3, h: 3 } as any;
+    const hexRect = foundationHexForRect(rect);
+    const expectedTone = foundationConditionTone(terrainFactorForRect(rect));
+    assert(hexRect === FOUNDATION_TONE_HEX[expectedTone], `TF14g. rect hex matches tone ${expectedTone} (0x${hexRect.toString(16)})`);
+  }
+  // TF15. foundation hex consistency with labels/tones and factor bounds
+  {
+    for(let x=0;x<6;x++) for(let y=0;y<6;y++){
+      const f = terrainFactorForTile(x,y);
+      const tone = foundationConditionTone(f);
+      const hex = foundationHexForFactor(f);
+      assert(hex === FOUNDATION_TONE_HEX[tone], `TF15. tile ${x},${y} f=${f.toFixed(3)} tone ${tone} hex 0x${hex.toString(16)} matches map`);
+      assert(hex >= 0 && hex <= 0xffffff, 'TF15b. hex in rgb range');
+    }
+  }
+  // TF16. basin move changes visual hex when terrain differs (ground matters visually)
+  {
+    const rA = { x: 0, y: 0, w: 2, h: 2 } as any;
+    const rB = { x: 15, y: 15, w: 2, h: 2 } as any;
+    const hA = foundationHexForRect(rA);
+    const hB = foundationHexForRect(rB);
+    const fA = terrainFactorForRect(rA);
+    const fB = terrainFactorForRect(rB);
+    // Not strictly guaranteed distinct due to hash collisions, but factors differ often — at least both valid
+    assert([0x34d399,0x38bdf8,0xf59e0b,0xfb7185].includes(hA), `TF16. hA valid hex 0x${hA.toString(16)}`);
+    assert([0x34d399,0x38bdf8,0xf59e0b,0xfb7185].includes(hB), `TF16b. hB valid hex 0x${hB.toString(16)}`);
+    // deterministic: same rect same hex
+    assert(foundationHexForRect(rA) === hA, 'TF16c. deterministic rect hex');
+    // factor and hex agree
+    assert(foundationHexForFactor(fA) === hA, 'TF16d. factor->hex agrees for rA');
   }
 }
 

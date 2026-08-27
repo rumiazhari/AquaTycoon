@@ -14,6 +14,8 @@ import { UNIT_DEFINITIONS } from '../sim/UnitProcessModels';
 import { getPortWorldPosition, getRotatedFootprint } from '../sim/PipeNetwork';
 import type { LevelBiome, SimulationSpeed } from '../types/game';
 import { getDayNightFactor } from '../gameplay/GameTime';
+import { terrainFactorForRect, foundationConditionTone, FOUNDATION_TONE_HEX } from '../design/TerrainFoundation';
+import type { BasinRect } from '../design/CustomBasin';
 
 const lerpN = (a: number, b: number, t: number) => a + (b - a) * t;
 
@@ -734,6 +736,48 @@ export class SceneManager {
           }
         }
       });
+      // ITER 63 — foundation ground-condition visual: apron + subtle wall/floor tint
+      // The apron makes cheap rocky vs soft ground tangibly visible from overview,
+      // not just as a number in the inspector — BUILD THE PROCESS means the site
+      // itself tells the cost story.
+      try {
+        const factor = terrainFactorForRect(b as unknown as BasinRect);
+        const tone = foundationConditionTone(factor);
+        const hex = FOUNDATION_TONE_HEX[tone];
+        // Apron: solid foundation colour outside the walls (selection does NOT override)
+        mesh.traverse(o => {
+          const mm = o as THREE.Mesh;
+          if ((mm as any)._isFoundationApron) {
+            const mat = mm.material as THREE.MeshStandardMaterial;
+            mat.color.setHex(hex);
+            mat.emissive.setHex(hex);
+            mat.emissiveIntensity = 0.11;
+          }
+        });
+        // Floor/wall subtle tint: lerp base concrete toward the tone so the whole
+        // basin shell hints at ground difficulty while keeping selection legible.
+        const tFloor = 0.22, tWall = 0.14;
+        mesh.traverse(o => {
+          const mm = o as THREE.Mesh;
+          if (mm.isMesh && mm.material) {
+            const mat = Array.isArray(mm.material) ? mm.material[0] : mm.material as THREE.MeshStandardMaterial;
+            const m = mat as THREE.MeshStandardMaterial;
+            if ((m as any)._basinBase) {
+              const baseHex = (m as any)._baseHex as number | undefined;
+              if (typeof baseHex === 'number') {
+                const baseCol = new THREE.Color(baseHex);
+                const toneCol = new THREE.Color(hex);
+                const t = baseHex === 0x8d9097 ? tFloor : tWall;
+                baseCol.lerp(toneCol, t);
+                m.color.copy(baseCol);
+              }
+            }
+          }
+        });
+        (mesh as any)._foundationHex = hex;
+        (mesh as any)._foundationTone = tone;
+        (mesh as any)._terrainFactor = factor;
+      } catch {}
       // Basin footprint origin in world space (tile centers at +0.5).
       mesh.position.set(b.x, 0, b.y);
     }
@@ -1030,6 +1074,10 @@ export class SceneManager {
     // tint only the concrete shell, not the water volume.
     (concrete as any)._basinBase = true;
     (floorMat as any)._basinBase = true;
+    // Store base hexes so floor/wall tinting toward foundation tone can be
+    // recomputed without accumulating lerp drift when the basin moves terrain.
+    (concrete as any)._baseHex = 0xb9bcc2;
+    (floorMat as any)._baseHex = 0x8d9097;
 
     // Floor slab
     const floor = new THREE.Mesh(new THREE.BoxGeometry(b.w, 0.2, b.h), floorMat);
@@ -1056,6 +1104,23 @@ export class SceneManager {
     );
     water.position.set(b.w / 2, 0.2 + (depth * 0.85) / 2, b.h / 2);
     g.add(water);
+
+    // ── ITER 63: foundation apron — thin ground pad outside the walls
+    // coloured by terrain condition (emerald/sky/amber/rose). The pad makes
+    // foundation cost tangible in-world: soft (green) vs rocky (rose) reads
+    // at a glance from overview, not just in the inspector.
+    const apronMat = new THREE.MeshStandardMaterial({
+      color: 0x38bdf8, roughness: 0.92, metalness: 0.03,
+      emissive: 0x000000, emissiveIntensity: 0,
+    });
+    // Do NOT mark as _basinBase — apron keeps its foundation colour even
+    // when the basin is selected (selection emissive tints only walls/floor).
+    (apronMat as any)._isFoundationApronMat = true;
+    const apron = new THREE.Mesh(new THREE.BoxGeometry(b.w + 0.46, 0.045, b.h + 0.46), apronMat);
+    apron.position.set(b.w / 2, 0.022, b.h / 2);
+    apron.receiveShadow = true;
+    (apron as any)._isFoundationApron = true;
+    g.add(apron);
 
     return g;
   }

@@ -91,6 +91,31 @@ export function foundationConditionTone(factor: number): 'emerald' | 'sky' | 'am
 }
 
 /**
+ * 3D foundation tint hex per tone — saturated tailwind tones so the
+ * foundation apron reads at a glance in-world (soft emerald → rocky rose).
+ * Exported as pure domain (no three.js) so sim-tests & SceneManager share
+ * the same single source of truth for ground-condition colours.
+ */
+export const FOUNDATION_TONE_HEX: Record<'emerald' | 'sky' | 'amber' | 'rose', number> = {
+  emerald: 0x34d399, // soft ground — green discount
+  sky: 0x38bdf8,     // average — neutral
+  amber: 0xf59e0b,   // firm — surcharge
+  rose: 0xfb7185,    // rocky — heavy surcharge
+};
+
+export function foundationToneHex(tone: 'emerald' | 'sky' | 'amber' | 'rose'): number {
+  return FOUNDATION_TONE_HEX[tone] ?? FOUNDATION_TONE_HEX.sky;
+}
+
+export function foundationHexForFactor(factor: number): number {
+  return foundationToneHex(foundationConditionTone(factor));
+}
+
+export function foundationHexForRect(rect: BasinRect): number {
+  return foundationHexForFactor(terrainFactorForRect(rect));
+}
+
+/**
  * Signed percent label e.g. "+14%" or "−6%" (rounded to 1 decimal if needed,
  * whole percent when near integer).
  */
