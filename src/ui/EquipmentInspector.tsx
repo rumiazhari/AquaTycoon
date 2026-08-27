@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, Wind, Trash2, Droplets, Fan, Cog, Waves, AlertTriangle, CheckCircle2, Columns3, ShieldCheck, Hexagon, Gauge, Activity, Ruler, FlaskConical, Beaker, Filter, Cylinder, Move, RotateCw, Flame, Sun } from 'lucide-react';
+import { X, Wind, Trash2, Droplets, Fan, Cog, Waves, AlertTriangle, CheckCircle2, Columns3, ShieldCheck, Hexagon, Gauge, Activity, Ruler, FlaskConical, Beaker, Filter, Cylinder, Move, RotateCw, Flame, Sun, Atom } from 'lucide-react';
 import { EQUIPMENT_TYPES } from '../design/ProcessEquipment';
 import type { ProcessEquipmentItem } from '../design/ProcessEquipment';
 import type { BasinZone } from '../design/BasinZone';
@@ -21,6 +21,7 @@ const ICONS: Record<string, React.ComponentType<{ size?: number; className?: str
   brine_tank: Cylinder,
   biogas_chp_skid: Flame,
   uv_channel: Sun,
+  aop_skid: Atom,
 };
 
 interface EquipmentInspectorProps {
@@ -244,6 +245,18 @@ export const EquipmentInspector: React.FC<EquipmentInspectorProps> = ({ item, po
                 <>
                   <span className="text-xs font-bold text-amber-300">Dark — needs a Power cable on this ground tile</span>
                   <span className="text-[11px] text-slate-400">Run a Power cable here to energize the UV lamps (red while dark, violet when disinfecting). Ground-installed outside basins.</span>
+                </>
+              )
+            ) : item.typeId === 'aop_skid' ? (
+              powered ? (
+                <>
+                  <span className="text-xs font-bold text-lime-300">AOP live — toxics oxidation (lime shimmer)</span>
+                  <span className="text-[11px] text-slate-400">O3/AOP reactor oxidizing toxics + COD and disinfecting pathogens — ~88% pathogens + 55% toxics per skid when powered. Stack for industrial detox. Needs basin + power.</span>
+                </>
+              ) : (
+                <>
+                  <span className="text-xs font-bold text-amber-300">Dark — needs a Power cable on this ground tile</span>
+                  <span className="text-[11px] text-slate-400">Run a Power cable here to energize the ozone generator (red while dark, lime when oxidizing). Ground-installed outside basins.</span>
                 </>
               )
             ) : needsPower ? (

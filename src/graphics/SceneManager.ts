@@ -1130,6 +1130,7 @@ export class SceneManager {
       const isBrine = it.typeId === 'brine_tank';
       const isChp = it.typeId === 'biogas_chp_skid';
       const isUv = it.typeId === 'uv_channel';
+      const isAop = it.typeId === 'aop_skid';
       const isPowered = !poweredIds || poweredIds.has(it.id);
       const isAerated = !aeratedIds || !isDiffuser || aeratedIds.has(it.id);
       // Phase 6 slice 2 filtration status for tinting
@@ -1244,6 +1245,15 @@ export class SceneManager {
                 m.emissiveIntensity = 0.52;
               } else {
                 m.emissive.setHex(0x7c3aed);
+                m.emissiveIntensity = 0.52;
+              }
+            } else if (isAop) {
+              // AOP/Ozone skid: powered = amber-lime oxidation shimmer (toxics burn), unpowered = dark red
+              if (!isPowered) {
+                m.emissive.setHex(0x5a1a1a);
+                m.emissiveIntensity = 0.52;
+              } else {
+                m.emissive.setHex(0xa3e635);
                 m.emissiveIntensity = 0.52;
               }
             } else if (isDiffuser) {
@@ -1701,6 +1711,57 @@ export class SceneManager {
         cabinet.position.set(0, 0.48, 0.95);
         const lampStat = add(new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 6), new THREE.MeshStandardMaterial({ color: 0xa78bfa, emissive: 0x7c3aed, emissiveIntensity: 0.9 })));
         lampStat.position.set(0, 0.76, 1.10);
+        break;
+      }
+      case 'aop_skid': {
+        // Ground O₃/AOP oxidation skid — O₂ concentrator + ozone generator + reactor contactor
+        // Distinct lime/amber oxidation palette (toxics burn) vs UV violet and RO blue.
+        const skidMat = new THREE.MeshStandardMaterial({ color: 0xe7e5c8, roughness: 0.45 });
+        const o2Mat = new THREE.MeshStandardMaterial({ color: 0x65a30d, roughness: 0.5 });
+        const reactorMat = new THREE.MeshStandardMaterial({ color: 0xa3e635, roughness: 0.35, emissive: 0x3f6212, emissiveIntensity: 0.18 });
+        const yellowMat2 = new THREE.MeshStandardMaterial({ color: 0xfacc15, roughness: 0.4 });
+        (skidMat as any)._equipBase = true;
+        (reactorMat as any)._equipBase = true;
+        (yellowMat2 as any)._equipBase = true;
+        const base2 = add(new THREE.Mesh(new THREE.BoxGeometry(3.6, 0.24, 2.0), plinth));
+        base2.position.set(0, 0.12, 0);
+        // O₂ concentrator tower
+        const tower = add(new THREE.Mesh(new THREE.CylinderGeometry(0.52, 0.52, 1.55, 18), skidMat));
+        tower.position.set(-0.95, 0.95, 0);
+        const towerCap = add(new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.34, 0.16, 18), o2Mat));
+        towerCap.position.set(-0.95, 1.78, 0);
+        // Ozone generator cabinet (lime)
+        const genCab = add(new THREE.Mesh(new THREE.BoxGeometry(0.95, 1.05, 0.85), o2Mat));
+        genCab.position.set(0.15, 0.72, 0);
+        const genLight = add(new THREE.Mesh(new THREE.SphereGeometry(0.07, 8, 6), new THREE.MeshStandardMaterial({ color: 0xa3e635, emissive: 0x65a30d, emissiveIntensity: 0.9 })));
+        genLight.position.set(0.15, 1.30, 0.43);
+        // Reactor / contactor vessel (horizontal stainless with lime caps)
+        const reactor = add(new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.38, 1.85, 16), reactorMat));
+        reactor.rotation.z = Math.PI / 2;
+        reactor.position.set(0.15, 0.72, 0);
+        for (const dx of [-0.85, 0.85]) {
+          const cap2 = new THREE.Mesh(new THREE.CylinderGeometry(0.40, 0.40, 0.12, 16), yellowMat2);
+          cap2.rotation.z = Math.PI / 2;
+          cap2.position.set(0.15 + dx, 0.72, 0);
+          cap2.castShadow = true;
+          g.add(cap2);
+        }
+        // Vent stack with ozone off-gas
+        const vent2 = add(new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.65, 12), steel));
+        vent2.position.set(0.85, 1.25, -0.55);
+        const ventCap2 = add(new THREE.Mesh(new THREE.ConeGeometry(0.15, 0.18, 12), dark));
+        ventCap2.position.set(0.85, 1.62, -0.55);
+        // Inlet / outlet stubs
+        const inlet2 = add(new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.55, 12), steel));
+        inlet2.rotation.z = Math.PI / 2;
+        inlet2.position.set(-1.85, 0.52, 0.25);
+        const outlet2 = add(new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.55, 12), steel));
+        outlet2.rotation.z = Math.PI / 2;
+        outlet2.position.set(1.95, 0.52, 0.25);
+        // Small O₂ inlet pipe
+        const o2Pipe = add(new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 0.7, 10), steel));
+        o2Pipe.rotation.z = Math.PI / 2;
+        o2Pipe.position.set(-1.45, 1.05, 0);
         break;
       }
       default: {

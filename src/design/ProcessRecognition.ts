@@ -414,6 +414,27 @@ export function recognizeProcess(
     }
   }
 
+  // ── 15. AOP / OZONE — construction-built toxics + pathogen oxidizer ──
+  {
+    const aopItems = eq.filter(e => e.typeId === 'aop_skid');
+    const poweredAop = aopItems.filter(e => poweredSet.has(e.id)).length;
+    if (poweredAop > 0) {
+      badges.push({
+        id: 'aop-live',
+        label: 'AOP oxidation (live)',
+        detail: `${poweredAop} AOP skid${poweredAop>1?'s':''} live — ~88% pathogens + 55% toxics per skid (lime)`,
+        tone: 'lime',
+      });
+    } else if (aopItems.length > 0) {
+      badges.push({
+        id: 'aop-dormant',
+        label: 'AOP (dormant)',
+        detail: `${aopItems.length} AOP skid${aopItems.length>1?'s':''} — needs Power cable on tile`,
+        tone: 'amber',
+      });
+    }
+  }
+
   return badges;
 }
 

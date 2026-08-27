@@ -111,6 +111,29 @@ export function chpGreenKw(liveChpSkids: number): number {
 export const UV_PATHOGENS_MULTIPLIER_PER_CHANNEL = 0.16;
 export const UV_PATHOGENS_FLOOR = 0.003;
 
+/**
+ * AOP / OZONE — construction-built toxics + pathogen oxidizer (tertiary advanced oxidation).
+ * Each powered aop_skid on open ground (needs a power_cable) oxidizes dissolved toxics/COD
+ * and inactivates pathogens via dissolved O₃ + ·OH. Stronger on pathogens than UV
+ * (88% vs 84% per skid) and the only construction kit that cuts toxics at source
+ * besides RO — trade-off: higher OPEX/power than UV, weaker than RO on salts.
+ * Stacking floors mirror RO/UV so 3 skids reach near-potable polish.
+ */
+export const AOP_PATHOGENS_MULTIPLIER_PER_SKID = 0.12;
+export const AOP_TOXIC_MULTIPLIER_PER_SKID = 0.45;
+export const AOP_COD_MULTIPLIER_PER_SKID = 0.82;
+export const AOP_BOD_MULTIPLIER_PER_SKID = 0.90;
+export const AOP_PATHOGENS_FLOOR = 0.002;
+export const AOP_TOXIC_FLOOR = 0.08;
+export const AOP_COD_FLOOR = 0.45;
+
+export function aopMultipliers(liveAopSkids: number): { pathogens: number; toxic: number; cod: number; bod: number } {
+  if (!Number.isFinite(liveAopSkids) || liveAopSkids <= 0) return { pathogens: 1, toxic: 1, cod: 1, bod: 1 };
+  let pth = 1, tox = 1, cod = 1, bod = 1;
+  for (let i = 0; i < liveAopSkids; i++) { pth *= AOP_PATHOGENS_MULTIPLIER_PER_SKID; tox *= AOP_TOXIC_MULTIPLIER_PER_SKID; cod *= AOP_COD_MULTIPLIER_PER_SKID; bod *= AOP_BOD_MULTIPLIER_PER_SKID; }
+  return { pathogens: Math.max(AOP_PATHOGENS_FLOOR, pth), toxic: Math.max(AOP_TOXIC_FLOOR, tox), cod: Math.max(AOP_COD_FLOOR, cod), bod: Math.max(0.60, bod) };
+}
+
 export function uvPathogensMultiplier(liveUvChannels: number): number {
   if (!Number.isFinite(liveUvChannels) || liveUvChannels <= 0) return 1;
   let m = 1;
@@ -219,6 +242,10 @@ export interface ConstructionTickEffect {
   totalUvChannels: number;
   poweredUvChannels: number;
   liveUvChannels: number;
+  /** AOP / OZONE — construction-built toxics + pathogen oxidizer (ground, powered). */
+  totalAopSkids: number;
+  poweredAopSkids: number;
+  liveAopSkids: number;
   /** TYCOON DIVIDEND iter 43 — reclaimed water premium (potable reuse). */
   reuseBonusPerDay: number;
   reuseBonusRate: number;
@@ -622,6 +649,35 @@ export function evaluateConstructionEffects(
     liveUvChannels = 0;
   }
 
+  // ── AOP / OZONE — construction-built toxics + pathogen oxidizer (ground, powered) ──
+  // Each powered aop_skid on open ground (needs a power_cable) oxidizes toxics/COD
+  // and disinfects pathogens via O₃/·OH. Stronger pathogens than UV (88% vs 84%)
+  // and the only construction kit besides RO that cuts toxics — industrial detox choice.
+  // Gated on basins>0 so legacy saves stay exact; stacks multiplicatively with RO+UV.
+  let totalAopSkids = eq.filter(e => e.typeId === 'aop_skid').length;
+  let poweredAopSkids = 0;
+  let liveAopSkids = 0;
+  if (totalAopSkids > 0) {
+    const poweredSetAop = poweredEquipmentIds(eq as any, uc as any);
+    poweredAopSkids = eq.filter(e => e.typeId === 'aop_skid' && poweredSetAop.has(e.id)).length;
+    liveAopSkids = (bs.length > 0) ? poweredAopSkids : 0;
+    if (liveAopSkids > 0) {
+      const aopM = aopMultipliers(liveAopSkids);
+      pathogensMul *= aopM.pathogens;
+      toxicMul *= aopM.toxic;
+      codMul *= aopM.cod;
+      bodMul *= aopM.bod;
+      // Clamp pathogens floor already via helper; keep global toxics/COD floors handled above
+      pathogensMul = Math.max(0.0015, pathogensMul);
+      toxicMul = Math.max(AOP_TOXIC_FLOOR, toxicMul);
+      codMul = Math.max(AOP_COD_FLOOR, codMul);
+    }
+  } else {
+    totalAopSkids = 0;
+    poweredAopSkids = 0;
+    liveAopSkids = 0;
+  }
+
   // ── Apply septic penalty (zone-aware when baffles exist) ─────────────────
   const septicForPenalty = hasBaffles ? septicZones : septicBasins;
   if (septicForPenalty > 0) {
@@ -738,6 +794,9 @@ export function evaluateConstructionEffects(
   if (bs.length > 0 && liveUvChannels > 0) parts.push(`${liveUvChannels} UV channel${liveUvChannels>1?'s':''} disinfecting`);
   else if (bs.length > 0 && poweredUvChannels > 0) parts.push(`${poweredUvChannels} UV dormant`);
   else if (totalUvChannels > 0 && poweredUvChannels === 0) parts.push(`${totalUvChannels} UV dormant — needs power`);
+  if (bs.length > 0 && liveAopSkids > 0) parts.push(`${liveAopSkids} AOP skid${liveAopSkids>1?'s':''} oxidizing`);
+  else if (bs.length > 0 && poweredAopSkids > 0) parts.push(`${poweredAopSkids} AOP dormant`);
+  else if (totalAopSkids > 0 && poweredAopSkids === 0) parts.push(`${totalAopSkids} AOP dormant — needs power`);
   if (extraPowerKw > 0) parts.push(`${extraPowerKw} kW live`);
   if (reagentOpexPerDay > 0) parts.push(`$${Math.round(reagentOpexPerDay)}/d reagent`);
   if (brineOpexPerDay > 0) {
@@ -796,6 +855,9 @@ export function evaluateConstructionEffects(
     totalUvChannels,
     poweredUvChannels,
     liveUvChannels,
+    totalAopSkids,
+    poweredAopSkids,
+    liveAopSkids,
     reuseBonusPerDay,
     reuseBonusRate,
     bodMultiplier: bodMul,

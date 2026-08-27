@@ -1,7 +1,7 @@
 import React from 'react';
 import { ConstructionStats } from '../design/ConstructionNetwork';
 import { BasinZoneStats } from '../design/BasinZone';
-import { Zap, Waves, Droplets, Cable, Columns3, ShieldCheck, Hexagon, Gauge, FlaskConical, Filter, Cylinder, Flame, Sun } from 'lucide-react';
+import { Zap, Waves, Droplets, Cable, Columns3, ShieldCheck, Hexagon, Gauge, FlaskConical, Filter, Cylinder, Flame, Sun, Atom } from 'lucide-react';
 
 interface Props {
   stats: ConstructionStats;
@@ -81,6 +81,13 @@ export const ConstructionStatusChip: React.FC<Props> = ({ stats, zoneStats }) =>
           <Sun size={12} className={stats.poweredUvUnits>0 ? "text-amber-300" : "text-amber-400"} />
           <span className="font-bold">{stats.poweredUvUnits}/{stats.totalUvUnits} UV live</span>
           <span className="opacity-70 hidden sm:inline">· {stats.poweredUvUnits > 0 ? 'pathogen barrier' : 'needs Power cable'}</span>
+        </span>
+      )}
+      {stats.totalAopUnits > 0 && (
+        <span className={`pointer-events-auto inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-mono shadow-lg ${stats.poweredAopUnits > 0 ? 'bg-lime-950/40 border-lime-500/30 text-lime-200' : 'bg-amber-950/30 border-amber-500/30 text-amber-200'}`}>
+          <Atom size={12} className={stats.poweredAopUnits>0 ? "text-lime-400" : "text-amber-400"} />
+          <span className="font-bold">{stats.poweredAopUnits}/{stats.totalAopUnits} AOP live</span>
+          <span className="opacity-70 hidden sm:inline">· {stats.poweredAopUnits > 0 ? 'toxics oxidation' : 'needs Power cable'}</span>
         </span>
       )}
       {stats.totalUtilityConnections > 0 && (

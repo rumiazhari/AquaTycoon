@@ -50,7 +50,7 @@ import {
   constructionSummaryLine,
 } from '../src/design/ConstructionNetwork';
 import { EQUIPMENT_TYPES } from '../src/design/ProcessEquipment';
-import { evaluateConstructionEffects, filtrationLiveSets, chemicalReagentOpexPerDay, CHEMICAL_REAGENT_COST_PER_M3_PER_PUMP, brineDisposalOpexPerDay, RO_BRINE_DISPOSAL_COST_PER_M3_HANDLED, RO_BRINE_DISPOSAL_COST_PER_M3_UNHANDLED, reclaimedWaterBonusPerDay, RECLAIMED_BONUS_RATE_PER_SKID, RECLAIMED_BONUS_MAX_RATE, RECLAIMED_BONUS_TSS_THRESHOLD, RECLAIMED_BONUS_PATHOGEN_THRESHOLD, uvPathogensMultiplier, UV_PATHOGENS_MULTIPLIER_PER_CHANNEL, UV_PATHOGENS_FLOOR } from '../src/design/ConstructionAdapter';
+import { evaluateConstructionEffects, filtrationLiveSets, chemicalReagentOpexPerDay, CHEMICAL_REAGENT_COST_PER_M3_PER_PUMP, brineDisposalOpexPerDay, RO_BRINE_DISPOSAL_COST_PER_M3_HANDLED, RO_BRINE_DISPOSAL_COST_PER_M3_UNHANDLED, reclaimedWaterBonusPerDay, RECLAIMED_BONUS_RATE_PER_SKID, RECLAIMED_BONUS_MAX_RATE, RECLAIMED_BONUS_TSS_THRESHOLD, RECLAIMED_BONUS_PATHOGEN_THRESHOLD, uvPathogensMultiplier, UV_PATHOGENS_MULTIPLIER_PER_CHANNEL, UV_PATHOGENS_FLOOR, aopMultipliers, AOP_PATHOGENS_MULTIPLIER_PER_SKID, AOP_TOXIC_FLOOR, AOP_TOXIC_MULTIPLIER_PER_SKID, AOP_COD_MULTIPLIER_PER_SKID, AOP_PATHOGENS_FLOOR } from '../src/design/ConstructionAdapter';
 import { seasonalTariffMultiplier, seasonalBonusPerDay, seasonalLabel, SEASONAL_TARIFF_AMPLITUDE } from '../src/design/SeasonalProfile';
 import {
   estimateBaffleCAPEX,
@@ -6204,6 +6204,179 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
   gsBoth2.units = unitsUV; gsBoth2.pipes = pipesUV;
   const bothPath = GameManager.tick(gsBoth2, 0.5).finalEffluent.pathogens;
   assert(bothPath < Math.min(roOnly, withUv) * 0.95, 'UV10d. UV+RO stacking < either alone ('+bothPath.toFixed(0)+' vs RO '+roOnly.toFixed(0)+' UV '+withUv.toFixed(0)+')');
+}
+{
+  // AOP01
+  assert(!!EQUIPMENT_TYPES["aop_skid"], "AOP01. aop_skid catalog exists");
+  assert(EQUIPMENT_TYPES["aop_skid"].mounting === "ground", "AOP01b. AOP is ground-mounted (dry-installed)");
+  assert(EQUIPMENT_TYPES["aop_skid"].capexUsd === 26500, "AOP01c. CAPEX $26.5k exact (got $"+EQUIPMENT_TYPES["aop_skid"].capexUsd+")");
+  assert(Math.abs(EQUIPMENT_TYPES["aop_skid"].powerKw - 9.5) < 0.01, "AOP01d. power 9.5 kW (got "+EQUIPMENT_TYPES["aop_skid"].powerKw+")");
+  assert(EQUIPMENT_TYPES["aop_skid"].opexUsdPerDay === 16, "AOP01e. OPEX $16/d");
+}
+{
+  let gs = GameManager.createInitialState(0,true);
+  let rr = GameManager.placeCustomBasin(gs, {x:5,y:5,w:3,h:3}); gs=rr.newState;
+  const inside = GameManager.placeProcessEquipment(gs, "aop_skid", 6,6);
+  assert(!inside.success, "AOP02. AOP inside basin rejected");
+  const outside = GameManager.placeProcessEquipment(gs, "aop_skid", 12,12);
+  assert(outside.success, "AOP02b. AOP on open ground allowed");
+}
+{
+  let gs = GameManager.createInitialState(0,true);
+  let a = GameManager.placeProcessEquipment(gs, "aop_skid", 10,10); gs=a.newState;
+  assert(a.success, "AOP03. first AOP placed");
+  const b = GameManager.placeProcessEquipment(gs, "aop_skid", 10,10);
+  assert(!b.success, "AOP03b. same tile blocked");
+  const c = GameManager.placeProcessEquipment(gs, "aop_skid", 11,10);
+  assert(c.success, "AOP03c. distinct tile allowed");
+}
+{
+  let gs = GameManager.createInitialState(0,false);
+  const cash0 = gs.financials.cash;
+  const capex = EQUIPMENT_TYPES["aop_skid"].capexUsd;
+  let er = GameManager.placeProcessEquipment(gs, "aop_skid", 10,10); gs=er.newState;
+  assert(er.success && ((er as any).charged ?? 0) === capex, "AOP04. campaign charges exact $"+capex);
+  assert(gs.financials.cash === cash0 - capex, "AOP04b. cash debited");
+  let gsb = GameManager.createInitialState(0,true);
+  let erb = GameManager.placeProcessEquipment(gsb, "aop_skid", 10,10); gsb=erb.newState;
+  assert(erb.success && ((erb as any).charged ?? 1) === 0, "AOP04c. sandbox charge $0");
+  let broke = GameManager.createInitialState(0,false);
+  broke.financials.cash = 1000;
+  const poor = GameManager.placeProcessEquipment(broke, "aop_skid", 10,10);
+  assert(!poor.success, "AOP04d. unaffordable AOP rejected");
+}
+{
+  const mkAop = (id,x,y)=>({ id, typeId:"aop_skid", x, y, createdAtDay:0 });
+  const cable = (ax,ay,bx,by)=>({ type:"power_cable", ax, ay, bx, by });
+  const { constructionStats } = await import("../src/design/ConstructionNetwork.js");
+  const aop = mkAop("aop1",10,10);
+  let stNone = constructionStats([], [aop], []);
+  assert(stNone.livePowerKw === 0, "AOP05. no cable -> livePower 0 (dark)");
+  assert(stNone.poweredAopUnits === 0, "AOP05b. poweredAop 0 when dark");
+  let stLive = constructionStats([], [aop], [cable(10,10,20,5)]);
+  assert(stLive.poweredAopUnits === 1, "AOP05c. cabled -> 1 powered AOP");
+  assert(Math.abs(stLive.livePowerKw - 9.5) < 0.01, "AOP05d. livePower +9.5 (got "+stLive.livePowerKw+")");
+  assert(stLive.totalAopUnits === 1, "AOP05e. totalAop 1");
+  assert(stLive.totalAopSkids === 1, "AOP05f. totalAopSkids 1");
+}
+{
+  const basin = { id:"b1", x:5, y:5, w:3, h:3, depthM:4 };
+  const aop = { id:"aop1", typeId:"aop_skid", x:10, y:10, createdAtDay:0 };
+  const cable = { type:"power_cable", ax:10, ay:10, bx:20, by:5 };
+  let ceNoBasin = evaluateConstructionEffects([], [aop], [cable], [], 3500, 0.45, null, false);
+  assert(ceNoBasin.liveAopSkids === 0 && ceNoBasin.toxicMultiplier === 1, "AOP06. no basin -> live 0 (identity)");
+  let ceDark = evaluateConstructionEffects([basin], [aop], [], [], 3500, 0.45, null, false);
+  assert(ceDark.liveAopSkids === 0 && ceDark.toxicMultiplier === 1 && ceDark.pathogensMultiplier === 1, "AOP06b. unpowered -> identity (0 live, 1x)");
+  assert(ceDark.poweredAopSkids === 0, "AOP06c. powered 0 when dark");
+  let ceLive = evaluateConstructionEffects([basin], [aop], [cable], [], 3500, 0.45, null, false);
+  assert(ceLive.liveAopSkids === 1 && ceLive.poweredAopSkids === 1, "AOP06d. live 1 AOP (1/1)");
+  assert(Math.abs(ceLive.pathogensMultiplier - 0.12) < 0.001, "AOP06e. single AOP 0.12x pathogens (got "+ceLive.pathogensMultiplier.toFixed(4)+")");
+  assert(Math.abs(ceLive.toxicMultiplier - 0.45) < 0.001, "AOP06f. single AOP 0.45x toxics (got "+ceLive.toxicMultiplier.toFixed(3)+")");
+  assert(ceLive.codMultiplier < 0.90 && ceLive.codMultiplier > 0.80, "AOP06g. single AOP COD ~0.86x with septic+volume (got "+ceLive.codMultiplier.toFixed(3)+")"); // 0.82 * volume 0.985 * septic 1.06 = 0.856
+  assert(ceLive.summary.includes("AOP") && ceLive.summary.includes("oxidizing"), "AOP06h. summary has AOP oxidizing");
+  const aop2 = { id:"aop2", typeId:"aop_skid", x:11, y:10, createdAtDay:0 };
+  const c2 = { type:"power_cable", ax:11, ay:10, bx:20, by:5 };
+  let ceTwo = evaluateConstructionEffects([basin], [aop, aop2], [cable, c2], [], 3500, 0.45, null, false);
+  assert(ceTwo.liveAopSkids === 2, "AOP06i. 2 live AOP");
+  assert(Math.abs(ceTwo.pathogensMultiplier - 0.0144) < 0.0005, "AOP06j. 2 AOP 0.0144x pathogens (got "+ceTwo.pathogensMultiplier.toFixed(5)+")");
+  assert(Math.abs(ceTwo.toxicMultiplier - 0.2025) < 0.001, "AOP06k. 2 AOP 0.2025x toxics (got "+ceTwo.toxicMultiplier.toFixed(4)+")");
+  const aop3 = { id:"aop3", typeId:"aop_skid", x:12, y:10, createdAtDay:0 };
+  const c3 = { type:"power_cable", ax:12, ay:10, bx:20, by:5 };
+  let ceThree = evaluateConstructionEffects([basin], [aop, aop2, aop3], [cable, c2, c3], [], 3500, 0.45, null, false);
+  assert(ceThree.liveAopSkids === 3, "AOP06l. 3 live AOP");
+  assert(Math.abs(ceThree.toxicMultiplier - 0.091125) < 0.002, "AOP06m. 3 AOP 0.091x toxics (got "+ceThree.toxicMultiplier.toFixed(5)+")");
+  const aop4 = { id:"aop4", typeId:"aop_skid", x:13, y:10, createdAtDay:0 };
+  const c4 = { type:"power_cable", ax:13, ay:10, bx:20, by:5 };
+  let ceFour = evaluateConstructionEffects([basin], [aop, aop2, aop3, aop4], [cable, c2, c3, c4], [], 3500, 0.45, null, false);
+  assert(Math.abs(ceFour.toxicMultiplier - AOP_TOXIC_FLOOR) < 0.0001, "AOP06n. 4 AOP toxic floor 0.08 (got "+ceFour.toxicMultiplier+")");
+  assert(Math.abs(aopMultipliers(1).pathogens - AOP_PATHOGENS_MULTIPLIER_PER_SKID) < 0.0001, "AOP06o. helper single 0.12");
+  assert(aopMultipliers(0).pathogens === 1, "AOP06p. helper 0 -> 1");
+}
+{
+  const { recognizeProcess } = await import("../src/design/ProcessRecognition.js");
+  const basin = { id:"b1", x:5, y:5, w:3, h:3, depthM:4 };
+  const cable = { type:"power_cable", ax:10, ay:10, bx:20, by:5 };
+  const aop = { id:"aop1", typeId:"aop_skid", x:10, y:10, createdAtDay:0 };
+  let bdDark = recognizeProcess([basin], [], [aop], []);
+  assert(bdDark.some(b=>b.id==="aop-dormant"), "AOP07. dormant AOP badge when unpowered");
+  let bdLive = recognizeProcess([basin], [], [aop], [cable]);
+  assert(bdLive.some(b=>b.id==="aop-live" && b.tone==="lime"), "AOP07b. live AOP lime badge when powered");
+  let bdNoBasin = recognizeProcess([], [], [aop], [cable]);
+  assert(bdNoBasin.length === 0, "AOP07c. no basin -> no badge");
+  assert(bdDark.find(b=>b.id==="aop-dormant").tone === "amber", "AOP07d. dormant tone amber");
+}
+{
+  let gs = GameManager.createInitialState(0,true);
+  let rr = GameManager.placeCustomBasin(gs, {x:5,y:5,w:3,h:3}); gs=rr.newState;
+  const bid = gs.customBasins[0].id;
+  let er = GameManager.placeProcessEquipment(gs, "aop_skid", 12,12); gs=er.newState;
+  assert(er.success, "AOP08 setup AOP far ground");
+  const demOk = GameManager.demolishCustomBasin(gs, bid);
+  assert(demOk.success, "AOP08b. ground AOP does not block basin demolish");
+  let gs2 = GameManager.createInitialState(0,true);
+  let rr2 = GameManager.placeCustomBasin(gs2, {x:5,y:5,w:3,h:3}); gs2=rr2.newState;
+  const b2 = gs2.customBasins[0].id;
+  let er2 = GameManager.placeProcessEquipment(gs2, "fine_bubble_diffuser", 6,6); gs2=er2.newState;
+  const blocked = GameManager.demolishCustomBasin(gs2, b2);
+  assert(!blocked.success, "AOP08c. in-basin diffuser DOES block basin demolish");
+}
+{
+  let gs = GameManager.createInitialState(0,false);
+  let er = GameManager.placeProcessEquipment(gs, "aop_skid", 10,10); gs=er.newState;
+  const eid = gs.processEquipment[0].id;
+  const capex = EQUIPMENT_TYPES["aop_skid"].capexUsd;
+  const expectedRefund = Math.round(capex * 0.7);
+  const cashBefore = gs.financials.cash;
+  const dr = GameManager.demolishProcessEquipment(gs, eid);
+  assert(dr.success && dr.refunded === expectedRefund, "AOP09. AOP salvage 70% "+dr.refunded+" vs "+expectedRefund);
+  assert(dr.newState.financials.cash === cashBefore + expectedRefund, "AOP09b. cash refunded");
+  assert(dr.newState.processEquipment.length === 0, "AOP09c. AOP removed");
+}
+{
+  let gs = GameManager.createInitialState(2,true);
+  let rr = GameManager.placeCustomBasin(gs, {x:5,y:5,w:3,h:3}); gs=rr.newState;
+  let er = GameManager.placeProcessEquipment(gs, "aop_skid", 12,12); gs=er.newState;
+  let ur = GameManager.placeUtilityConnection(gs, "power_cable", 12,12, 6,6); gs=ur.newState;
+  assert(ur.success, "AOP10 setup AOP+ cable");
+  const mkU = (id,type,x,y)=>({ instanceId:id, typeId:type, gridX:x, gridY:y, rotation:0, volume:200, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:0, lastOpexActual:0 });
+  const mkP = (id,from,fp,to,tp,pt="liquid")=>({ id, fromUnitId:from, fromPortId:fp, toUnitId:to, toPortId:tp, pipeType:pt, flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, cachedHydraulics:{ headlossM:0, velocityMps:0, condition:"ok" } });
+  const unitsAop = [
+    mkU("inl","influent_inlet",2,10),
+    mkU("scr","bar_screen",5,10),
+    mkU("grt","grit_chamber",8,10),
+    mkU("pri","primary_clarifier_circular",11,9),
+    mkU("cas","activated_sludge_cas",15,9),
+    mkU("clr","secondary_clarifier",17,13),
+    mkU("uv","uv_disinfection",20,10),
+    mkU("outf","effluent_outfall",24,10),
+    mkU("thk","sludge_thickener",30,12),
+  ];
+  const pipesAop = [
+    mkP("p_a","inl","outlet","scr","inlet"),
+    mkP("p_b","scr","outlet","grt","inlet"),
+    mkP("p_c","grt","outlet","pri","inlet"),
+    mkP("p_d","pri","outlet","cas","inlet"),
+    mkP("p_e","cas","outlet","clr","inlet"),
+    mkP("p_f","clr","outlet","uv","inlet"),
+    mkP("p_g","uv","outlet","outf","inlet"),
+    mkP("p_h","clr","was_outlet","thk","inlet","sludge"),
+    mkP("p_r","clr","sludge_outlet","cas","ras_inlet","ras"),
+  ];
+  gs.units = unitsAop; gs.pipes = pipesAop;
+  const baselineTox = (()=>{
+    let g=GameManager.createInitialState(2,true); g.units=unitsAop; g.pipes=pipesAop; g = GameManager.tick(g, 0.5); return g.finalEffluent.toxicIndex;
+  })();
+  const baselinePath2 = (()=>{
+    let g=GameManager.createInitialState(2,true); g.units=unitsAop; g.pipes=pipesAop; g = GameManager.tick(g, 0.5); return g.finalEffluent.pathogens;
+  })();
+  let after = GameManager.tick(gs, 0.5);
+  const withAopTox = after.finalEffluent.toxicIndex;
+  const withAopPath = after.finalEffluent.pathogens;
+  assert(withAopTox < baselineTox * 0.55, "AOP10. tick toxics "+withAopTox.toFixed(1)+" < 55% of baseline "+baselineTox.toFixed(1));
+  assert(withAopPath < baselinePath2 * 0.18, "AOP10b. tick pathogens "+withAopPath.toFixed(0)+" < 18% of baseline "+baselinePath2.toFixed(0));
+  let gsNoBasin = { ...gs, customBasins: [] };
+  let afterNoBasin = GameManager.tick(gsNoBasin, 0.5);
+  assert(Math.abs(afterNoBasin.finalEffluent.toxicIndex - baselineTox) < baselineTox * 0.02, "AOP10c. no basin -> no AOP toxics polish (near baseline)");
 }
 
 

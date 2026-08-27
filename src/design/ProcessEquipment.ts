@@ -175,6 +175,16 @@ export const EQUIPMENT_TYPES: Record<string, EquipmentTypeDef> = {
     powerKw: 7.5, // LP/amalgam lamps + ballasts — needs power_cable to deliver UV dose
     blurb: 'Ground UV channel with low-pressure lamps. Tertiary pathogen barrier — ~84% pathogen kill per channel when powered; stack channels for potable-grade disinfection.',
   },
+  // ── AOP / OZONE — construction-built toxics + pathogen oxidizer (tertiary advanced oxidation) ───
+  aop_skid: {
+    id: 'aop_skid',
+    name: 'Ozone-AOP Oxidation Skid',
+    mounting: 'ground',
+    capexUsd: 26_500,
+    opexUsdPerDay: 16,
+    powerKw: 9.5, // O₂ concentrator + ozone generator + reactor contactor
+    blurb: 'Ground O₃/AOP skid with O₂ concentrator + reactor. Tertiary oxidizer — ~88% pathogen kill + 55% toxics oxidation per skid when powered; stack for industrial-grade detox.',
+  },
 };
 
 /** One installed machine. Occupies exactly ONE grid tile. */
