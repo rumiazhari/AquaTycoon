@@ -1,5 +1,5 @@
 import React from 'react';
-import { Trash2, X, Layers, Cpu, Columns3, Cable, BoxSelect, Copy } from 'lucide-react';
+import { Trash2, X, Layers, Cpu, Columns3, Cable, BoxSelect, Copy, BookmarkPlus } from 'lucide-react';
 import type { ConstructionSelection } from '../design/ConstructionSelection';
 import { selectionCount, selectionSummaryLine } from '../design/ConstructionSelection';
 import { SoundManager } from '../audio/SoundManager';
@@ -9,10 +9,11 @@ interface BulkActionBarProps {
   refundEstimate: number;
   onBulkDemolish: () => void;
   onDuplicate?: () => void;
+  onSaveTemplate?: () => void;
   onClear: () => void;
 }
 
-export const BulkActionBar: React.FC<BulkActionBarProps> = ({ selection, refundEstimate, onBulkDemolish, onDuplicate, onClear }) => {
+export const BulkActionBar: React.FC<BulkActionBarProps> = ({ selection, refundEstimate, onBulkDemolish, onDuplicate, onSaveTemplate, onClear }) => {
   const count = selectionCount(selection);
   if (count <= 1) return null;
   return (
@@ -33,6 +34,15 @@ export const BulkActionBar: React.FC<BulkActionBarProps> = ({ selection, refundE
       </div>
       <div className="flex items-center gap-1.5 ml-2 shrink-0">
         <span className="text-[11px] font-mono text-emerald-300 hidden lg:inline">+${refundEstimate.toLocaleString()} salvage</span>
+        {onSaveTemplate && (
+          <button
+            onClick={() => { SoundManager.playClick(); onSaveTemplate(); }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-500 hover:bg-indigo-400 text-white text-xs font-bold transition shadow-md"
+            title="Save as Template — store selected basins/baffles/machines as a reusable skid template in the library (then Stamp anywhere)"
+          >
+            <BookmarkPlus size={13} /> Save Template
+          </button>
+        )}
         {onDuplicate && (
           <button
             onClick={() => { SoundManager.playClick(); onDuplicate(); }}

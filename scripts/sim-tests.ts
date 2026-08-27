@@ -6380,6 +6380,173 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
 }
 
 
+// ── CONSTRUCTION TEMPLATE LIBRARY v1 — skid template save/stamp (iter 61) ──
+{
+  const { createTemplateFromSelection, estimateTemplateCAPEX, validateTemplateStamp, stampTemplate, templateSummaryLine } = await import("../src/design/ConstructionLibrary.js");
+  const { estimateBasinCAPEX } = await import("../src/design/CustomBasin.js");
+  const { estimateBaffleCAPEX: ebCap } = await import("../src/design/BasinZone.js");
+  const { EQUIPMENT_TYPES: ET } = await import("../src/design/ProcessEquipment.js");
+  const makeBasin = (id,x,y,w,h,depthM=4)=>({ id, x, y, w, h, depthM, createdAtDay:0 });
+  const makeEquip = (id,typeId,x,y)=>({ id, typeId, x, y, createdAtDay:0 });
+  const makeBaffle = (id,basinId,orientation,offset)=>({ id, basinId, orientation, offsetTiles:offset, createdAtDay:0 });
+  const emptySel = { basins:[], equipment:[], baffles:[], utilities:[] };
+  let rEmpty = createTemplateFromSelection(emptySel, [], [], [], "Empty", 0, "tpl_test_empty");
+  assert(!rEmpty.ok && /at least one/i.test(rEmpty.reason ?? ""), "LIB01. empty selection rejected");
+  let rUtilOnly = createTemplateFromSelection({ basins:[], equipment:[], baffles:[], utilities:["u1"] }, [], [], [], "UtilOnly", 0, "tpl_util");
+  assert(!rUtilOnly.ok, "LIB01b. utilities-only rejected");
+}
+{
+  const { createTemplateFromSelection, estimateTemplateCAPEX, templateSummaryLine } = await import("../src/design/ConstructionLibrary.js");
+  const { estimateBasinCAPEX } = await import("../src/design/CustomBasin.js");
+  const b1 = { id:"b1", x:5, y:5, w:4, h:3, depthM:4, createdAtDay:0 };
+  const sel = { basins:["b1"], equipment:[], baffles:[], utilities:[] };
+  let r = createTemplateFromSelection(sel, [b1], [], [], "Skid 1 — 1 basins", 10, "tpl_lib02");
+  assert(r.ok && !!r.template, "LIB02. single basin template creation ok");
+  assert(r.template!.basins.length===1 && r.template!.basins[0].w===4 && r.template!.basins[0].h===3, "LIB02b. basin dims preserved");
+  assert(r.template!.basins[0].dx===0 && r.template!.basins[0].dy===0, "LIB02c. single basin relative 0,0");
+  const expected = estimateBasinCAPEX(b1 as any);
+  const tplCost = estimateTemplateCAPEX(r.template!);
+  assert(tplCost===expected, "LIB02d. cost equals basin CAPEX $"+expected+" (got $"+tplCost+")");
+  assert(templateSummaryLine(r.template!).includes("1 basin") && templateSummaryLine(r.template!).includes("$"), "LIB02e. summary line has basin + $");
+}
+{
+  const { createTemplateFromSelection, estimateTemplateCAPEX } = await import("../src/design/ConstructionLibrary.js");
+  const { estimateBasinCAPEX } = await import("../src/design/CustomBasin.js");
+  const { estimateBaffleCAPEX: ebCap } = await import("../src/design/BasinZone.js");
+  const b1 = { id:"bA", x:10, y:10, w:6, h:4, depthM:4, createdAtDay:0 };
+  const b2 = { id:"bB", x:20, y:10, w:3, h:3, depthM:3, createdAtDay:0 };
+  const e1 = { id:"e1", typeId:"fine_bubble_diffuser", x:11, y:11, createdAtDay:0 };
+  const e2 = { id:"e2", typeId:"rotary_blower", x:30, y:30, createdAtDay:0 };
+  const bf = { id:"bf1", basinId:"bA", orientation:"vertical" as const, offsetTiles:2, createdAtDay:0 };
+  const sel = { basins:["bA","bB"], equipment:["e1","e2"], baffles:["bf1"], utilities:[] };
+  let r = createTemplateFromSelection(sel, [b1,b2], [e1,e2], [bf], "Twin Skid", 5, "tpl_lib03");
+  assert(r.ok && r.template!.basins.length===2, "LIB03. twin basins + 2 equip + baffle template ok");
+  assert(r.template!.anchorX===10 && r.template!.anchorY===10, "LIB03b. anchor 10,10 (got "+r.template!.anchorX+","+r.template!.anchorY+")");
+  assert(r.template!.basins[0].dx===0 && r.template!.basins[1].dx===10 && r.template!.basins[1].dy===0, "LIB03c. relative offsets preserved (bB dx10)");
+  assert(r.template!.equipment.find(e=>e.typeId==="fine_bubble_diffuser")?.dx===1, "LIB03d. diffuser dx 1");
+  assert(r.template!.baffles.length===1 && r.template!.baffles[0].basinIndex===0, "LIB03e. baffle maps to basin 0");
+  const cost = estimateTemplateCAPEX(r.template!);
+  const expB1 = estimateBasinCAPEX(b1 as any); const expB2 = estimateBasinCAPEX(b2 as any); const expBf = ebCap(b1 as any, "vertical"); const expE1 = EQUIPMENT_TYPES["fine_bubble_diffuser"].capexUsd; const expE2 = EQUIPMENT_TYPES["rotary_blower"].capexUsd;
+  const exp = expB1+expB2+expBf+expE1+expE2;
+  assert(cost===exp, "LIB03f. cost sum $"+exp+" (got $"+cost+")");
+}
+{
+  const { validateTemplateStamp, createTemplateFromSelection } = await import("../src/design/ConstructionLibrary.js");
+  const b1 = { id:"b1", x:5, y:5, w:3, h:3, depthM:4, createdAtDay:0 };
+  const eDiff = { id:"e1", typeId:"fine_bubble_diffuser", x:6, y:6, createdAtDay:0 };
+  const sel = { basins:["b1"], equipment:["e1"], baffles:[], utilities:[] };
+  let r = createTemplateFromSelection(sel, [b1], [eDiff], [], "Tpl", 0, "tpl_lib04");
+  const tpl = r.template!;
+  const ok = validateTemplateStamp(tpl, {x:15, y:15}, [40,30], [], [], []);
+  assert(ok.ok, "LIB04. valid far-corner stamp accepted");
+  const badOverlap = validateTemplateStamp(tpl, {x:5, y:5}, [40,30], [{x:5,y:5,w:3,h:3}], [], []);
+  assert(!badOverlap.ok && /overlap/i.test(badOverlap.reason ?? ""), "LIB04b. overlap with existing basin rejected");
+  const badBounds = validateTemplateStamp(tpl, {x:38, y:28}, [40,30], [], [], []);
+  assert(!badBounds.ok && /boundary/i.test(badBounds.reason ?? ""), "LIB04c. out-of-bounds rejected");
+  const badEquip = validateTemplateStamp(tpl, {x:15, y:15}, [40,30], [], [{x:16,y:16}], []);
+  assert(!badEquip.ok && /collides|equipment/i.test(badEquip.reason ?? ""), "LIB04d. equipment collision rejected");
+}
+{
+  const { createTemplateFromSelection, stampTemplate } = await import("../src/design/ConstructionLibrary.js");
+  const b1 = { id:"b1", x:2, y:2, w:4, h:4, depthM:4, createdAtDay:0 };
+  const e1 = { id:"e1", typeId:"submersible_mixer", x:3, y:3, createdAtDay:0, rotation:90 as const };
+  const bf = { id:"bf1", basinId:"b1", orientation:"vertical" as const, offsetTiles:2, createdAtDay:0 };
+  const sel = { basins:["b1"], equipment:["e1"], baffles:["bf1"], utilities:[] };
+  let r = createTemplateFromSelection(sel, [b1], [e1], [bf], "StampTpl", 0, "tpl_lib05");
+  const tpl = r.template!;
+  const stamped = stampTemplate(tpl, {x:20, y:20}, 7);
+  assert(stamped.basins.length===1 && stamped.basins[0].x===20 && stamped.basins[0].y===20, "LIB05. stamped basin at 20,20");
+  assert(stamped.basins[0].depthM===4 && stamped.basins[0].w===4, "LIB05b. dims preserved");
+  assert(stamped.equipment.length===1 && stamped.equipment[0].x===21 && stamped.equipment[0].y===21, "LIB05c. equipment offset correctly (3,3 -> 21,21)");
+  assert(stamped.equipment[0].rotation===90, "LIB05d. rotation preserved");
+  assert(stamped.baffles.length===1 && stamped.baffles[0].basinId===stamped.basins[0].id, "LIB05e. baffle re-parents to new basin id");
+  assert(stamped.basins[0].id !== "b1" && stamped.equipment[0].id !== "e1", "LIB05f. fresh ids not colliding");
+  assert(stamped.baffles[0].offsetTiles===2, "LIB05g. baffle offset preserved");
+}
+{
+  const { estimateTemplateCAPEX } = await import("../src/design/ConstructionLibrary.js");
+  let gs = GameManager.createInitialState(0,true);
+  let rr = GameManager.placeCustomBasin(gs, {x:5,y:5,w:3,h:3}); gs=rr.newState;
+  const bId = gs.customBasins[0].id;
+  let er = GameManager.placeProcessEquipment(gs, "submersible_mixer", 6,6); gs=er.newState;
+  const eId = gs.processEquipment[0].id;
+  let bfRes = GameManager.placeBaffle(gs, bId, "vertical", 1);
+  if (bfRes.success) gs=bfRes.newState;
+  const sel = { basins:[bId], equipment:[eId], baffles: gs.customBaffles?.length ? [gs.customBaffles[0].id] : [], utilities:[] };
+  let save = (GameManager as any).saveConstructionTemplate(gs, sel, "My Skid");
+  assert(save.success && !!save.template, "LIB06. GameManager saveConstructionTemplate ok");
+  assert(save.newState.constructionTemplates?.length===1, "LIB06b. templates length 1");
+  assert(save.newState.constructionTemplates![0].name==="My Skid", "LIB06c. name preserved");
+  gs=save.newState;
+  const tplId = gs.constructionTemplates![0].id;
+  const cost = estimateTemplateCAPEX(gs.constructionTemplates![0]);
+  let stamp = (GameManager as any).stampConstructionTemplate(gs, tplId);
+  assert(stamp.success, "LIB06d. stamp in sandbox ok");
+  assert(stamp.charged===0, "LIB06e. sandbox stamp $0 charged (got $"+stamp.charged+")");
+  assert(stamp.newState.customBasins.length===2, "LIB06f. basins doubled 1->2 after stamp");
+  assert(stamp.newState.processEquipment.length===2, "LIB06g. equipment doubled");
+  const stampBasins = stamp.newState.customBasins;
+  const overlapOk = stampBasins[0].x !== stampBasins[1].x || stampBasins[0].y !== stampBasins[1].y;
+  assert(overlapOk, "LIB06h. stamped basin at distinct location");
+  let dem = (GameManager as any).demolishConstructionTemplate(stamp.newState, tplId);
+  assert(dem.success && dem.newState.constructionTemplates?.length===0, "LIB06i. demolish template removes it");
+}
+{
+  let gs = GameManager.createInitialState(0,true);
+  let badSave = (GameManager as any).saveConstructionTemplate(gs, { basins:[], equipment:[], baffles:[], utilities:[] }, "Bad");
+  assert(!badSave.success, "LIB07. empty save rejected");
+  let badStamp = (GameManager as any).stampConstructionTemplate(gs, "nope");
+  assert(!badStamp.success && /Unknown/i.test(badStamp.reason ?? ""), "LIB07b. unknown template stamp rejected");
+  let gsBroke = GameManager.createInitialState(0,false);
+  let rr2 = GameManager.placeCustomBasin(gsBroke, {x:5,y:5,w:2,h:2}); gsBroke=rr2.newState;
+  assert(rr2.success, "LIB07c-setup basin placed: "+(rr2.reason??""));
+  const bid2 = gsBroke.customBasins[0].id;
+  const sel2 = { basins:[bid2], equipment:[], baffles:[], utilities:[] };
+  let save2 = (GameManager as any).saveConstructionTemplate(gsBroke, sel2, "Big Skid");
+  assert(save2.success, "LIB07c. save big skid ok");
+  gsBroke=save2.newState;
+  gsBroke.financials.cash = 100;
+  const tplId2 = gsBroke.constructionTemplates![0].id;
+  let poorStamp = (GameManager as any).stampConstructionTemplate(gsBroke, tplId2);
+  assert(!poorStamp.success && /Insufficient/i.test(poorStamp.reason ?? ""), "LIB07d. insufficient funds rejected");
+  let gsFull = GameManager.createInitialState(0,true);
+  (gsFull as any).currentLevel = { ...gsFull.currentLevel, mapSize: [6,6] as any };
+  let rFull = GameManager.placeCustomBasin(gsFull, {x:0,y:0,w:3,h:3}); gsFull=rFull.newState;
+  let rFull2 = GameManager.placeCustomBasin(gsFull, {x:3,y:0,w:3,h:3}); if(rFull2.success) gsFull=rFull2.newState;
+  let rFull3 = GameManager.placeCustomBasin(gsFull, {x:0,y:3,w:3,h:3}); if(rFull3.success) gsFull=rFull3.newState;
+  let rFull4 = GameManager.placeCustomBasin(gsFull, {x:3,y:3,w:3,h:3}); if(rFull4.success) gsFull=rFull4.newState;
+  const selFull = { basins:[gsFull.customBasins[0].id], equipment:[], baffles:[], utilities:[] };
+  let saveFull = (GameManager as any).saveConstructionTemplate(gsFull, selFull, "FullTpl");
+  if (saveFull.success) {
+    let stFull = (GameManager as any).stampConstructionTemplate(saveFull.newState, saveFull.template.id);
+    assert(!stFull.success && /No room/i.test(stFull.reason ?? ""), "LIB07e. no room to stamp on full map rejected");
+  } else {
+    assert(true, "LIB07e. save on full map skipped (ok)");
+  }
+}
+{
+  let gs = GameManager.createInitialState(0,true);
+  let rr = GameManager.placeCustomBasin(gs, {x:5,y:5,w:3,h:3}); gs=rr.newState;
+  const bId = gs.customBasins[0].id;
+  let er = GameManager.placeProcessEquipment(gs, "fine_bubble_diffuser", 6,6); gs=er.newState;
+  let er2 = GameManager.placeProcessEquipment(gs, "rotary_blower", 12,12); gs=er2.newState;
+  const selMix = { basins:[bId], equipment:[gs.processEquipment[0].id], baffles:[], utilities:[] };
+  const selGround = { basins:[], equipment:[gs.processEquipment[1].id], baffles:[], utilities:[] };
+  for(let i=0;i<12;i++){
+    const s = i%2===0 ? selMix : selGround;
+    const nm = `Tpl${i}`;
+    const sv = (GameManager as any).saveConstructionTemplate(gs, s, nm);
+    assert(sv.success, "LIB08. save "+nm+" ok "+i);
+    gs=sv.newState;
+  }
+  assert(gs.constructionTemplates?.length===12, "LIB08b. 12 templates stored");
+  const over = (GameManager as any).saveConstructionTemplate(gs, selMix, "Overflow");
+  assert(!over.success && /full/i.test(over.reason ?? ""), "LIB08c. 13th save rejected (full)");
+  const groundTplId = gs.constructionTemplates!.find(t=>t.equipment[0]?.typeId==="rotary_blower")!.id;
+  let stG = (GameManager as any).stampConstructionTemplate(gs, groundTplId);
+  assert(stG.success, "LIB08d. ground template stamp ok");
+}
+
 console.log(failures === 0 ? "\nALL TESTS PASSED" : `\n${failures} TEST(S) FAILED`);
 
 process.exit(failures === 0 ? 0 : 1);

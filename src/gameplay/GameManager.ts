@@ -76,6 +76,13 @@ import {
   applyInfluentEvent,
 } from '../design/InfluentEvents';
 import type { ConstructionSelection } from '../design/ConstructionSelection';
+import {
+  ConstructionTemplate,
+  createTemplateFromSelection as _createTemplate,
+  estimateTemplateCAPEX as _estimateTemplateCAPEX,
+  validateTemplateStamp as _validateTemplateStamp,
+  stampTemplate as _stampTemplate,
+} from '../design/ConstructionLibrary';
 
 /**
  * Municipal overdraft financing — tycoon polish iter 39.
@@ -195,6 +202,12 @@ export interface GameState {
   customBaffles: BaffleWall[];
   /** Selected baffle id for Inspect/Demolish. */
   selectedBaffleId?: string | null;
+  /**
+   * CONSTRUCTION-BUILDER Template Library v1 (iter 61): saved skid templates.
+   * Each template is a relative grouping of basins+baffles+equipment that
+   * the player can stamp elsewhere. In-memory, persisted with the save.
+   */
+  constructionTemplates?: ConstructionTemplate[];
 }
 
 export class GameManager {
@@ -322,7 +335,8 @@ export class GameManager {
       utilityConnections: [],
       selectedUtilityId: null,
       customBaffles: [],
-      selectedBaffleId: null
+      selectedBaffleId: null,
+      constructionTemplates: []
     };
   }
 
@@ -2156,6 +2170,68 @@ export class GameManager {
       return {newState, success:true, charged, newSelection};
     }
     return {newState:state, success:false, reason:"No room to duplicate — clear space near the selection (tried 2-tile offsets)"};
+  }
+
+  // ── ITER 61: CONSTRUCTION-BUILDER TEMPLATE LIBRARY v1 — save/ stamp skid templates ──
+  public static saveConstructionTemplate(state: GameState, sel: ConstructionSelection, name?: string): { newState: GameState; success: boolean; reason?: string; template?: ConstructionTemplate } {
+    const correct = _createTemplate(sel, state.customBasins ?? [] as any, state.processEquipment ?? [] as any, state.customBaffles ?? [] as any, name, state.gameTimeDays);
+    if (!correct.ok || !correct.template) return { newState: state, success: false, reason: correct.reason ?? 'Cannot create template' };
+    const tpl = correct.template;
+    // enforce max 12 templates to keep UI sane
+    const existing = state.constructionTemplates ?? [];
+    if (existing.length >= 12) return { newState: state, success: false, reason: 'Template library full (12 max) — demolish a template first' };
+    if (existing.some(t => t.id === tpl.id)) return { newState: state, success: false, reason: 'Duplicate template id' };
+    const next = [...existing, tpl];
+    return { newState: { ...state, constructionTemplates: next }, success: true, template: tpl };
+  }
+
+  public static demolishConstructionTemplate(state: GameState, templateId: string): { newState: GameState; success: boolean; reason?: string } {
+    const existing = state.constructionTemplates ?? [];
+    if (!existing.some(t => t.id === templateId)) return { newState: state, success: false, reason: 'Unknown template' };
+    return { newState: { ...state, constructionTemplates: existing.filter(t => t.id !== templateId) }, success: true };
+  }
+
+  public static stampConstructionTemplate(state: GameState, templateId: string): { newState: GameState; success: boolean; reason?: string; charged?: number; newSelection?: ConstructionSelection } {
+    const tpl = (state.constructionTemplates ?? []).find(t => t.id === templateId);
+    if (!tpl) return { newState: state, success: false, reason: 'Unknown template' };
+    const mapSize = state.currentLevel.mapSize as [number, number];
+    const unitRects: any[] = state.units.map((u:any)=>{ const [uw,ul]=resolveFootprint(u); return {x:u.gridX,y:u.gridY,w:uw,h:ul}; });
+    for(const e of (state.processEquipment??[]) as any[]) if((EQUIPMENT_TYPES as any)[e.typeId]?.mounting==='ground') unitRects.push({x:e.x,y:e.y,w:1,h:1});
+    const existingBasins = state.customBasins ?? [];
+    const existingEquipment = state.processEquipment ?? [];
+    const cost = _estimateTemplateCAPEX(tpl);
+    if (state.gameMode!=='sandbox' && !state.tutorialActive && state.financials.cash < cost) return { newState: state, success: false, reason: `Insufficient funds ($${cost.toLocaleString()} required)` };
+    // spiral search for first valid anchor (reuse duplicate's candidate order)
+    const cands: [number,number][] = [];
+    for(let r=1;r<=8;r++){ for(let dx=-r;dx<=r;dx++) for(let dy=-r;dy<=r;dy++) if(Math.max(Math.abs(dx),Math.abs(dy))===r) cands.push([dx,dy]); }
+    cands.sort((a,b)=> (Math.abs(a[0])+Math.abs(a[1]))-(Math.abs(b[0])+Math.abs(b[1])) || (a[0]+a[1])-(b[0]+b[1]));
+    const pref=cands.findIndex(c=>c[0]===2&&c[1]===2); if(pref>0){ const v=cands.splice(pref,1)[0]; cands.unshift(v); }
+    // Try each offset applied to tpl's anchor derivation: anchor is minX/minY of original selection, but for stamping we treat tpl's stored dx/dy as relative to its anchor, so stamping anchor = original anchor + offset? Simpler: stamping anchor = (min existing + ???). We just try candidate anchor tiles directly derived from tpl's first basin or equipment.
+    // Derive a base anchor near the original selection's min: use the smallest existing basin x,y as hint, else 5,5.
+    const hintX = existingBasins.length>0 ? Math.min(...existingBasins.map(b=>b.x)) : 5;
+    const hintY = existingBasins.length>0 ? Math.min(...existingBasins.map(b=>b.y)) : 5;
+    for(const [dx,dy] of cands){
+      // candidate absolute anchor = hint + dx/dy + 2 (ensure offset)
+      // Actually tpl basins are stored relative to its original anchor (tpl.anchorX/Y). To place at absolute anchorTile, basins go to anchorTile + dxRel. So anchorTile itself is the absolute tile where the template's original min would land.
+      // We'll try anchorTile = (hintX + dx, hintY + dy) but ensure positive.
+      const anchor = { x: Math.max(0, hintX + dx), y: Math.max(0, hintY + dy) };
+      const v = _validateTemplateStamp(tpl, anchor, mapSize, existingBasins as any, existingEquipment as any, unitRects);
+      if(!v.ok) continue;
+      const stamped = _stampTemplate(tpl, anchor, state.gameTimeDays);
+      // Ensure ids don't collide (stamp uses tpl.id + timestamp, should be unique, but guard)
+      const charged = (state.gameMode==='sandbox'||state.tutorialActive)?0:cost;
+      const newCash = (state.gameMode==='sandbox'||state.tutorialActive)?state.financials.cash:state.financials.cash - charged;
+      const newState: GameState = {
+        ...state,
+        financials: { ...state.financials, cash: newCash },
+        customBasins: [...(state.customBasins ?? []), ...stamped.basins],
+        customBaffles: [...(state.customBaffles ?? []), ...stamped.baffles],
+        processEquipment: [...(state.processEquipment ?? []), ...stamped.equipment],
+      };
+      const newSelection: ConstructionSelection = { basins: stamped.basins.map(b=>b.id), equipment: stamped.equipment.map(e=>e.id), baffles: stamped.baffles.map(b=>b.id), utilities: [] };
+      return { newState, success: true, charged, newSelection };
+    }
+    return { newState: state, success: false, reason: 'No room to stamp template — clear space near existing skid (tried 8-tile spiral)' };
   }
 
   // ── CONSTRUCTION-BUILDER P1 — BASIN DIRECT EDITING (depth + resize) ─────────

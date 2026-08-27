@@ -42,6 +42,8 @@ import { BaffleInspector } from './ui/BaffleInspector';
 import { ConstructionStatusChip } from './ui/ConstructionStatusChip';
 import { ProcessBadgeStrip } from './ui/ProcessBadgeStrip';
 import { BulkActionBar } from './ui/BulkActionBar';
+import { ConstructionLibraryStrip } from './ui/ConstructionLibraryStrip';
+import { estimateTemplateCAPEX } from './design/ConstructionLibrary';
 import { recognizeProcess } from './design/ProcessRecognition';
 import { PlantFlowDiagram } from './ui/PlantFlowDiagram';
 import { defaultMaterialForPipeType } from './design/PipeSizing';
@@ -2484,6 +2486,62 @@ export const App: React.FC = () => {
     setToast(`Bulk demolished: ${r.basins} basins · ${r.equipment} machines · ${r.baffles} baffles · ${r.utilities} utilities` + (refund ? ` — salvage $${refund.toLocaleString()}` : '') + ' (Ctrl+Z to undo)');
   }, [pushHistory]);
 
+  const handleSaveTemplate = useCallback(() => {
+    const gs = gsRef.current;
+    const sel = constructionSelectionRef.current;
+    if (selectionCount(sel) === 0) { SoundManager.playWarning(); setToast('Nothing selected — Shift+Click basins/machines/baffles to save a skid template.'); return; }
+    if (sel.utilities.length>0) { setToast('Utilities not saved into template — rewire pipes/cables after stamping.'); }
+    const name = `Skid ${(gs.constructionTemplates?.length ?? 0)+1} — ${selectionSummaryLine(sel)}`;
+    const res = (GameManager as any).saveConstructionTemplate(gs, sel, name);
+    if (!res.success) { SoundManager.playWarning(); setToast(res.reason ?? 'Cannot save template.'); return; }
+    pushHistory(gs);
+    setGameState(res.newState);
+    SoundManager.playPlace();
+    const tCost = res.template ? estimateTemplateCAPEX(res.template) : 0;
+    setToast(`Skid template saved: ${res.template.name} — $${tCost.toLocaleString()} — Stamp anytime from the Library strip.`);
+  }, [pushHistory]);
+
+  const handleStampTemplate = useCallback((templateId: string) => {
+    const gs = gsRef.current;
+    const res = (GameManager as any).stampConstructionTemplate(gs, templateId);
+    if (!res.success) { SoundManager.playWarning(); setToast(res.reason ?? 'Cannot stamp template.'); return; }
+    pushHistory(gs);
+    setGameState(res.newState);
+    const ns = res.newSelection as ConstructionSelection;
+    setConstructionSelection(ns);
+    setSelectedBasinId(ns.basins[0] ?? null);
+    setSelectedEquipmentId(ns.equipment[0] ?? null);
+    setSelectedBaffleId(ns.baffles[0] ?? null);
+    setSelectedUtilityId(null);
+    sceneRef.current?.syncBasins(res.newState.customBasins ?? [], new Set(ns.basins));
+    sceneRef.current?.syncBaffles(res.newState.customBaffles ?? [], res.newState.customBasins ?? [], new Set(ns.baffles));
+    sceneRef.current?.syncUtilityConnections(res.newState.utilityConnections ?? [], null);
+    sceneRef.current?.syncEquipment(
+      res.newState.processEquipment ?? [], res.newState.customBasins ?? [], new Set(ns.equipment),
+      poweredEquipmentIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
+      aeratedDiffuserIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
+      filtrationLiveSets(res.newState.customBasins ?? [], res.newState.processEquipment ?? [], res.newState.utilityConnections ?? [], res.newState.customBaffles ?? [])
+    );
+    sceneRef.current?.syncEquipmentDragHandle(ns.equipment[0] ? {x: res.newState.processEquipment.find((e:any)=>e.id===ns.equipment[0])?.x ?? 0, y: res.newState.processEquipment.find((e:any)=>e.id===ns.equipment[0])?.y ?? 0, typeId: res.newState.processEquipment.find((e:any)=>e.id===ns.equipment[0])?.typeId} as any : null, res.newState.customBasins ?? []);
+    sceneRef.current?.syncSelectionBrackets(bracketRectsForSelection(ns, res.newState.customBasins ?? [], res.newState.customBaffles ?? [], res.newState.utilityConnections ?? [], res.newState.processEquipment ?? []));
+    sceneRef.current?.syncDimensionLabels(res.newState.customBasins ?? [], new Set(ns.basins));
+    (sceneRef.current as any)?.clearSnapGuides?.();
+    SoundManager.playPlace();
+    const charged = res.charged ?? 0;
+    const parts:any[]=[]; if(ns.basins.length) parts.push(ns.basins.length+' basin'+(ns.basins.length>1?'s':'')); if(ns.equipment.length) parts.push(ns.equipment.length+' machine'+(ns.equipment.length>1?'s':'')); if(ns.baffles.length) parts.push(ns.baffles.length+' baffle'+(ns.baffles.length>1?'s':'')); 
+    setToast('Skid stamped: '+parts.join(' · ')+(charged? ' — $'+charged.toLocaleString():' — $0 (sandbox)')+' — utilities need rewiring (Ctrl+Z to undo)');
+  }, [pushHistory]);
+
+  const handleRemoveTemplate = useCallback((templateId: string) => {
+    const gs = gsRef.current;
+    const res = (GameManager as any).demolishConstructionTemplate(gs, templateId);
+    if (!res.success) { SoundManager.playWarning(); setToast(res.reason ?? 'Cannot remove template.'); return; }
+    pushHistory(gs);
+    setGameState(res.newState);
+    SoundManager.playDemolish();
+    setToast('Skid template removed from library (Ctrl+Z to undo).');
+  }, [pushHistory]);
+
   const handleDuplicateSelection = useCallback(() => {
     const gs = gsRef.current;
     const sel = constructionSelectionRef.current;
@@ -2814,7 +2872,14 @@ export const App: React.FC = () => {
         })()}
         onBulkDemolish={handleBulkDemolish}
         onDuplicate={handleDuplicateSelection}
+        onSaveTemplate={handleSaveTemplate}
         onClear={clearConstructionSelection}
+      />
+      {/* ── ITER 61: Construction Library Strip — reusable skid templates ── */}
+      <ConstructionLibraryStrip
+        templates={gameState.constructionTemplates ?? []}
+        onStamp={handleStampTemplate}
+        onRemove={handleRemoveTemplate}
       />
 
       {/* ── Unit Inspector ──────────────────────────────────────────────────── */}
