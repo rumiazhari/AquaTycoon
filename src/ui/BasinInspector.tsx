@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { X, Trash2, Droplets, Ruler, Move, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Expand, Columns3 } from 'lucide-react';
+import { X, Trash2, Droplets, Ruler, Move, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Expand, Columns3, Mountain } from 'lucide-react';
 import type { CustomBasin } from '../design/CustomBasin';
 import { basinLengthM, basinWidthM, basinVolumeM3, basinDimensionLabel, estimateBasinCAPEX, BASIN_MIN_DEPTH_M, BASIN_MAX_DEPTH_M, BASIN_MIN_TILES } from '../design/CustomBasin';
+import { basinFoundationBreakdown } from '../design/TerrainFoundation';
 import { SoundManager } from '../audio/SoundManager';
 
 interface BasinInspectorProps {
@@ -24,11 +25,14 @@ export const BasinInspector: React.FC<BasinInspectorProps> = ({ basin, zoneCount
   const vol = basinVolumeM3(basin);
   const areaM2 = lenM * widM;
   const capex = estimateBasinCAPEX(basin);
-  const refund = Math.round(capex * 0.5);
+  const foundation = basinFoundationBreakdown(basin);
+  const adjustedCapex = foundation.adjustedCost;
+  const refund = Math.round(adjustedCapex * 0.5);
   const dimLabel = basinDimensionLabel(basin);
 
-  const draftCapex = estimateBasinCAPEX({ x: basin.x, y: basin.y, w: basin.w, h: basin.h, depthM: depthDraft });
-  const depthDelta = draftCapex - capex;
+  const draftFoundation = basinFoundationBreakdown({ x: basin.x, y: basin.y, w: basin.w, h: basin.h, depthM: depthDraft } as any);
+  const draftAdjusted = draftFoundation.adjustedCost;
+  const depthDelta = draftAdjusted - adjustedCapex;
   const depthRefund = depthDelta < 0 ? Math.round(-depthDelta * 0.5) : 0;
 
   const resize = (edge: 'west' | 'east' | 'north' | 'south', delta: 1 | -1) => {
@@ -69,11 +73,19 @@ export const BasinInspector: React.FC<BasinInspectorProps> = ({ basin, zoneCount
             <span className="px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300">{lenM}×{widM} m</span>
             <span className="px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300">{areaM2.toLocaleString()} m²</span>
             <span className="px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300">{Math.round(vol).toLocaleString()} m³</span>
-            <span className="px-2 py-0.5 rounded bg-emerald-900/40 border border-emerald-700/40 text-emerald-300">${capex.toLocaleString()} build</span>
+            <span className={"px-2 py-0.5 rounded border font-bold " + (foundation.conditionTone==='emerald' ? 'bg-emerald-900/40 border-emerald-700/40 text-emerald-300' : foundation.conditionTone==='sky' ? 'bg-sky-900/30 border-sky-700/40 text-sky-300' : foundation.conditionTone==='amber' ? 'bg-amber-900/30 border-amber-700/40 text-amber-300' : 'bg-rose-900/30 border-rose-700/40 text-rose-300')} title={"Base $" + capex.toLocaleString() + " × " + foundation.factor.toFixed(3) + " terrain"}>{adjustedCapex.toLocaleString()} build</span>
             {zoneCount > 1 && <span className="px-2 py-0.5 rounded bg-violet-900/30 border border-violet-700/40 text-violet-300 flex items-center gap-1"><Columns3 size={10} />{zoneCount} zones</span>}
             {equipmentInside > 0 && <span className="px-2 py-0.5 rounded bg-amber-900/30 border border-amber-700/40 text-amber-300">{equipmentInside} machine{equipmentInside>1?'s':''} inside</span>}
           </div>
-          <span className="text-[10px] text-slate-500">Selected basin glows emerald in-world — wall-top amber handles show grip points. Drag any wall or corner handle in-world to resize, or use buttons below. In Select mode click another basin, equipment, or empty ground to switch.</span>
+          <div className={"flex items-center gap-1.5 mt-1 px-2 py-1 rounded border text-[10px] font-mono " + (foundation.conditionTone==='emerald' ? 'bg-emerald-950/30 border-emerald-800/40 text-emerald-300' : foundation.conditionTone==='sky' ? 'bg-sky-950/30 border-sky-800/40 text-sky-300' : foundation.conditionTone==='amber' ? 'bg-amber-950/30 border-amber-800/40 text-amber-300' : 'bg-rose-950/30 border-rose-800/40 text-rose-300')}>
+            <Mountain size={11} />
+            <span className="font-bold">{foundation.conditionLabel} {foundation.pctLabel}</span>
+            <span className="text-slate-500">·</span>
+            <span>{"base $" + capex.toLocaleString() + " × " + foundation.factor.toFixed(3) + " → $" + adjustedCapex.toLocaleString()}</span>
+            <span className="text-slate-500">·</span>
+            <span>{foundation.delta>=0 ? "+$" + foundation.delta.toLocaleString() + " surcharge" : "−$" + Math.abs(foundation.delta).toLocaleString() + " discount"}</span>
+          </div>
+          <span className="text-[10px] text-slate-500">Selected basin glows emerald in-world — wall-top amber handles show grip points. Drag wall/corner in-world to resize. Ground varies per tile (soft 0.92× → rocky 1.18×) — cheap ground saves excavation.</span>
         </div>
 
         {/* Depth control — P1 headline feature */}
@@ -129,13 +141,13 @@ export const BasinInspector: React.FC<BasinInspectorProps> = ({ basin, zoneCount
         <div className="grid grid-cols-2 gap-2 text-xs font-mono">
           <div className="p-2.5 rounded-xl bg-slate-800/70 border border-slate-700 flex flex-col gap-1">
             <span className="text-[10px] text-slate-400">Installed Cost</span>
-            <span className="text-sm font-bold text-emerald-400">${capex.toLocaleString()}</span>
-            <span className="text-[10px] text-slate-500">{lenM} m × {widM} m × {basin.depthM} m</span>
+            <span className="text-sm font-bold text-emerald-400">${adjustedCapex.toLocaleString()}</span>
+            <span className="text-[10px] text-slate-500">{lenM} m × {widM} m × {basin.depthM} m · base {capex.toLocaleString()} {foundation.pctLabel}</span>
           </div>
           <div className="p-2.5 rounded-xl bg-slate-800/70 border border-slate-700 flex flex-col gap-1">
             <span className="text-[10px] text-slate-400">Salvage on demolish</span>
             <span className="text-sm font-bold text-amber-300">+${refund.toLocaleString()}</span>
-            <span className="text-[10px] text-slate-500">50% civil works</span>
+            <span className="text-[10px] text-slate-500">{"50% of $" + adjustedCapex.toLocaleString() + " (terrain-adjusted)"}</span>
           </div>
         </div>
 

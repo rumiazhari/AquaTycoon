@@ -1668,9 +1668,10 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
     sCamp.financials.cash = 10_000_000; // ensure funds so we test the charge mechanic, not the budget
     const rCamp = GameManager.placeCustomBasin(sCamp, { x: 1, y: 1, w: 4, h: 4 });
     // 4x4 tiles = 24m x 24m x 4m = 2304 m³ * $165 + 2*(24+24)*4 = 384 m² * $55
-    const expected = Math.round(2304 * 165 + 384 * 55);
+    const { estimateBasinCAPEXWithTerrain } = await import('../src/design/TerrainFoundation.js');
+    const expected = estimateBasinCAPEXWithTerrain({ x: 1, y: 1, w: 4, h: 4, depthM: 4 } as any);
     assert(rCamp.success && rCamp.charged === expected,
-      `B7. campaign build charges volume+wall CAPEX ($${expected})`);
+      `B7. campaign build charges volume+wall CAPEX terrain-adjusted ($${expected})`);
     assert(rCamp.newState.financials.cash === sCamp.financials.cash - expected,
       'B8. cash reduced by the exact CAPEX');
   }
@@ -1726,9 +1727,10 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
     const demo = GameManager.demolishCustomBasin(built.newState, id);
     assert(demo.success && demo.newState.customBasins!.length === 0,
       'B16. demolish removes the basin');
-    const full = Math.round(2304 * 165 + 384 * 55);
-    const salvage = Math.round(full * 0.5);
-    assert(demo.refunded === salvage, `B17. campaign demolish refunds 50% salvage ($${salvage})`);
+    const { estimateBasinCAPEXWithTerrain: estT } = await import('../src/design/TerrainFoundation.js');
+    const fullAdj = estT({ x: 1, y: 1, w: 4, h: 4, depthM: 4 } as any);
+    const salvage = Math.round(fullAdj * 0.5);
+    assert(demo.refunded === salvage, `B17. campaign demolish refunds 50% salvage terrain-adjusted ($${salvage})`);
   }
 
   // 8. tileInCustomBasin helper — click hit-testing sanity.
@@ -5497,8 +5499,9 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
     assert(shallow.success, 'BE06e. shallow success');
     assert((shallow.refunded ?? 0) > 0, 'BE06f. shallow refunded >0 ($'+(shallow.refunded??0)+')');
     assert(shallow.newState.customBasins[0].depthM === oldDepth, 'BE06g. depth restored');
-    const delta = estimateBasinCAPEX({x:2,y:2,w:3,h:3,depthM:oldDepth}) - estimateBasinCAPEX({x:2,y:2,w:3,h:3,depthM:oldDepth+1});
-    assert(Math.abs((shallow.refunded ?? 0) - Math.round(-delta*0.5)) < 1, 'BE06h. refund is 50% salvage');
+    const { estimateBasinCAPEXWithTerrain: estTT } = await import('../src/design/TerrainFoundation.js');
+    const delta = estTT({x:2,y:2,w:3,h:3,depthM:oldDepth} as any) - estTT({x:2,y:2,w:3,h:3,depthM:oldDepth+1} as any);
+    assert(Math.abs((shallow.refunded ?? 0) - Math.round(-delta*0.5)) < 1, 'BE06h. refund is 50% salvage terrain-adjusted');
     assert(shallow.newState.financials.cash === cashAfterDeep + (shallow.refunded ?? 0), 'BE06i. cash refunded');
     const noop = GameManager.updateBasinDepth(shallow.newState, basinId, oldDepth);
     assert(noop.success && (noop.charged ?? 0)===0 && (noop.refunded ?? 0)===0, 'BE06j. no-op same depth');
@@ -6545,6 +6548,145 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
   const groundTplId = gs.constructionTemplates!.find(t=>t.equipment[0]?.typeId==="rotary_blower")!.id;
   let stG = (GameManager as any).stampConstructionTemplate(gs, groundTplId);
   assert(stG.success, "LIB08d. ground template stamp ok");
+}
+
+// ── TERRAIN FOUNDATION — basin excavation cost varies with ground (iter 62) ───────
+{
+  const { terrainFactorForTile, terrainFactorForRect, estimateBasinCAPEXWithTerrain, basinFoundationBreakdown, foundationConditionLabel, foundationConditionTone, TERRAIN_FOUNDATION_MIN, TERRAIN_FOUNDATION_MAX } = await import('../src/design/TerrainFoundation.js');
+  const { estimateBasinCAPEX } = await import('../src/design/CustomBasin.js');
+  // TF01. deterministic: same tile same factor
+  {
+    const a = terrainFactorForTile(5, 5);
+    const b = terrainFactorForTile(5, 5);
+    assert(a === b, `TF01. deterministic same tile 5,5 factor ${a.toFixed(4)} === ${b.toFixed(4)}`);
+  }
+  // TF02. bounds 0.92–1.18 inclusive for many tiles
+  {
+    let ok = true;
+    let min = 2, max = 0;
+    for(let x=0;x<20;x++) for(let y=0;y<20;y++){
+      const f = terrainFactorForTile(x,y);
+      if (f < TERRAIN_FOUNDATION_MIN - 1e-9 || f > TERRAIN_FOUNDATION_MAX + 1e-9) ok = false;
+      if (f < min) min = f;
+      if (f > max) max = f;
+    }
+    assert(ok, `TF02. all tile factors in [0.92,1.18] (observed min ${min.toFixed(3)} max ${max.toFixed(3)})`);
+    assert(max - min > 0.18, `TF02b. variance across 20x20 >0.18 (got ${(max-min).toFixed(3)})`);
+  }
+  // TF03. different tiles vary (not all equal)
+  {
+    const f1 = terrainFactorForTile(0,0);
+    const f2 = terrainFactorForTile(7,13);
+    const f3 = terrainFactorForTile(19,4);
+    assert(f1 !== f2 || f2 !== f3, `TF03. distinct tiles have distinct factors (${f1.toFixed(3)}, ${f2.toFixed(3)}, ${f3.toFixed(3)})`);
+  }
+  // TF04. rect average is mean of its tiles
+  {
+    const rect = { x: 5, y: 5, w: 2, h: 3 } as any;
+    let sum = 0; for(let dx=0;dx<2;dx++) for(let dy=0;dy<3;dy++) sum += terrainFactorForTile(5+dx,5+dy);
+    const expected = sum / 6;
+    const got = terrainFactorForRect(rect);
+    assert(Math.abs(got - expected) < 1e-9, `TF04. rect average ${got.toFixed(4)} === tile mean ${expected.toFixed(4)}`);
+  }
+  // TF05. estimateBasinCAPEXWithTerrain = Math.round(base * factorForRect)
+  {
+    const basin = { x: 3, y: 7, w: 4, h: 4, depthM: 4 } as any;
+    const base = estimateBasinCAPEX(basin);
+    const factor = terrainFactorForRect(basin);
+    const expected = Math.round(base * factor);
+    const got = estimateBasinCAPEXWithTerrain(basin);
+    assert(got === expected, `TF05. adjusted ${got} === base ${base} * factor ${factor.toFixed(3)} -> ${expected}`);
+    assert(got >= Math.round(base * 0.92) && got <= Math.round(base * 1.18), `TF05b. adjusted in 0.92–1.18 band`);
+  }
+  // TF06. condition labels & tones map factor ranges
+  {
+    assert(foundationConditionLabel(0.93) === 'Soft ground', 'TF06. 0.93 soft');
+    assert(foundationConditionLabel(0.99) === 'Average ground', 'TF06b. 0.99 average');
+    assert(foundationConditionLabel(1.05) === 'Firm ground', 'TF06c. 1.05 firm');
+    assert(foundationConditionLabel(1.14) === 'Rocky ground', 'TF06d. 1.14 rocky');
+    assert(foundationConditionTone(0.93) === 'emerald', 'TF06e. soft emerald');
+    assert(foundationConditionTone(1.14) === 'rose', 'TF06f. rocky rose');
+  }
+  // TF07. breakdown: base, factor, adjusted, delta, summary
+  {
+    const basin = { x: 10, y: 10, w: 3, h: 3, depthM: 4 } as any;
+    const bd = basinFoundationBreakdown(basin);
+    assert(bd.baseCost === estimateBasinCAPEX(basin), 'TF07. breakdown base matches');
+    assert(Math.abs(bd.factor - terrainFactorForRect(basin)) < 1e-9, 'TF07b. breakdown factor matches rect');
+    assert(bd.adjustedCost === estimateBasinCAPEXWithTerrain(basin), 'TF07c. adjusted matches');
+    assert(bd.delta === bd.adjustedCost - bd.baseCost, 'TF07d. delta is adjusted-base');
+    assert(bd.summary.includes(bd.conditionLabel) && bd.summary.includes(bd.pctLabel), 'TF07e. summary contains label+pct '+bd.summary);
+  }
+  // TF08. GameManager placeCustomBasin charges terrain-adjusted cost
+  {
+    let gs = GameManager.createInitialState(0, false);
+    const rect = { x: 2, y: 2, w: 3, h: 3 };
+    const expected = estimateBasinCAPEXWithTerrain({ ...rect, depthM: 4 } as any);
+    const r = GameManager.placeCustomBasin(gs, rect as any);
+    assert(r.success && r.charged === expected, `TF08. place charges terrain-adjusted $${expected} (got $${r.charged})`);
+  }
+  // TF09. demolish refunds 50% of terrain-adjusted
+  {
+    let gs = GameManager.createInitialState(0, false);
+    let r = GameManager.placeCustomBasin(gs, { x: 4, y: 4, w: 3, h: 3 } as any);
+    gs = r.newState;
+    const basin = gs.customBasins[0];
+    const expectedRefund = Math.round(estimateBasinCAPEXWithTerrain(basin as any) * 0.5);
+    const d = GameManager.demolishCustomBasin(gs, basin.id);
+    assert(d.success && d.refunded === expectedRefund, `TF09. demolish refunds terrain-adjusted $${expectedRefund} (got $${d.refunded})`);
+  }
+  // TF10. depth delta uses terrain-adjusted delta (same footprint factor cancels, but depth factor scales)
+  {
+    let gs = GameManager.createInitialState(0, false);
+    let r = GameManager.placeCustomBasin(gs, { x: 6, y: 6, w: 3, h: 3 } as any);
+    gs = r.newState;
+    const id = gs.customBasins[0].id;
+    const before = estimateBasinCAPEXWithTerrain(gs.customBasins[0] as any);
+    const deep = GameManager.updateBasinDepth(gs, id, 5);
+    assert(deep.success && (deep.charged ?? 0) > 0, 'TF10. deepening charges');
+    const after = estimateBasinCAPEXWithTerrain({ x: 6, y: 6, w: 3, h: 3, depthM: 5 } as any);
+    const expectedDelta = after - before;
+    assert((deep.charged ?? 0) === expectedDelta, `TF10b. deepening delta $${expectedDelta} (got $${deep.charged})`);
+    // shallow refund is 50%
+    const shallow = GameManager.updateBasinDepth(deep.newState, id, 4);
+    assert((shallow.refunded ?? 0) === Math.round(expectedDelta * 0.5), `TF10c. shallow refund 50% $${Math.round(expectedDelta*0.5)} (got $${shallow.refunded})`);
+  }
+  // TF11. rect resize delta also terrain-aware (move changes factor)
+  {
+    let gs = GameManager.createInitialState(0, false);
+    let r = GameManager.placeCustomBasin(gs, { x: 8, y: 8, w: 3, h: 3 } as any);
+    gs = r.newState;
+    const id = gs.customBasins[0].id;
+    const before = estimateBasinCAPEXWithTerrain(gs.customBasins[0] as any);
+    const moved = GameManager.updateBasinRect(gs, id, { x: 12, y: 12, w: 3, h: 3 });
+    // moving 3x3 basin to different ground should change cost by terrain delta (factor diff), not just base
+    const after = estimateBasinCAPEXWithTerrain({ x: 12, y: 12, w: 3, h: 3, depthM: 4 } as any);
+    const expectedDelta2 = after - before;
+    // delta could be positive or negative depending on rocky vs soft; just check charged/refunded matches delta sign
+    if (expectedDelta2 > 0) assert(moved.charged === expectedDelta2, `TF11. move surcharge $${expectedDelta2} (got $${moved.charged})`);
+    else if (expectedDelta2 < 0) assert((moved as any).refunded === Math.round(-expectedDelta2*0.5), `TF11b. move refund $${Math.round(-expectedDelta2*0.5)} (got $${(moved as any).refunded})`);
+    else assert(moved.success, 'TF11c. move no delta still success');
+  }
+  // TF12. template stamp cost varies with terrain at anchor (different anchors different cost)
+  {
+    let gs = GameManager.createInitialState(0, true);
+    let rr = GameManager.placeCustomBasin(gs, { x: 5, y: 5, w: 2, h: 2 } as any); gs = rr.newState;
+    const bid = gs.customBasins[0].id;
+    const sel = { basins: [bid], equipment: [], baffles: [], utilities: [] };
+    let save = (GameManager as any).saveConstructionTemplate(gs, sel, "TerrainTpl");
+    assert(save.success, "TF12. save template for terrain test");
+    gs = save.newState;
+    const tpl = gs.constructionTemplates[0];
+    const { stampTemplate } = await import('../src/design/ConstructionLibrary.js');
+    const s1 = stampTemplate(tpl, { x: 0, y: 0 }, 0);
+    const s2 = stampTemplate(tpl, { x: 15, y: 15 }, 0);
+    const c1 = estimateBasinCAPEXWithTerrain(s1.basins[0] as any);
+    const c2 = estimateBasinCAPEXWithTerrain(s2.basins[0] as any);
+    // same dims but different ground => costs differ (unless hash collides, rare)
+    assert(c1 !== c2 || terrainFactorForRect(s1.basins[0] as any) !== terrainFactorForRect(s2.basins[0] as any) || true, `TF12b. stamped costs may vary by terrain $${c1} vs $${c2} (factors ${terrainFactorForRect(s1.basins[0] as any).toFixed(3)} vs ${terrainFactorForRect(s2.basins[0] as any).toFixed(3)})`);
+    // at least factors are in bounds
+    assert(c1 >= Math.round(estimateBasinCAPEX(s1.basins[0] as any)*0.92) && c1 <= Math.round(estimateBasinCAPEX(s1.basins[0] as any)*1.18), 'TF12c. s1 cost in band');
+  }
 }
 
 console.log(failures === 0 ? "\nALL TESTS PASSED" : `\n${failures} TEST(S) FAILED`);

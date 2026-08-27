@@ -21,10 +21,12 @@ import {
   BASIN_DEFAULT_DEPTH_M,
   BASIN_MIN_DEPTH_M,
   BASIN_MAX_DEPTH_M,
-  estimateBasinCAPEX,
   validateBasinPlacement,
   validateBasinEdit,
 } from '../design/CustomBasin';
+import {
+  estimateBasinCAPEXWithTerrain,
+} from '../design/TerrainFoundation';
 import {
   ProcessEquipmentItem,
   EQUIPMENT_TYPES,
@@ -1461,7 +1463,7 @@ export class GameManager {
       return { newState: state, success: false, reason: v.reason };
     }
 
-    const capex = estimateBasinCAPEX({ ...norm, depthM });
+    const capex = estimateBasinCAPEXWithTerrain({ ...norm, depthM } as any);
     if (state.gameMode !== 'sandbox' && state.financials.cash < capex) {
       return {
         newState: state, success: false,
@@ -1518,7 +1520,7 @@ export class GameManager {
     }
 
     const refunded = (state.gameMode !== 'sandbox' && !state.tutorialActive)
-      ? Math.round(estimateBasinCAPEX(basin) * GameManager.CUSTOM_BASIN_SALVAGE_RATE)
+      ? Math.round(estimateBasinCAPEXWithTerrain(basin as any) * GameManager.CUSTOM_BASIN_SALVAGE_RATE)
       : 0;
 
     // Cascade-remove any utility that has an endpoint inside the basin rect
@@ -2048,7 +2050,7 @@ export class GameManager {
     if (!isSandbox) {
       for (const bid of basinIds) {
         const b = (state.customBasins ?? []).find(x => x.id === bid)!;
-        refund += Math.round(estimateBasinCAPEX(b) * GameManager.CUSTOM_BASIN_SALVAGE_RATE);
+        refund += Math.round(estimateBasinCAPEXWithTerrain(b as any) * GameManager.CUSTOM_BASIN_SALVAGE_RATE);
       }
       for (const eid of equipIds) {
         const e = (state.processEquipment ?? []).find(x => x.id === eid)!;
@@ -2161,7 +2163,7 @@ export class GameManager {
         newBaffles.push({...(old as any), id:nid, basinId:newBid, createdAtDay:state.gameTimeDays});
       }
       if(!ok) continue;
-      let cost=0; for(const b of (newBasins as any[])) cost+=estimateBasinCAPEX(b as any); for(const e of newEquip as any[]) cost+=estimateEquipmentCAPEX((e as any).typeId); for(const bf of newBaffles as any[]){ const basin=(allBasinsForEquip as any[]).find((bb:any)=>bb.id===(bf as any).basinId); if(basin) cost+=estimateBaffleCAPEX(basin, bf.orientation); }
+      let cost=0; for(const b of (newBasins as any[])) cost+=estimateBasinCAPEXWithTerrain(b as any); for(const e of newEquip as any[]) cost+=estimateEquipmentCAPEX((e as any).typeId); for(const bf of newBaffles as any[]){ const basin=(allBasinsForEquip as any[]).find((bb:any)=>bb.id===(bf as any).basinId); if(basin) cost+=estimateBaffleCAPEX(basin, bf.orientation); }
       if(state.gameMode!=="sandbox" && !state.tutorialActive && state.financials.cash < cost) return {newState:state, success:false, reason: "Insufficient funds ($"+cost.toLocaleString()+" required)"};
       const charged=(state.gameMode==="sandbox"||state.tutorialActive)?0:cost;
       const newCash=(state.gameMode==="sandbox"||state.tutorialActive)?state.financials.cash:state.financials.cash-cost;
@@ -2199,8 +2201,6 @@ export class GameManager {
     for(const e of (state.processEquipment??[]) as any[]) if((EQUIPMENT_TYPES as any)[e.typeId]?.mounting==='ground') unitRects.push({x:e.x,y:e.y,w:1,h:1});
     const existingBasins = state.customBasins ?? [];
     const existingEquipment = state.processEquipment ?? [];
-    const cost = _estimateTemplateCAPEX(tpl);
-    if (state.gameMode!=='sandbox' && !state.tutorialActive && state.financials.cash < cost) return { newState: state, success: false, reason: `Insufficient funds ($${cost.toLocaleString()} required)` };
     // spiral search for first valid anchor (reuse duplicate's candidate order)
     const cands: [number,number][] = [];
     for(let r=1;r<=8;r++){ for(let dx=-r;dx<=r;dx++) for(let dy=-r;dy<=r;dy++) if(Math.max(Math.abs(dx),Math.abs(dy))===r) cands.push([dx,dy]); }
@@ -2210,6 +2210,7 @@ export class GameManager {
     // Derive a base anchor near the original selection's min: use the smallest existing basin x,y as hint, else 5,5.
     const hintX = existingBasins.length>0 ? Math.min(...existingBasins.map(b=>b.x)) : 5;
     const hintY = existingBasins.length>0 ? Math.min(...existingBasins.map(b=>b.y)) : 5;
+    let cheapestInsufficientCost: number | null = null;
     for(const [dx,dy] of cands){
       // candidate absolute anchor = hint + dx/dy + 2 (ensure offset)
       // Actually tpl basins are stored relative to its original anchor (tpl.anchorX/Y). To place at absolute anchorTile, basins go to anchorTile + dxRel. So anchorTile itself is the absolute tile where the template's original min would land.
@@ -2218,8 +2219,20 @@ export class GameManager {
       const v = _validateTemplateStamp(tpl, anchor, mapSize, existingBasins as any, existingEquipment as any, unitRects);
       if(!v.ok) continue;
       const stamped = _stampTemplate(tpl, anchor, state.gameTimeDays);
+      // terrain-aware cost: basins vary with ground conditions at the stamped site
+      let costForAnchor = 0;
+      for (const b of stamped.basins as any[]) costForAnchor += estimateBasinCAPEXWithTerrain(b as any);
+      for (const e of stamped.equipment as any[]) costForAnchor += estimateEquipmentCAPEX((e as any).typeId);
+      for (const bf of stamped.baffles as any[]) {
+        const basin = (stamped.basins as any[]).find((bb:any)=>bb.id===(bf as any).basinId);
+        if (basin) costForAnchor += estimateBaffleCAPEX(basin, bf.orientation);
+      }
+      if (state.gameMode!=='sandbox' && !state.tutorialActive && state.financials.cash < costForAnchor) {
+        if (cheapestInsufficientCost === null || costForAnchor < cheapestInsufficientCost) cheapestInsufficientCost = costForAnchor;
+        continue; // try cheaper terrain spot before giving up
+      }
       // Ensure ids don't collide (stamp uses tpl.id + timestamp, should be unique, but guard)
-      const charged = (state.gameMode==='sandbox'||state.tutorialActive)?0:cost;
+      const charged = (state.gameMode==='sandbox'||state.tutorialActive)?0:costForAnchor;
       const newCash = (state.gameMode==='sandbox'||state.tutorialActive)?state.financials.cash:state.financials.cash - charged;
       const newState: GameState = {
         ...state,
@@ -2230,6 +2243,9 @@ export class GameManager {
       };
       const newSelection: ConstructionSelection = { basins: stamped.basins.map(b=>b.id), equipment: stamped.equipment.map(e=>e.id), baffles: stamped.baffles.map(b=>b.id), utilities: [] };
       return { newState, success: true, charged, newSelection };
+    }
+    if (cheapestInsufficientCost !== null) {
+      return { newState: state, success: false, reason: `Insufficient funds ($${cheapestInsufficientCost.toLocaleString()} required)` };
     }
     return { newState: state, success: false, reason: 'No room to stamp template — clear space near existing skid (tried 8-tile spiral)' };
   }
@@ -2266,8 +2282,8 @@ export class GameManager {
     const rect = { x: basin.x, y: basin.y, w: basin.w, h: basin.h };
     const v = validateBasinEdit(basinId, rect, depth, state.currentLevel.mapSize, state.customBasins ?? [], unitRects, equipmentTiles, baffleOffsets);
     if (!v.ok) return { newState: state, success: false, reason: v.reason };
-    const oldCapex = estimateBasinCAPEX(basin);
-    const newCapex = estimateBasinCAPEX({ ...rect, depthM: depth });
+    const oldCapex = estimateBasinCAPEXWithTerrain(basin as any);
+    const newCapex = estimateBasinCAPEXWithTerrain({ ...rect, depthM: depth } as any);
     const delta = newCapex - oldCapex;
     if (state.gameMode !== 'sandbox' && !state.tutorialActive && delta > 0 && state.financials.cash < delta) {
       return { newState: state, success: false, reason: `Insufficient funds (needs $${delta.toLocaleString()} more concrete)` };
@@ -2313,8 +2329,8 @@ export class GameManager {
     }
     const v = validateBasinEdit(basinId, norm, basin.depthM, state.currentLevel.mapSize, state.customBasins ?? [], unitRects, equipmentTiles, baffleOffsets);
     if (!v.ok) return { newState: state, success: false, reason: v.reason };
-    const oldCapex = estimateBasinCAPEX(basin);
-    const newCapex = estimateBasinCAPEX({ ...norm, depthM: basin.depthM });
+    const oldCapex = estimateBasinCAPEXWithTerrain(basin as any);
+    const newCapex = estimateBasinCAPEXWithTerrain({ ...norm, depthM: basin.depthM } as any);
     const delta = newCapex - oldCapex;
     if (state.gameMode !== 'sandbox' && !state.tutorialActive && delta > 0 && state.financials.cash < delta) {
       return { newState: state, success: false, reason: `Insufficient funds (needs $${delta.toLocaleString()} more)` };

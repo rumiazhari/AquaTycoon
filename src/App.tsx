@@ -22,6 +22,7 @@ import { SoundManager } from './audio/SoundManager';
 import { CAMPAIGN_LEVELS } from './gameplay/LevelsData';
 import { TUTORIAL_STEPS, TUTORIAL_PIPE_CHAIN } from './gameplay/TutorialSteps';
 import { BASIN_DEFAULT_DEPTH_M, validateBasinPlacement, validateBasinEdit, basinHandleDirForTile, basinRectForHandleDrag } from './design/CustomBasin';
+import { basinFoundationBreakdown } from './design/TerrainFoundation';
 import type { BasinHandleDir } from './design/CustomBasin';
 import { EQUIPMENT_TYPES, validateEquipmentPlacement } from './design/ProcessEquipment';
 import { UTILITY_TYPES, UtilityConnectionType, validateUtilityConnection, utilityRectFor } from './design/UtilityConnection';
@@ -782,9 +783,16 @@ export const App: React.FC = () => {
             };
             const v = validateBasinPlacement(rect as any, BASIN_DEFAULT_DEPTH_M, [mapW, mapH], gsRef.current.customBasins ?? [], unitRects as any);
             sm.terrainGrid.setGhostPreview(rect.x, rect.y, rect.w, rect.h, v.ok, true);
+            // live cost preview with terrain foundation
+            try {
+              const fb = basinFoundationBreakdown({ x: rect.x, y: rect.y, w: rect.w, h: rect.h, depthM: BASIN_DEFAULT_DEPTH_M } as any);
+              const dim = rect.w * 6 + "x" + rect.h * 6 + " m · " + (rect.w*rect.h*BASIN_DEFAULT_DEPTH_M).toLocaleString() + " m³";
+              setHoverHint((v.ok ? "▣ " : "⛔ ") + "Basin " + rect.w + "×" + rect.h + " · " + dim + " · $" + fb.adjustedCost.toLocaleString() + " (" + fb.conditionLabel + " " + fb.pctLabel + ") " + (v.ok ? "— click opposite corner" : "— " + (v.reason ?? "blocked")));
+            } catch {}
           } else {
             sm.terrainGrid.setGhostPreview(tile.x, tile.y, 1, 1, true, false);
             (sm as any).clearSnapGuides?.();
+            setHoverHint(null);
           }
         } else if (toolModeRef.current === 'place_equipment' && selEquipTypeRef.current) {
           const [mapW, mapH] = gsRef.current.currentLevel.mapSize;
@@ -1831,10 +1839,18 @@ export const App: React.FC = () => {
         const area = b.w * b.h;
         const vol = area * b.depthM;
         const cost = result.charged ?? 0;
-        setToast(
-          `Basin drawn: ${b.w} m × ${b.h} m (${area} m², ${vol.toLocaleString()} m³, depth ${b.depthM} m)` +
-          (cost > 0 ? ` — $${cost.toLocaleString()}` : ' — $0 (sandbox)')
-        );
+        try {
+          const fb2 = basinFoundationBreakdown(b as any);
+          setToast(
+            `Basin drawn: ${b.w}×${b.h} tiles · ${b.w*6}×${b.h*6} m (${area} m², ${vol.toLocaleString()} m³, ${fb2.conditionLabel} ${fb2.pctLabel})` +
+            (cost > 0 ? ` — $${cost.toLocaleString()} (base $${fb2.baseCost.toLocaleString()} × ${fb2.factor.toFixed(3)})` : ' — $0 (sandbox)')
+          );
+        } catch {
+          setToast(
+            `Basin drawn: ${b.w} m × ${b.h} m (${area} m², ${vol.toLocaleString()} m³, depth ${b.depthM} m)` +
+            (cost > 0 ? ` — $${cost.toLocaleString()}` : ' — $0 (sandbox)')
+          );
+        }
         setGameState(result.newState);
       } else {
         SoundManager.playWarning();
@@ -2705,7 +2721,7 @@ export const App: React.FC = () => {
       )}
 
       {/* P3 hover hint — Inspect mode contextual affordance (equipment > baffle > utility > basin > legacy) */}
-      {hoverHint && toolMode === 'select' && !movingEquipmentId && (
+      {hoverHint && !movingEquipmentId && (toolMode === 'select' || toolMode === 'draw_basin') && (
         <div className="absolute top-[92px] left-1/2 -translate-x-1/2 z-20 pointer-events-none
                         px-3 py-1 rounded-full bg-slate-800/90 border border-slate-600/50
                         text-slate-200 text-[11px] font-mono shadow-lg backdrop-blur-sm">
@@ -2779,7 +2795,7 @@ export const App: React.FC = () => {
           if (mode === 'connect_pipe') setToast('Pipes: LEFT-CLICK a unit → click the destination. Click the SAME unit to switch its output port. RIGHT-CLICK to cancel. Ctrl+Z undo / Ctrl+Y redo.');
           if (mode === 'demolish')     setToast('Demolish Mode: Click any unit/baffle/utility to remove for salvage. Baffles refund 60%.');
           if (mode === 'place_unit')   setToast('Choose a unit type below, then click on the grid to place.');
-          if (mode === 'draw_basin')   setToast('STRUCTURES → Basin: click the FIRST corner, then the opposite corner. Esc cancels. Cost is shown as you draw.');
+          if (mode === 'draw_basin')   setToast('STRUCTURES → Basin: click FIRST corner, then opposite — cost varies with ground (soft 0.92× → rocky 1.18×). Esc cancels.');
           if (mode === 'place_equipment') setToast('EQUIPMENT: pick a machine in the toolbar, then click a valid tile — diffusers/mixers mount INSIDE drawn basins, pumps/blowers on open ground. Esc cancels.');
           if (mode === 'connect_utility') {
             const util = UTILITY_TYPES[selectedUtilityTypeId ?? 'water_pipe'];
