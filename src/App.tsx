@@ -198,6 +198,25 @@ export const App: React.FC = () => {
     if (!silent) setToast('Wall drag cancelled — basin unchanged.');
   }, []);
 
+  // P5: in-world equipment drag-handle — grab amber handle to move machine with live ghost
+  const equipHandleDragRef = useRef<{ equipmentId: string; startTile: { x:number; y:number }; typeId: string } | null>(null);
+  const cancelEquipHandleDrag = useCallback((silent:boolean=false) => {
+    equipHandleDragRef.current = null;
+    sceneRef.current?.terrainGrid.setGhostPreview(0,0,1,1,true,false);
+    if (!silent) setToast('Equipment drag cancelled — machine stays.');
+  }, []);
+  const syncEquipHandleVisual = useCallback(() => {
+    const sm = sceneRef.current;
+    if (!sm) return;
+    const sel = constructionSelectionRef.current;
+    if (selectionCount(sel) === 1 && sel.equipment.length === 1) {
+      const eq = gsRef.current.processEquipment?.find(e => e.id === sel.equipment[0]) ?? null;
+      sm.syncEquipmentDragHandle(eq ? { x: eq.x, y: eq.y, typeId: eq.typeId } : null, gsRef.current.customBasins ?? []);
+    } else {
+      sm.syncEquipmentDragHandle(null);
+    }
+  }, []);
+
   // ── CONSTRUCTION-BUILDER Phase 2: physical equipment placement ──────────────
   // Armed machine type (toolbar) + selected installed machine (inspect).
   const [selectedEquipmentTypeId, setSelectedEquipmentTypeId] = useState<string | null>(null);
@@ -265,6 +284,7 @@ export const App: React.FC = () => {
         aeratedDiffuserIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
         filtrationLiveSets(gs.customBasins ?? [], gs.processEquipment ?? [], gs.utilityConnections ?? [], gs.customBaffles ?? [])
       );
+      sm.syncEquipmentDragHandle(null);
     }
   }, []);
 
@@ -351,6 +371,7 @@ export const App: React.FC = () => {
     setGameState(state);
     setMovingEquipmentId(null);
     basinHandleDragRef.current = null;
+    equipHandleDragRef.current = null;
     setConstructionSelection(emptySelection());
     sceneRef.current?.terrainGrid.setGhostPreview(0, 0, 1, 1, true, false);
     const sm = sceneRef.current;
@@ -366,6 +387,9 @@ export const App: React.FC = () => {
       );
       sm.syncUtilityConnections(state.utilityConnections ?? [], null);
       sm.syncBaffles(state.customBaffles ?? [], state.customBasins ?? [], null);
+      sm.syncEquipmentDragHandle(null);
+      sm.syncSelectionBrackets(null);
+      sm.syncDimensionLabels(state.customBasins ?? [], null);
       if (state.suggestion) {
         sm.showNextStepGhost(state.suggestion.unitTypeId, state.suggestion.gridX, state.suggestion.gridY);
       } else {
@@ -470,9 +494,23 @@ export const App: React.FC = () => {
       pointerStart.current  = { x: e.clientX, y: e.clientY };
       pointerLast.current   = { x: e.clientX, y: e.clientY };
       pointerDist.current   = 0;
+      // P5: detect grab of equipment drag-handle when a single machine is selected.
+      // Any click on the lone selected machine's tile grabs the handle — forgiving,
+      // matches basin wall-handle ergonomics; shift/ctrl preserve multi-select.
+      if (e.button === 0 && toolModeRef.current === 'select' && !movingEquipmentIdRef.current && !basinHandleDragRef.current && !equipHandleDragRef.current && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+        const sm2 = sceneRef.current;
+        const tile2 = sm2?.getGridTileFromScreen(e.clientX, e.clientY) ?? null;
+        const sel = constructionSelectionRef.current;
+        if (tile2 && selectionCount(sel) === 1 && sel.equipment.length === 1) {
+          const eq = gsRef.current.processEquipment?.find(en => en.id === sel.equipment[0]) ?? null;
+          if (eq && eq.x === tile2.x && eq.y === tile2.y) {
+            equipHandleDragRef.current = { equipmentId: eq.id, startTile: { x: eq.x, y: eq.y }, typeId: eq.typeId };
+          }
+        }
+      }
       // P4 slice 2: detect grab of a basin wall/corner handle when a single basin is selected.
       // Any perimeter tile becomes a drag handle — forgiving grip on the wall itself.
-      if (e.button === 0 && toolModeRef.current === 'select' && !movingEquipmentIdRef.current && !basinHandleDragRef.current) {
+      if (e.button === 0 && toolModeRef.current === 'select' && !movingEquipmentIdRef.current && !basinHandleDragRef.current && !equipHandleDragRef.current) {
         const sm2 = sceneRef.current;
         const tile2 = sm2?.getGridTileFromScreen(e.clientX, e.clientY) ?? null;
         const selId = selectedBasinIdRef.current;
@@ -499,6 +537,50 @@ export const App: React.FC = () => {
       e.preventDefault();
       const sm = sceneRef.current;
       if (!sm) return;
+
+      // P5: active equipment drag — live green/red ghost, utility-gated, mount-aware, blocks pan
+      if (equipHandleDragRef.current && pointerDown.current) {
+        const tile = sm.getGridTileFromScreen(e.clientX, e.clientY);
+        const dx = e.clientX - pointerLast.current.x;
+        const dy = e.clientY - pointerLast.current.y;
+        pointerLast.current = { x: e.clientX, y: e.clientY };
+        pointerDist.current += Math.hypot(dx, dy);
+        const drag = equipHandleDragRef.current;
+        const eq = gsRef.current.processEquipment?.find(en => en.id === drag.equipmentId);
+        if (!eq) { sm.terrainGrid.setGhostPreview(drag.startTile.x, drag.startTile.y, 1, 1, false, true); return; }
+        if (!tile) {
+          sm.terrainGrid.setGhostPreview(drag.startTile.x, drag.startTile.y, 1, 1, false, true);
+          return;
+        }
+        // Same-tile = valid (no-op preview)
+        if (tile.x === eq.x && tile.y === eq.y) {
+          sm.terrainGrid.setGhostPreview(tile.x, tile.y, 1, 1, true, true);
+          setHoverHint(`↔ Dragging ${EQUIPMENT_TYPES[eq.typeId]?.name ?? 'equipment'} — release same tile to cancel · Esc cancels`);
+          return;
+        }
+        // Utility still attached -> blocked (must cut cable first)
+        const attached = (gsRef.current.utilityConnections ?? []).filter(c =>
+          (c.ax === eq.x && c.ay === eq.y) || (c.bx === eq.x && c.by === eq.y)
+        );
+        if (attached.length > 0) {
+          sm.terrainGrid.setGhostPreview(tile.x, tile.y, 1, 1, false, true);
+          setHoverHint(`⛔ Move blocked — ${attached.length} utility line${attached.length>1?'s':''} still attached (cut pipes/cables first) · Esc cancels`);
+          return;
+        }
+        const [mapW2, mapH2] = gsRef.current.currentLevel.mapSize;
+        const unitRects2 = gsRef.current.units.map(u => {
+          const d = (UNIT_DEFINITIONS as any)[u.typeId];
+          const [uw, ul] = d ? d.footprint : [1, 1];
+          return { x: u.gridX, y: u.gridY, w: uw, h: ul };
+        });
+        for (const o of gsRef.current.processEquipment ?? []) {
+          if (o.id !== eq.id && (EQUIPMENT_TYPES as any)[o.typeId]?.mounting === 'ground') unitRects2.push({ x: o.x, y: o.y, w: 1, h: 1 });
+        }
+        const vr = validateEquipmentPlacement(eq.typeId, tile.x, tile.y, [mapW2, mapH2], gsRef.current.customBasins ?? [], gsRef.current.processEquipment ?? [], unitRects2, eq.id);
+        sm.terrainGrid.setGhostPreview(tile.x, tile.y, 1, 1, vr.ok, true);
+        setHoverHint(vr.ok ? `↔ Dragging ${EQUIPMENT_TYPES[eq.typeId]?.name ?? 'equipment'} → (${tile.x},${tile.y}) · green = valid · red = blocked · Esc cancels` : `⛔ ${vr.reason} · Esc cancels`);
+        return;
+      }
 
       // P4 slice 2: active wall drag — show ghost of the resized basin while held
       if (basinHandleDragRef.current && pointerDown.current) {
@@ -735,12 +817,21 @@ export const App: React.FC = () => {
             const sel = constructionSelectionRef.current;
             const loneBasin = selId && sel.basins.length===1 && sel.basins[0]===selId && selectionCount(sel)===1 ? (gsRef.current.customBasins ?? []).find(b=>b.id===selId) ?? null : null;
             const handleDir = loneBasin ? basinHandleDirForTile(loneBasin, tile) : null;
-            if (handleDir && !hEquip && !hBaffle) {
+            // P5: equipment drag handle has priority when hovering the lone selected machine's tile
+            const loneEquipId = sel.equipment.length===1 && selectionCount(sel)===1 ? sel.equipment[0] : null;
+            const loneEquip = loneEquipId ? gsRef.current.processEquipment?.find(e=>e.id===loneEquipId) ?? null : null;
+            const onLoneEquipTile = loneEquip ? (loneEquip.x === tile.x && loneEquip.y === tile.y) : false;
+            if (onLoneEquipTile) {
+              const eqN = EQUIPMENT_TYPES[loneEquip!.typeId]?.name ?? loneEquip!.typeId;
+              hint = `▸ Drag ${eqN} — hold amber handle and drag to new tile (green = valid · red = blocked · Shift+Click to add)`;
+            } else if (handleDir && !hEquip && !hBaffle) {
               const dirLabel = ({n:'North wall',s:'South wall',e:'East wall',w:'West wall',nw:'NW corner',ne:'NE corner',sw:'SW corner',se:'SE corner'} as any)[handleDir] ?? handleDir;
               hint = `▸ Drag ${dirLabel} to resize — hold and drag wall/corner (Shift+Click to add to selection)`;
             } else if (hEquip) {
               const eqName = EQUIPMENT_TYPES[hEquip.typeId]?.name ?? hEquip.typeId;
-              hint = `▸ ${eqName} — Click to inspect · Move/Rotate`;
+              const eqCost = EQUIPMENT_TYPES[hEquip.typeId]?.capexUsd ? ` · $${EQUIPMENT_TYPES[hEquip.typeId]!.capexUsd.toLocaleString()}` : '';
+              const eqPower = EQUIPMENT_TYPES[hEquip.typeId] ? ` · ${EQUIPMENT_TYPES[hEquip.typeId]!.powerKw} kW` : '';
+              hint = `▸ ${eqName}${eqCost}${eqPower} — Click to inspect · Drag handle when selected · Move/Rotate`;
             } else if (hBaffle) {
               hint = `▸ ${hBaffle.orientation === 'vertical' ? 'Vertical' : 'Horizontal'} baffle · Click to inspect`;
             } else if (hUtil) {
@@ -758,8 +849,13 @@ export const App: React.FC = () => {
             setHoverHint(hint);
           }
         } else {
-          // During an active wall drag, keep the hint pinned to the drag
-          if (basinHandleDragRef.current) {
+          // During an active drag, keep the hint pinned to the drag
+          if (equipHandleDragRef.current) {
+            const eqId = equipHandleDragRef.current.equipmentId;
+            const eqt = gsRef.current.processEquipment?.find(e=>e.id===eqId);
+            const n = eqt ? (EQUIPMENT_TYPES[eqt.typeId]?.name ?? 'equipment') : 'equipment';
+            setHoverHint(`↔ Dragging ${n} — release on target tile · green = valid · red = blocked (Esc cancels)`);
+          } else if (basinHandleDragRef.current) {
             const d = basinHandleDragRef.current;
             const dirLabel = ({n:'North',s:'South',e:'East',w:'West',nw:'NW',ne:'NE',sw:'SW',se:'SE'} as any)[d.dir] ?? d.dir;
             setHoverHint(`↔ Dragging ${dirLabel} wall — release on target tile · green = valid · red = blocked (Esc cancels)`);
@@ -776,6 +872,67 @@ export const App: React.FC = () => {
         canvas.releasePointerCapture(e.pointerId);
       } catch {
         // Ignore if pointer capture already released
+      }
+
+      // P5: equipment drag-handle commit (direct in-world move with live ghost, free, undoable)
+      // Has priority alongside basin wall drag — both swallow pan and wasDrag >6.
+      if (equipHandleDragRef.current) {
+        const drag = equipHandleDragRef.current;
+        equipHandleDragRef.current = null;
+        pointerDown.current = false;
+        const sm = sceneRef.current;
+        const gs = gsRef.current;
+        const tile = sm ? sm.getGridTileFromScreen(e.clientX, e.clientY) : null;
+        if (!tile) {
+          sceneRef.current?.terrainGrid.setGhostPreview(0,0,1,1,true,false);
+          setToast('Equipment drag cancelled — release over a tile.');
+          return;
+        }
+        const eq = gs.processEquipment?.find(en => en.id === drag.equipmentId) ?? null;
+        if (!eq) { sceneRef.current?.terrainGrid.setGhostPreview(0,0,1,1,true,false); return; }
+        if (tile.x === eq.x && tile.y === eq.y) {
+          sceneRef.current?.terrainGrid.setGhostPreview(0,0,1,1,true,false);
+          return; // same-tile no-op (suppress wasDrag click)
+        }
+        // Check attached utilities first (same guard as Move button)
+        const attached = (gs.utilityConnections ?? []).filter(c =>
+          (c.ax === eq.x && c.ay === eq.y) || (c.bx === eq.x && c.by === eq.y)
+        );
+        if (attached.length > 0) {
+          SoundManager.playWarning();
+          sceneRef.current?.terrainGrid.setGhostPreview(0,0,1,1,true,false);
+          setToast(`⛔ Move blocked — ${attached.length} utility line${attached.length>1?'s':''} still attached (cut pipes/cables first).`);
+          return;
+        }
+        pushHistory(gs);
+        const res = GameManager.moveProcessEquipment(gs, drag.equipmentId, tile.x, tile.y);
+        if (!res.success) {
+          undoStackRef.current.pop();
+          SoundManager.playWarning();
+          sceneRef.current?.terrainGrid.setGhostPreview(0,0,1,1,true,false);
+          setToast(res.reason ?? 'Cannot move — blocked.');
+          return;
+        }
+        setGameState(res.newState);
+        // keep same equipment selected at its new tile, refresh handle position
+        sceneRef.current?.syncEquipment(
+          res.newState.processEquipment ?? [], res.newState.customBasins ?? [], new Set([drag.equipmentId]),
+          poweredEquipmentIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
+          aeratedDiffuserIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
+          filtrationLiveSets(res.newState.customBasins ?? [], res.newState.processEquipment ?? [], res.newState.utilityConnections ?? [], res.newState.customBaffles ?? []),
+          chemicalLiveSets(res.newState.customBasins ?? [], res.newState.processEquipment ?? [], res.newState.utilityConnections ?? [], res.newState.customBaffles ?? [])
+        );
+        sceneRef.current?.syncUtilityConnections(res.newState.utilityConnections ?? [], null);
+        sceneRef.current?.syncBaffles(res.newState.customBaffles ?? [], res.newState.customBasins ?? [], null);
+        sceneRef.current?.syncBasins(res.newState.customBasins ?? [], null);
+        // refresh handle at new position
+        const moved = res.newState.processEquipment?.find(en => en.id === drag.equipmentId) ?? null;
+        sceneRef.current?.syncEquipmentDragHandle(moved ? { x: moved.x, y: moved.y, typeId: moved.typeId } : null, res.newState.customBasins ?? []);
+        sceneRef.current?.syncSelectionBrackets(bracketRectsForSelection(constructionSelectionRef.current, res.newState.customBasins ?? [], res.newState.customBaffles ?? [], res.newState.utilityConnections ?? [], res.newState.processEquipment ?? []));
+        sceneRef.current?.terrainGrid.setGhostPreview(0,0,1,1,true,false);
+        SoundManager.playPlace();
+        setToast(`${EQUIPMENT_TYPES[eq.typeId]?.name ?? 'Equipment'} dragged to (${tile.x},${tile.y}) — free reposition (Ctrl+Z to undo).`);
+        return;
       }
 
       // P4 slice 2: wall drag commit has priority even over the wasDrag gate.
@@ -840,6 +997,10 @@ export const App: React.FC = () => {
           cancelEquipmentMove();
           return;
         }
+        if (equipHandleDragRef.current) {
+          cancelEquipHandleDrag();
+          return;
+        }
         if (toolModeRef.current === 'connect_pipe' && pipeSourceRef.current) {
           cancelPipeSelection();
         }
@@ -869,6 +1030,7 @@ export const App: React.FC = () => {
       }
       pointerDown.current = false;
       pointerDist.current = 0;
+      if (equipHandleDragRef.current) cancelEquipHandleDrag(true);
       if (basinHandleDragRef.current) cancelBasinHandleDrag(true);
     };
 
@@ -1915,6 +2077,10 @@ export const App: React.FC = () => {
           setToast('Rotated placement direction.');
           break;
         case 'Escape':
+          if (equipHandleDragRef.current) {
+            cancelEquipHandleDrag();
+            break;
+          }
           if (basinHandleDragRef.current) {
             cancelBasinHandleDrag();
             break;
@@ -1963,6 +2129,7 @@ export const App: React.FC = () => {
               aeratedDiffuserIds(gsRef.current.processEquipment ?? [], gsRef.current.utilityConnections ?? []),
               filtrationLiveSets(gsRef.current.customBasins ?? [], gsRef.current.processEquipment ?? [], gsRef.current.utilityConnections ?? [], gsRef.current.customBaffles ?? [])
             );
+            sceneRef.current?.syncEquipmentDragHandle(null);
             setToast('Select mode — click a unit to inspect.');
           }
           break;
@@ -1992,6 +2159,7 @@ export const App: React.FC = () => {
             sceneRef.current?.syncUtilityConnections(res.newState.utilityConnections ?? [], null);
             sceneRef.current?.syncSelectionBrackets(null);
             sceneRef.current?.syncDimensionLabels(res.newState.customBasins ?? [], null);
+            sceneRef.current?.syncEquipmentDragHandle(null);
             sceneRef.current?.syncEquipment(
               res.newState.processEquipment ?? [], res.newState.customBasins ?? [], null,
               poweredEquipmentIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
@@ -2138,6 +2306,7 @@ export const App: React.FC = () => {
       aeratedDiffuserIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
       filtrationLiveSets(res.newState.customBasins ?? [], res.newState.processEquipment ?? [], res.newState.utilityConnections ?? [], res.newState.customBaffles ?? [])
     );
+    sceneRef.current?.syncEquipmentDragHandle(null);
     SoundManager.playDemolish();
     const r = res.removed!;
     const refund = res.refunded ?? 0;
@@ -2149,6 +2318,7 @@ export const App: React.FC = () => {
     redoStackRef.current = [];
     setMovingEquipmentId(null);
     basinHandleDragRef.current = null;
+    equipHandleDragRef.current = null;
     setConstructionSelection(emptySelection());
     setSelectedBasinId(null);
     setSelectedEquipmentId(null);
@@ -2192,6 +2362,7 @@ export const App: React.FC = () => {
       sceneRef.current.syncBaffles(next.customBaffles ?? [], next.customBasins ?? [], null);
       sceneRef.current.syncSelectionBrackets(null);
       sceneRef.current.syncDimensionLabels(next.customBasins ?? [], null);
+      sceneRef.current.syncEquipmentDragHandle(null);
       // Clear any stale hover/ghost placement preview from the old level.
       sceneRef.current.terrainGrid.setGhostPreview(0, 0, 1, 1, true, false);
       sceneRef.current.terrainGrid.setHoverTile(0, 0, false);
@@ -2204,6 +2375,11 @@ export const App: React.FC = () => {
     setIsTopDown(false);
     setToast(`Stage loaded: ${next.currentLevel.title}`);
   }, [cancelPipeSelection]);
+
+  // P5: keep amber equipment drag handle synced with lone-selection (in-world grab hint)
+  useEffect(() => {
+    syncEquipHandleVisual();
+  }, [constructionSelection, gameState.processEquipment, gameState.customBasins, syncEquipHandleVisual]);
 
   const handleToggleTopDown = () => {
     const sm = sceneRef.current;

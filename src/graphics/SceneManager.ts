@@ -669,6 +669,8 @@ export class SceneManager {
   // P4 slice 3: floating in-world dimension labels for selected basins
   private dimensionLabelGroup: THREE.Group = new THREE.Group();
   private dimensionSpriteMap: Map<string, THREE.Sprite> = new Map();
+  // P5: in-world equipment drag handle (grab to move, live ghost polish)
+  private equipDragHandleGroup: THREE.Group = new THREE.Group();
 
   /**
    * Renders each player-drawn CustomBasin as a real in-world structure:
@@ -786,6 +788,50 @@ export class SceneManager {
     mkHandle(0, 0, true); mkHandle(w, 0, true); mkHandle(0, h, true); mkHandle(w, h, true);
     // edge midpoints (inset by 0 for north/south, but at mid)
     mkHandle(cx, 0, false); mkHandle(cx, h, false); mkHandle(0, cz, false); mkHandle(w, cz, false);
+  }
+
+  /**
+   * P5 — In-world equipment drag handle: single amber box floating above the
+   * lone selected machine. Grab and drag to reposition with live ghost preview
+   * (green = valid, red = blocked). Mirrors syncBasinHandles discipline.
+   */
+  public syncEquipmentDragHandle(item: { x: number; y: number; typeId?: string } | null, basins: { x: number; y: number; w: number; h: number; depthM: number }[] = []) {
+    if (!this.equipDragHandleGroup.parent) this.scene.add(this.equipDragHandleGroup);
+    for (const c of [...this.equipDragHandleGroup.children]) {
+      this.equipDragHandleGroup.remove(c);
+      (c as THREE.Mesh).geometry?.dispose();
+      const mat = (c as THREE.Mesh).material as THREE.Material | undefined;
+      if (mat) (mat as any).dispose?.();
+    }
+    if (!item) return;
+    // Handle height: above water for in-basin, above plinth for ground kit
+    const host = basins.find(b => item.x >= b.x && item.x < b.x + b.w && item.y >= b.y && item.y < b.y + b.h);
+    const yTop = host ? Math.max(1, host.depthM) + 0.55 : 1.15;
+    const isGround = !host;
+    const matHandle = new THREE.MeshStandardMaterial({
+      color: isGround ? 0xf59e0b : 0xfbbf24,
+      emissive: isGround ? 0x78350f : 0x92400e,
+      emissiveIntensity: 0.55,
+      roughness: 0.45,
+    });
+    const stemMat = new THREE.MeshStandardMaterial({ color: 0xfbbf24, emissive: 0x78350f, emissiveIntensity: 0.35, roughness: 0.5 });
+    // Vertical stem from machine top to handle
+    const stemH = yTop - 0.35;
+    if (stemH > 0.05) {
+      const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, stemH, 8), stemMat);
+      stem.position.set(item.x + 0.5, 0.35 + stemH / 2, item.y + 0.5);
+      stem.castShadow = true;
+      this.equipDragHandleGroup.add(stem);
+    }
+    const box = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.18, 0.32), matHandle);
+    box.position.set(item.x + 0.5, yTop, item.y + 0.5);
+    box.castShadow = true;
+    // Small arrow hint on top
+    const cone = new THREE.Mesh(new THREE.ConeGeometry(0.11, 0.14, 4), matHandle);
+    cone.position.set(item.x + 0.5, yTop + 0.16, item.y + 0.5);
+    cone.rotation.y = Math.PI / 4;
+    this.equipDragHandleGroup.add(box);
+    this.equipDragHandleGroup.add(cone);
   }
 
   /**
