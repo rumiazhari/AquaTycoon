@@ -60,6 +60,10 @@ import {
   seasonalBonusPerDay,
   seasonalLabel,
 } from '../design/SeasonalProfile';
+import {
+  sludgeCircularBonusPerDay,
+  sludgeCircularLabel,
+} from '../design/SludgeCircular';
 
 /**
  * Municipal overdraft financing — tycoon polish iter 39.
@@ -251,6 +255,7 @@ export class GameManager {
       dailyReclaimBonus: 0,
       dailyTrustBonus: 0,
       dailySeasonalBonus: 0,
+      dailyBiosolidsBonus: 0,
       totalTreatedM3: 0,
       netDailyProfit: 0
     };
@@ -923,6 +928,39 @@ export class GameManager {
         }
         // Ensure stored bonus is zeroed when no flow (so HUD doesn't show ghost pill)
         if (flowS <= 10) simResult.financials.dailySeasonalBonus = 0;
+      }
+    }
+
+    // ── TYCOON SLUDGE CIRCULAR iter 46 — biosolids fertilizer offtake ────────
+    // Flow-gated circular dividend: thickener alone earns fertilizer sales,
+    // thickener+digester earns more (biogas residue), full loop thickener+
+    // digester+dewatering earns the maximum. Tariff-independent (commodity).
+    // Stacks with reclaim/trust/seasonal. No construction is NOT a failure —
+    // absence simply gives 0 bonus and no alert.
+    {
+      const flowB = simResult.finalEffluent.flowRate;
+      const hasThickener = simResult.updatedUnits.some(u => u.typeId === 'sludge_thickener');
+      const hasDigester = simResult.updatedUnits.some(u => u.typeId === 'anaerobic_digester');
+      const hasDewatering = simResult.updatedUnits.some(u => u.typeId === 'sludge_dewatering_press' || u.typeId === 'solar_drying_bed');
+      const bonus = sludgeCircularBonusPerDay(flowB, hasThickener, hasDigester, hasDewatering);
+      if (bonus > 0.5 && flowB > 10) {
+        simResult.financials.dailyBiosolidsBonus = bonus;
+        simResult.financials.dailyRevenue += bonus;
+        simResult.financials.netDailyProfit += bonus;
+        const label = sludgeCircularLabel(hasThickener, hasDigester, hasDewatering);
+        if (!simResult.overallStats.activeAlerts.some(a => a.id === 'biosolids_bonus')) {
+          simResult.overallStats.activeAlerts.push({
+            id: 'biosolids_bonus',
+            type: 'success' as const,
+            message: `Biosolids circular: +$${bonus.toFixed(0)}/d fertilizer offtake (${label} — closed sludge loop adds value!)`,
+            timestamp: Date.now(),
+          });
+        }
+      } else {
+        simResult.financials.dailyBiosolidsBonus = 0;
+        if (simResult.overallStats.activeAlerts.some(a => a.id === 'biosolids_bonus')) {
+          simResult.overallStats.activeAlerts = simResult.overallStats.activeAlerts.filter(a => a.id !== 'biosolids_bonus');
+        }
       }
     }
 

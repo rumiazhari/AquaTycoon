@@ -75,6 +75,8 @@ export interface GameFinancials {
   dailyTrustBonus?: number;
   /** Seasonal tariff premium/discount for annual drought cycle (USD/day, can be negative) — tycoon iter 45. */
   dailySeasonalBonus?: number;
+  /** Biosolids fertilizer offtake premium for closed sludge loop (USD/day) — tycoon iter 46. */
+  dailyBiosolidsBonus?: number;
   totalTreatedM3: number;
   netDailyProfit: number;
 }

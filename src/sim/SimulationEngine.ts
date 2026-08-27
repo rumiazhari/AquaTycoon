@@ -501,6 +501,7 @@ export class SimulationEngine {
       dailyReclaimBonus: 0,
       dailyTrustBonus: 0,
       dailySeasonalBonus: 0,
+      dailyBiosolidsBonus: 0,
       totalTreatedM3: currentFinancials.totalTreatedM3, // accumulated by GameManager per simulated day
       netDailyProfit
     };

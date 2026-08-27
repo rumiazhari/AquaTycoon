@@ -85,8 +85,8 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({
             className={`flex items-center gap-2 px-2.5 py-1 rounded-lg border ${financials.cash < 0 ? 'bg-rose-950/40 border-rose-500/50 animate-pulse' : 'bg-slate-900/80 border-slate-700/80'}`}
             title={
               financials.cash < 0
-                ? `Overdraft $${Math.round(-financials.cash).toLocaleString()} debt — $${(financials.dailyFinancingCost ?? 0).toFixed(1)}/day interest at 18% APR. Restore positive cash to stop charges. Net $${Math.round(financials.netDailyProfit).toLocaleString()}/day${(financials.dailyReclaimBonus ?? 0) > 0.5 ? ` (+$${Math.round(financials.dailyReclaimBonus ?? 0).toLocaleString()}/d reclaim)` : ''}${(financials.dailyTrustBonus ?? 0) > 0.5 ? ` (+$${Math.round(financials.dailyTrustBonus ?? 0).toLocaleString()}/d trust)` : ''}${Math.abs(financials.dailySeasonalBonus ?? 0) > 0.5 ? ` (${(financials.dailySeasonalBonus ?? 0) > 0 ? '+' : ''}$${Math.round(financials.dailySeasonalBonus ?? 0).toLocaleString()}/d ${seasonalLabel(gameState.gameTimeDays).season.toLowerCase()})` : ''}.`
-                : `Cash on hand — net $${Math.round(financials.netDailyProfit).toLocaleString()}/day (Revenue $${Math.round(financials.dailyRevenue).toLocaleString()}${(financials.dailyReclaimBonus ?? 0) > 0.5 ? ` incl. +$${Math.round(financials.dailyReclaimBonus ?? 0).toLocaleString()} reclaim` : ''}${(financials.dailyTrustBonus ?? 0) > 0.5 ? ` +$${Math.round(financials.dailyTrustBonus ?? 0).toLocaleString()} trust` : ''}${Math.abs(financials.dailySeasonalBonus ?? 0) > 0.5 ? ` ${(financials.dailySeasonalBonus ?? 0) > 0 ? '+' : ''}$${Math.round(financials.dailySeasonalBonus ?? 0).toLocaleString()} seasonal` : ''} – OPEX $${Math.round(financials.dailyOpex).toLocaleString()}${(financials.dailyFinancingCost ?? 0) > 0 ? ` – Financing $${Math.round(financials.dailyFinancingCost).toLocaleString()}` : ''})`
+                ? `Overdraft $${Math.round(-financials.cash).toLocaleString()} debt — $${(financials.dailyFinancingCost ?? 0).toFixed(1)}/day interest at 18% APR. Restore positive cash to stop charges. Net $${Math.round(financials.netDailyProfit).toLocaleString()}/day${(financials.dailyReclaimBonus ?? 0) > 0.5 ? ` (+$${Math.round(financials.dailyReclaimBonus ?? 0).toLocaleString()}/d reclaim)` : ''}${(financials.dailyTrustBonus ?? 0) > 0.5 ? ` (+$${Math.round(financials.dailyTrustBonus ?? 0).toLocaleString()}/d trust)` : ''}${Math.abs(financials.dailySeasonalBonus ?? 0) > 0.5 ? ` (${(financials.dailySeasonalBonus ?? 0) > 0 ? '+' : ''}$${Math.round(financials.dailySeasonalBonus ?? 0).toLocaleString()}/d ${seasonalLabel(gameState.gameTimeDays).season.toLowerCase()})` : ''}${(financials.dailyBiosolidsBonus ?? 0) > 0.5 ? ` (+$${Math.round(financials.dailyBiosolidsBonus ?? 0).toLocaleString()}/d biosolids)` : ''}.`
+                : `Cash on hand — net $${Math.round(financials.netDailyProfit).toLocaleString()}/day (Revenue $${Math.round(financials.dailyRevenue).toLocaleString()}${(financials.dailyReclaimBonus ?? 0) > 0.5 ? ` incl. +$${Math.round(financials.dailyReclaimBonus ?? 0).toLocaleString()} reclaim` : ''}${(financials.dailyTrustBonus ?? 0) > 0.5 ? ` +$${Math.round(financials.dailyTrustBonus ?? 0).toLocaleString()} trust` : ''}${Math.abs(financials.dailySeasonalBonus ?? 0) > 0.5 ? ` ${(financials.dailySeasonalBonus ?? 0) > 0 ? '+' : ''}$${Math.round(financials.dailySeasonalBonus ?? 0).toLocaleString()} seasonal` : ''}${(financials.dailyBiosolidsBonus ?? 0) > 0.5 ? ` +$${Math.round(financials.dailyBiosolidsBonus ?? 0).toLocaleString()} biosolids` : ''} – OPEX $${Math.round(financials.dailyOpex).toLocaleString()}${(financials.dailyFinancingCost ?? 0) > 0 ? ` – Financing $${Math.round(financials.dailyFinancingCost).toLocaleString()}` : ''})`
             }
           >
             <DollarSign size={14} className={financials.cash < 0 ? 'text-rose-400 shrink-0' : 'text-emerald-400 shrink-0'} />
@@ -108,8 +108,11 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({
                       {(financials.dailySeasonalBonus ?? 0) > 0 ? '+' : ''}${Math.round(financials.dailySeasonalBonus ?? 0).toLocaleString()}/d {seasonalLabel(gameState.gameTimeDays).season.toLowerCase()} {seasonalLabel(gameState.gameTimeDays).pct}
                     </div>
                   )}
+                  {(financials.dailyBiosolidsBonus ?? 0) > 0.5 && (
+                    <div className="text-[9px] font-mono text-lime-300">+${Math.round(financials.dailyBiosolidsBonus ?? 0).toLocaleString()}/d biosolids</div>
+                  )}
                 </div>
-              ) : (financials.dailyReclaimBonus ?? 0) > 0.5 || (financials.dailyTrustBonus ?? 0) > 0.5 || Math.abs(financials.dailySeasonalBonus ?? 0) > 0.5 ? (
+              ) : (financials.dailyReclaimBonus ?? 0) > 0.5 || (financials.dailyTrustBonus ?? 0) > 0.5 || Math.abs(financials.dailySeasonalBonus ?? 0) > 0.5 || (financials.dailyBiosolidsBonus ?? 0) > 0.5 ? (
                 <div className="flex flex-col">
                   <div className={`text-[9px] font-mono ${financials.netDailyProfit >= 0 ? 'text-emerald-300' : 'text-rose-400'}`}>
                     {financials.netDailyProfit >= 0 ? '+' : ''}${Math.round(financials.netDailyProfit).toLocaleString()}/day
@@ -125,6 +128,9 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({
                       {(financials.dailySeasonalBonus ?? 0) > 0 ? '+' : ''}${Math.round(financials.dailySeasonalBonus ?? 0).toLocaleString()} seasonal · {seasonalLabel(gameState.gameTimeDays).season} {seasonalLabel(gameState.gameTimeDays).pct}
                     </div>
                   )}
+                  {(financials.dailyBiosolidsBonus ?? 0) > 0.5 && (
+                    <div className="text-[9px] font-mono text-lime-300">+${Math.round(financials.dailyBiosolidsBonus ?? 0).toLocaleString()} biosolids</div>
+                  )}
                 </div>
               ) : (
                 <div className="flex flex-col">
@@ -135,6 +141,9 @@ export const HeaderHUD: React.FC<HeaderHUDProps> = ({
                     <div className={`text-[9px] font-mono ${(financials.dailySeasonalBonus ?? 0) > 0 ? 'text-amber-300' : 'text-sky-300'}`}>
                       {(financials.dailySeasonalBonus ?? 0) > 0 ? '+' : ''}${Math.round(financials.dailySeasonalBonus ?? 0).toLocaleString()} seasonal · {seasonalLabel(gameState.gameTimeDays).season} {seasonalLabel(gameState.gameTimeDays).pct}
                     </div>
+                  )}
+                  {(financials.dailyBiosolidsBonus ?? 0) > 0.5 && (
+                    <div className="text-[9px] font-mono text-lime-300">+${Math.round(financials.dailyBiosolidsBonus ?? 0).toLocaleString()} biosolids</div>
                   )}
                 </div>
               )}

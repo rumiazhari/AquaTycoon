@@ -5000,5 +5000,114 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
   }
 }
 
+// ── TYCOON SLUDGE CIRCULAR ─ biosolids fertilizer offtake (iter 46) ────────
+{
+  const { sludgeCircularBonusPerDay, SLUDGE_BONUS_PER_M3_THICKENER, SLUDGE_BONUS_PER_M3_DIGESTER, SLUDGE_BONUS_PER_M3_DEWATERING, SLUDGE_BONUS_PER_M3_FULL, sludgeCircularLabel } = await import('../src/design/SludgeCircular.js');
+  assert(sludgeCircularBonusPerDay(0, true, false, false) === 0, 'SC01. 0 flow -> $0');
+  assert(sludgeCircularBonusPerDay(3500, false, false, false) === 0, 'SC01b. no thickener -> $0');
+  assert(sludgeCircularBonusPerDay(3500, false, true, true) === 0, 'SC01c. digester without thickener -> $0');
+  assert(sludgeCircularBonusPerDay(NaN, true, false, false) === 0, 'SC01d. NaN flow -> $0');
+  assert(sludgeCircularBonusPerDay(Infinity, true, false, false) === 0, 'SC01e. Inf flow -> $0');
+  assert(SLUDGE_BONUS_PER_M3_FULL === SLUDGE_BONUS_PER_M3_THICKENER + SLUDGE_BONUS_PER_M3_DIGESTER + SLUDGE_BONUS_PER_M3_DEWATERING, 'SC01f. full rate = sum');
+  assert(Math.abs(SLUDGE_BONUS_PER_M3_FULL - 0.039) < 0.001, 'SC01g. full 0.039');
+  {
+    const bThick = sludgeCircularBonusPerDay(3500, true, false, false);
+    const bDig = sludgeCircularBonusPerDay(3500, true, true, false);
+    const bFull = sludgeCircularBonusPerDay(3500, true, true, true);
+    const bDewNoDig = sludgeCircularBonusPerDay(3500, true, false, true);
+    assert(Math.abs(bThick - 3500*0.012) < 0.5, 'SC02. L1 thickener $'+bThick.toFixed(1)+' ~ $42');
+    assert(Math.abs(bThick - 42) < 1, 'SC02b. L1 thickener 42 got '+bThick.toFixed(1));
+    assert(Math.abs(bDig - 3500*0.027) < 0.5, 'SC02c. L1 thick+dig '+bDig.toFixed(1)+' ~ $94.5');
+    assert(Math.abs(bFull - 3500*0.039) < 0.5, 'SC02d. L1 full '+bFull.toFixed(1)+' ~ $136.5');
+    assert(Math.abs(bFull - 136.5) < 1, 'SC02e. L1 full 136.5 got '+bFull.toFixed(1));
+    assert(bFull > bDig && bDig > bThick, 'SC02f. tier strict increase '+bThick.toFixed(0)+' < '+bDig.toFixed(0)+' < '+bFull.toFixed(0));
+    assert(Math.abs(bDewNoDig - bThick) < 0.01, 'SC02g. dewatering without digester adds nothing');
+    assert(sludgeCircularLabel(true,false,false) === 'Thickened', 'SC02h. label thickened');
+    assert(sludgeCircularLabel(true,true,false).includes('digested'), 'SC02i. label digested');
+    assert(sludgeCircularLabel(true,true,true).includes('Full circular'), 'SC02j. label full');
+  }
+  {
+    const bL4Full = sludgeCircularBonusPerDay(12000, true, true, true);
+    const bL5Full = sludgeCircularBonusPerDay(15000, true, true, true);
+    assert(Math.abs(bL4Full - 468) < 1, 'SC03. L4 12k full 468 got '+bL4Full.toFixed(0));
+    assert(Math.abs(bL5Full - 585) < 1, 'SC03b. L5 15k full 585 got '+bL5Full.toFixed(0));
+    assert(bL5Full > bL4Full, 'SC03c. L5 > L4');
+  }
+  assert(sludgeCircularBonusPerDay(12000, false, true, true) === 0, 'SC04. no thickener at L4 -> 0');
+  {
+    let gs = GameManager.createInitialState(0, false);
+    let rr = GameManager.placeCustomBasin(gs, { x:2,y:2,w:3,h:3 }); gs=rr.newState;
+    const thick={ instanceId:'thk1', typeId:'sludge_thickener', gridX:10, gridY:5, rotation:0, volume:200, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:4, lastOpexActual:40 };
+    const scr={ instanceId:'scrSl', typeId:'bar_screen', gridX:5, gridY:10, rotation:0, volume:200, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:0, lastOpexActual:0 };
+    gs.units.push(thick, scr);
+    gs.pipes.push(
+      { id:'sl1', fromUnitId:'inlet_0', fromPortId:'outlet', toUnitId:'scrSl', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'},
+      { id:'sl2', fromUnitId:'scrSl', fromPortId:'outlet', toUnitId:'outfall_0', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'}
+    );
+    for(let i=0;i<12;i++) gs = GameManager.tick(gs, 0.5);
+    const bonus = gs.financials.dailyBiosolidsBonus ?? 0;
+    const expected = sludgeCircularBonusPerDay(gs.finalEffluent.flowRate, true, false, false);
+    assert(gs.finalEffluent.flowRate > 10, 'SC05. flow established '+gs.finalEffluent.flowRate.toFixed(0));
+    assert(bonus > 10, 'SC05b. thickener bonus live >$10 (got '+bonus.toFixed(1)+')');
+    assert(Math.abs(bonus - expected) < 2, 'SC05c. bonus matches pure func '+bonus.toFixed(1)+' ~ '+expected.toFixed(1));
+    assert(gs.financials.dailyRevenue >= bonus, 'SC05d. revenue includes biosolids');
+    assert(gs.overallStats.activeAlerts.some((a)=>a.id==='biosolids_bonus'), 'SC05e. biosolids alert present');
+  }
+  {
+    let gs = GameManager.createInitialState(0, false);
+    gs.units.push({ instanceId:'thkNF', typeId:'sludge_thickener', gridX:10, gridY:5, rotation:0, volume:200, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:0, lastOpexActual:0 });
+    for(let i=0;i<5;i++) gs = GameManager.tick(gs, 0.5);
+    assert((gs.financials.dailyBiosolidsBonus ?? 0) === 0, 'SC06. no flow -> $0 biosolids');
+    assert(!gs.overallStats.activeAlerts.some((a)=>a.id==='biosolids_bonus'), 'SC06b. no alert no flow');
+  }
+  {
+    const makeGs = (withDig, withDew) => {
+      let gs = GameManager.createInitialState(0, false);
+      const thick={ instanceId:'thkSC', typeId:'sludge_thickener', gridX:10, gridY:5, rotation:0, volume:200, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:0, lastOpexActual:0 };
+      gs.units.push(thick);
+      if(withDig) gs.units.push({ instanceId:'digSC', typeId:'anaerobic_digester', gridX:14, gridY:5, rotation:0, volume:400, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:-45, lastOpexActual:120 });
+      if(withDew) gs.units.push({ instanceId:'dewSC', typeId:'sludge_dewatering_press', gridX:18, gridY:5, rotation:0, volume:150, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:22, lastOpexActual:85 });
+      const scr={ instanceId:'scrSC', typeId:'bar_screen', gridX:5, gridY:10, rotation:0, volume:200, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:0, lastOpexActual:0 };
+      gs.units.push(scr);
+      gs.pipes.push(
+        { id:'sc1', fromUnitId:'inlet_0', fromPortId:'outlet', toUnitId:'scrSC', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'},
+        { id:'sc2', fromUnitId:'scrSC', fromPortId:'outlet', toUnitId:'outfall_0', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'}
+      );
+      for(let i=0;i<12;i++) gs = GameManager.tick(gs, 0.5);
+      return gs;
+    };
+    const gThick = makeGs(false,false);
+    const gFull = makeGs(true,true);
+    const bThick = gThick.financials.dailyBiosolidsBonus ?? 0;
+    const bFull = gFull.financials.dailyBiosolidsBonus ?? 0;
+    assert(bThick > 10 && bFull > bThick * 2.5, 'SC07. full chain '+bFull.toFixed(1)+' > 2.5x thickener '+bThick.toFixed(1));
+    assert(gFull.financials.netDailyProfit > gThick.financials.netDailyProfit, 'SC07b. full chain profit '+gFull.financials.netDailyProfit.toFixed(0)+' > thickener alone '+gThick.financials.netDailyProfit.toFixed(0));
+    assert(gFull.overallStats.activeAlerts.some((a)=>a.id==='biosolids_bonus'), 'SC07c. full chain alert');
+  }
+  {
+    let gs = GameManager.createInitialState(0, false);
+    gs.gameTimeDays = 171;
+    gs.complianceStreakDays = 8;
+    const thick={ instanceId:'thkSt', typeId:'sludge_thickener', gridX:10, gridY:5, rotation:0, volume:200, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:4, lastOpexActual:40 };
+    const dig={ instanceId:'digSt', typeId:'anaerobic_digester', gridX:14, gridY:5, rotation:0, volume:400, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:-45, lastOpexActual:120 };
+    const dew={ instanceId:'dewSt', typeId:'sludge_dewatering_press', gridX:18, gridY:5, rotation:0, volume:150, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:22, lastOpexActual:85 };
+    gs.units.push(thick, dig, dew);
+    const scr={ instanceId:'scrSt8', typeId:'bar_screen', gridX:5, gridY:10, rotation:0, volume:200, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:0, lastOpexActual:0 };
+    gs.units.push(scr);
+    gs.pipes.push(
+      { id:'st1', fromUnitId:'inlet_0', fromPortId:'outlet', toUnitId:'scrSt8', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'},
+      { id:'st2', fromUnitId:'scrSt8', fromPortId:'outlet', toUnitId:'outfall_0', toPortId:'inlet', pathPoints:[], flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, pipeType:'liquid'}
+    );
+    for(let i=0;i<12;i++) gs = GameManager.tick(gs, 0.5);
+    const bios = gs.financials.dailyBiosolidsBonus ?? 0;
+    const seas = gs.financials.dailySeasonalBonus ?? 0;
+    assert(bios > 10, 'SC08. biosolids live with full sludge loop (got '+bios.toFixed(1)+')');
+    assert(seas > 0, 'SC08b. seasonal still live');
+    assert(gs.financials.dailyRevenue >= bios + seas, 'SC08d. revenue stacks biosolids+seasonal');
+    assert(gs.overallStats.activeAlerts.some((a)=>a.id==='biosolids_bonus'), 'SC08e. biosolids alert in stacked plant');
+  }
+}
+
+
 console.log(failures === 0 ? "\nALL TESTS PASSED" : `\n${failures} TEST(S) FAILED`);
 process.exit(failures === 0 ? 0 : 1);
