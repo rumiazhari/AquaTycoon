@@ -73,7 +73,7 @@ export const BasinInspector: React.FC<BasinInspectorProps> = ({ basin, zoneCount
             {zoneCount > 1 && <span className="px-2 py-0.5 rounded bg-violet-900/30 border border-violet-700/40 text-violet-300 flex items-center gap-1"><Columns3 size={10} />{zoneCount} zones</span>}
             {equipmentInside > 0 && <span className="px-2 py-0.5 rounded bg-amber-900/30 border border-amber-700/40 text-amber-300">{equipmentInside} machine{equipmentInside>1?'s':''} inside</span>}
           </div>
-          <span className="text-[10px] text-slate-500">Selected basin glows emerald in-world. In Select mode click another basin, equipment, or empty ground to switch.</span>
+          <span className="text-[10px] text-slate-500">Selected basin glows emerald in-world — wall-top amber handles show grip points. Drag any wall or corner handle in-world to resize, or use buttons below. In Select mode click another basin, equipment, or empty ground to switch.</span>
         </div>
 
         {/* Depth control — P1 headline feature */}

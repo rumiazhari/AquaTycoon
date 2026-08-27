@@ -21,7 +21,8 @@ import { emptyWater } from './sim/WaterStream';
 import { SoundManager } from './audio/SoundManager';
 import { CAMPAIGN_LEVELS } from './gameplay/LevelsData';
 import { TUTORIAL_STEPS, TUTORIAL_PIPE_CHAIN } from './gameplay/TutorialSteps';
-import { BASIN_DEFAULT_DEPTH_M, validateBasinPlacement } from './design/CustomBasin';
+import { BASIN_DEFAULT_DEPTH_M, validateBasinPlacement, validateBasinEdit, basinHandleDirForTile, basinRectForHandleDrag } from './design/CustomBasin';
+import type { BasinHandleDir } from './design/CustomBasin';
 import { EQUIPMENT_TYPES, validateEquipmentPlacement } from './design/ProcessEquipment';
 import { UTILITY_TYPES, UtilityConnectionType, validateUtilityConnection } from './design/UtilityConnection';
 import { poweredEquipmentIds, aeratedDiffuserIds } from './design/ConstructionNetwork';
@@ -149,6 +150,16 @@ export const App: React.FC = () => {
 
   // CONSTRUCTION-BUILDER Phase 1: selected player-drawn basin (inspect/demolish).
   const [selectedBasinId, setSelectedBasinId] = useState<string | null>(null);
+  const selectedBasinIdRef = useRef<string | null>(null);
+  selectedBasinIdRef.current = selectedBasinId;
+
+  // P4 slice 2: in-world basin wall drag-handles — direct grip-resize state
+  const basinHandleDragRef = useRef<{ basinId: string; dir: BasinHandleDir; startRect: { x:number;y:number;w:number;h:number;depthM:number } } | null>(null);
+  const cancelBasinHandleDrag = useCallback((silent:boolean=false) => {
+    basinHandleDragRef.current = null;
+    sceneRef.current?.terrainGrid.setGhostPreview(0,0,1,1,true,false);
+    if (!silent) setToast('Wall drag cancelled — basin unchanged.');
+  }, []);
 
   // ── CONSTRUCTION-BUILDER Phase 2: physical equipment placement ──────────────
   // Armed machine type (toolbar) + selected installed machine (inspect).
@@ -300,6 +311,7 @@ export const App: React.FC = () => {
   const applyHistoryState = useCallback((state: GameState) => {
     setGameState(state);
     setMovingEquipmentId(null);
+    basinHandleDragRef.current = null;
     setConstructionSelection(emptySelection());
     sceneRef.current?.terrainGrid.setGhostPreview(0, 0, 1, 1, true, false);
     const sm = sceneRef.current;
@@ -418,12 +430,64 @@ export const App: React.FC = () => {
       pointerStart.current  = { x: e.clientX, y: e.clientY };
       pointerLast.current   = { x: e.clientX, y: e.clientY };
       pointerDist.current   = 0;
+      // P4 slice 2: detect grab of a basin wall/corner handle when a single basin is selected.
+      // Any perimeter tile becomes a drag handle — forgiving grip on the wall itself.
+      if (e.button === 0 && toolModeRef.current === 'select' && !movingEquipmentIdRef.current && !basinHandleDragRef.current) {
+        const sm2 = sceneRef.current;
+        const tile2 = sm2?.getGridTileFromScreen(e.clientX, e.clientY) ?? null;
+        const selId = selectedBasinIdRef.current;
+        const sel = constructionSelectionRef.current;
+        if (tile2 && selId && sel.basins.length === 1 && sel.basins[0] === selId && selectionCount(sel) === 1) {
+          const basin = gsRef.current.customBasins?.find(b => b.id === selId) ?? null;
+          if (basin) {
+            const dir = basinHandleDirForTile(basin, tile2);
+            if (dir) {
+              // Don't steal clicks that should toggle multi-select (Shift) or that hit equipment/baffle first
+              const equipHit = GameManager.equipmentAtTile(gsRef.current, tile2.x, tile2.y);
+              const groundPt = sm2!.getGroundPointFromScreen(e.clientX, e.clientY);
+              const baffleHit = groundPt ? GameManager.baffleAtPoint(gsRef.current, groundPt.x, groundPt.z) : null;
+              if (!equipHit && !baffleHit) {
+                basinHandleDragRef.current = { basinId: basin.id, dir, startRect: { x: basin.x, y: basin.y, w: basin.w, h: basin.h, depthM: basin.depthM } };
+              }
+            }
+          }
+        }
+      }
     };
 
     const onPointerMove = (e: PointerEvent) => {
       e.preventDefault();
       const sm = sceneRef.current;
       if (!sm) return;
+
+      // P4 slice 2: active wall drag — show ghost of the resized basin while held
+      if (basinHandleDragRef.current && pointerDown.current) {
+        const tile = sm.getGridTileFromScreen(e.clientX, e.clientY);
+        const dx = e.clientX - pointerLast.current.x;
+        const dy = e.clientY - pointerLast.current.y;
+        pointerLast.current = { x: e.clientX, y: e.clientY };
+        pointerDist.current += Math.hypot(dx, dy);
+        if (!tile) {
+          sm.terrainGrid.setGhostPreview(basinHandleDragRef.current.startRect.x, basinHandleDragRef.current.startRect.y, basinHandleDragRef.current.startRect.w, basinHandleDragRef.current.startRect.h, false, true);
+          return;
+        }
+        const drag = basinHandleDragRef.current;
+        const cand = basinRectForHandleDrag(drag.startRect as any, drag.dir, tile);
+        const gs = gsRef.current;
+        const unitRects = gs.units.map(u => {
+          const d = (UNIT_DEFINITIONS as any)[u.typeId];
+          const [uw, ul] = d ? d.footprint : [1, 1];
+          return { x: u.gridX, y: u.gridY, w: uw, h: ul };
+        });
+        for (const eq of gs.processEquipment ?? []) {
+          if ((EQUIPMENT_TYPES as any)[eq.typeId]?.mounting === 'ground') unitRects.push({ x: eq.x, y: eq.y, w: 1, h: 1 });
+        }
+        const equipTiles = (gs.processEquipment ?? []).filter(eq => eq.x >= drag.startRect.x && eq.x < drag.startRect.x + drag.startRect.w && eq.y >= drag.startRect.y && eq.y < drag.startRect.y + drag.startRect.h).map(eq=>({x:eq.x,y:eq.y}));
+        const baffleOffsets = (gs.customBaffles ?? []).map(bf=>({ basinId: bf.basinId, orientation: bf.orientation as any, offsetTiles: bf.offsetTiles }));
+        const vr = validateBasinEdit(drag.basinId, cand as any, drag.startRect.depthM, gs.currentLevel.mapSize, gs.customBasins ?? [], unitRects, equipTiles, baffleOffsets);
+        sm.terrainGrid.setGhostPreview(cand.x, cand.y, cand.w, cand.h, vr.ok, true);
+        return;
+      }
 
       if (pointerDown.current) {
         const dx = e.clientX - pointerLast.current.x;
@@ -626,7 +690,15 @@ export const App: React.FC = () => {
             const hUtil = hGround ? GameManager.utilityAtPoint(gsRef.current, hGround.x, hGround.z) : null;
             const hBaffle = hGround ? GameManager.baffleAtPoint(gsRef.current, hGround.x, hGround.z) : null;
             let hint: string | null = null;
-            if (hEquip) {
+            // P4 slice 2: drag handle hint has priority when hovering a wall of the lone selected basin
+            const selId = selectedBasinIdRef.current;
+            const sel = constructionSelectionRef.current;
+            const loneBasin = selId && sel.basins.length===1 && sel.basins[0]===selId && selectionCount(sel)===1 ? (gsRef.current.customBasins ?? []).find(b=>b.id===selId) ?? null : null;
+            const handleDir = loneBasin ? basinHandleDirForTile(loneBasin, tile) : null;
+            if (handleDir && !hEquip && !hBaffle) {
+              const dirLabel = ({n:'North wall',s:'South wall',e:'East wall',w:'West wall',nw:'NW corner',ne:'NE corner',sw:'SW corner',se:'SE corner'} as any)[handleDir] ?? handleDir;
+              hint = `▸ Drag ${dirLabel} to resize — hold and drag wall/corner (Shift+Click to add to selection)`;
+            } else if (hEquip) {
               const eqName = EQUIPMENT_TYPES[hEquip.typeId]?.name ?? hEquip.typeId;
               hint = `▸ ${eqName} — Click to inspect · Move/Rotate`;
             } else if (hBaffle) {
@@ -634,14 +706,26 @@ export const App: React.FC = () => {
             } else if (hUtil) {
               hint = `▸ ${UTILITY_TYPES[hUtil.type]?.name ?? hUtil.type} · Click to inspect`;
             } else if (hBasin) {
-              hint = `▸ Basin ${hBasin.w}×${hBasin.h} · ${hBasin.w * hBasin.h * hBasin.depthM} m³ — Click to edit`;
+              // When this basin is the lone selected one, hint drag vs inspect
+              if (loneBasin && hBasin.id === loneBasin.id) {
+                hint = `▸ Basin ${hBasin.w}×${hBasin.h} · ${hBasin.w * hBasin.h * hBasin.depthM} m³ — Drag wall/corner to resize · Click interior to re-select`;
+              } else {
+                hint = `▸ Basin ${hBasin.w}×${hBasin.h} · ${hBasin.w * hBasin.h * hBasin.depthM} m³ — Click to edit · Drag handles when selected`;
+              }
             } else if (hUnit) {
               hint = `▸ ${UNIT_DEFINITIONS[hUnit.typeId]?.name ?? hUnit.typeId} (legacy) — Click to inspect`;
             }
             setHoverHint(hint);
           }
         } else {
-          setHoverHint(null);
+          // During an active wall drag, keep the hint pinned to the drag
+          if (basinHandleDragRef.current) {
+            const d = basinHandleDragRef.current;
+            const dirLabel = ({n:'North',s:'South',e:'East',w:'West',nw:'NW',ne:'NE',sw:'SW',se:'SE'} as any)[d.dir] ?? d.dir;
+            setHoverHint(`↔ Dragging ${dirLabel} wall — release on target tile · green = valid · red = blocked (Esc cancels)`);
+          } else {
+            setHoverHint(null);
+          }
         }
       }
     };
@@ -652,6 +736,55 @@ export const App: React.FC = () => {
         canvas.releasePointerCapture(e.pointerId);
       } catch {
         // Ignore if pointer capture already released
+      }
+
+      // P4 slice 2: wall drag commit has priority even over the wasDrag gate.
+      // The PointerMove swallows the pan while the handle is held, so wasDrag
+      // will be >6 even for a tiny handle nudge — we must commit before that early return.
+      if (basinHandleDragRef.current) {
+        const drag = basinHandleDragRef.current;
+        basinHandleDragRef.current = null;
+        pointerDown.current = false;
+        const sm = sceneRef.current;
+        const gs = gsRef.current;
+        const tile = sm ? sm.getGridTileFromScreen(e.clientX, e.clientY) : null;
+        if (!tile) {
+          sceneRef.current?.terrainGrid.setGhostPreview(0,0,1,1,true,false);
+          setToast('Wall drag cancelled — release over a tile.');
+          return;
+        }
+        const cand = basinRectForHandleDrag(drag.startRect as any, drag.dir, tile);
+        // no-op if tile didn't move the wall
+        if (cand.x === drag.startRect.x && cand.y === drag.startRect.y && cand.w === drag.startRect.w && cand.h === drag.startRect.h) {
+          sceneRef.current?.terrainGrid.setGhostPreview(0,0,1,1,true,false);
+          return;
+        }
+        pushHistory(gs);
+        const res = GameManager.updateBasinRect(gs, drag.basinId, cand);
+        if (!res.success) {
+          undoStackRef.current.pop();
+          SoundManager.playWarning();
+          sceneRef.current?.terrainGrid.setGhostPreview(0,0,1,1,true,false);
+          setToast(res.reason ?? 'Cannot resize — wall blocked.');
+          return;
+        }
+        setGameState(res.newState);
+        // keep the same basin selected with its new footprint
+        sceneRef.current?.syncBasins(res.newState.customBasins ?? [], new Set([drag.basinId]));
+        sceneRef.current?.syncBaffles(res.newState.customBaffles ?? [], res.newState.customBasins ?? [], null);
+        sceneRef.current?.syncUtilityConnections(res.newState.utilityConnections ?? [], null);
+        sceneRef.current?.syncEquipment(
+          res.newState.processEquipment ?? [], res.newState.customBasins ?? [], null,
+          poweredEquipmentIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
+          aeratedDiffuserIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
+          filtrationLiveSets(res.newState.customBasins ?? [], res.newState.processEquipment ?? [], res.newState.utilityConnections ?? [], res.newState.customBaffles ?? [])
+        );
+        sceneRef.current?.terrainGrid.setGhostPreview(0,0,1,1,true,false);
+        SoundManager.playPlace();
+        if (res.charged) setToast(`Wall dragged to ${cand.w}×${cand.h} — charged $${res.charged.toLocaleString()} extra concrete.`);
+        else if (res.refunded) setToast(`Wall dragged to ${cand.w}×${cand.h} — refund +$${res.refunded.toLocaleString()} (50% salvage).`);
+        else setToast(`Wall dragged to ${cand.w}×${cand.h}.`);
+        return;
       }
 
       const wasDrag = pointerDist.current > 6;
@@ -671,6 +804,9 @@ export const App: React.FC = () => {
         }
         if (toolModeRef.current === 'connect_utility' && utilitySourceRef.current) {
           cancelUtilitySelection();
+        }
+        if (basinHandleDragRef.current) {
+          cancelBasinHandleDrag();
         }
         return;
       }
@@ -692,6 +828,7 @@ export const App: React.FC = () => {
       }
       pointerDown.current = false;
       pointerDist.current = 0;
+      if (basinHandleDragRef.current) cancelBasinHandleDrag(true);
     };
 
     const onWheel = (e: WheelEvent) => {
@@ -1722,6 +1859,10 @@ export const App: React.FC = () => {
           setToast('Rotated placement direction.');
           break;
         case 'Escape':
+          if (basinHandleDragRef.current) {
+            cancelBasinHandleDrag();
+            break;
+          }
           if (selectionCount(constructionSelectionRef.current) > 1) {
             clearConstructionSelection();
             setToast('Selection cleared.');
@@ -1949,6 +2090,7 @@ export const App: React.FC = () => {
     undoStackRef.current = [];
     redoStackRef.current = [];
     setMovingEquipmentId(null);
+    basinHandleDragRef.current = null;
     setConstructionSelection(emptySelection());
     setSelectedBasinId(null);
     setSelectedEquipmentId(null);

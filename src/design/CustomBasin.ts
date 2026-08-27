@@ -186,3 +186,72 @@ export function basinDimensionLabel(b: CustomBasin): string {
   const vol = basinVolumeM3(b);
   return `${len}×${wid} m · ${b.depthM.toFixed(1)} m deep · ${Math.round(vol).toLocaleString()} m³`;
 }
+
+// ── P4 slice 2: in-world basin wall drag-handles (direct grip-resize) ─────────
+export type BasinHandleDir = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
+
+/**
+ * Which handle (edge/corner) the tile lies on for a given basin.
+ * Any perimeter tile counts as the corresponding wall handle — forgiving for
+ * click-drag so the player can grab the wall itself, not a tiny midpoint.
+ * Interior tiles → null. Corner priority over edge.
+ */
+export function basinHandleDirForTile(basin: BasinRect, tile: { x: number; y: number }): BasinHandleDir | null {
+  const inside = tile.x >= basin.x && tile.x < basin.x + basin.w && tile.y >= basin.y && tile.y < basin.y + basin.h;
+  if (!inside) return null;
+  const onN = tile.y === basin.y;
+  const onS = tile.y === basin.y + basin.h - 1;
+  const onW = tile.x === basin.x;
+  const onE = tile.x === basin.x + basin.w - 1;
+  if (onN && onW) return 'nw';
+  if (onN && onE) return 'ne';
+  if (onS && onW) return 'sw';
+  if (onS && onE) return 'se';
+  if (onN) return 'n';
+  if (onS) return 's';
+  if (onW) return 'w';
+  if (onE) return 'e';
+  return null;
+}
+
+/**
+ * New BasinRect when dragging a wall/corner handle to targetTile.
+ * The dragged edge/corner snaps to that tile; opposite edge stays fixed.
+ * No clamping — caller validates via validateBasinEdit (min 2×2, bounds, etc.).
+ */
+export function basinRectForHandleDrag(
+  basin: CustomBasin,
+  dir: BasinHandleDir,
+  targetTile: { x: number; y: number }
+): BasinRect {
+  const right = basin.x + basin.w;
+  const bottom = basin.y + basin.h;
+  let x = basin.x, y = basin.y, w = basin.w, h = basin.h;
+  switch (dir) {
+    case 'n': y = targetTile.y; h = bottom - targetTile.y; break;
+    case 's': h = targetTile.y - basin.y + 1; break;
+    case 'w': x = targetTile.x; w = right - targetTile.x; break;
+    case 'e': w = targetTile.x - basin.x + 1; break;
+    case 'nw': x = targetTile.x; y = targetTile.y; w = right - targetTile.x; h = bottom - targetTile.y; break;
+    case 'ne': y = targetTile.y; w = targetTile.x - basin.x + 1; h = bottom - targetTile.y; break;
+    case 'sw': x = targetTile.x; w = right - targetTile.x; h = targetTile.y - basin.y + 1; break;
+    case 'se': w = targetTile.x - basin.x + 1; h = targetTile.y - basin.y + 1; break;
+  }
+  return { x, y, w, h };
+}
+
+/** Handle tile positions (centers) for 3D handle meshes (8 = 4 edges + 4 corners). */
+export function basinHandleTiles(basin: BasinRect): { dir: BasinHandleDir; x: number; y: number }[] {
+  const cx = basin.x + Math.floor(basin.w / 2);
+  const cy = basin.y + Math.floor(basin.h / 2);
+  return [
+    { dir: 'nw', x: basin.x, y: basin.y },
+    { dir: 'ne', x: basin.x + basin.w - 1, y: basin.y },
+    { dir: 'sw', x: basin.x, y: basin.y + basin.h - 1 },
+    { dir: 'se', x: basin.x + basin.w - 1, y: basin.y + basin.h - 1 },
+    { dir: 'n',  x: cx, y: basin.y },
+    { dir: 's',  x: cx, y: basin.y + basin.h - 1 },
+    { dir: 'w',  x: basin.x, y: cy },
+    { dir: 'e',  x: basin.x + basin.w - 1, y: cy },
+  ];
+}

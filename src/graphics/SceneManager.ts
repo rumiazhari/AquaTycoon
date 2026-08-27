@@ -663,6 +663,9 @@ export class SceneManager {
   // ── CONSTRUCTION-BUILDER Phase 1: player-drawn basins ──────────────────────
   private basinGroup: THREE.Group = new THREE.Group();
   private basinMeshMap: Map<string, THREE.Group> = new Map();
+  // P4 slice 2: in-world basin wall drag-handles + grouping brackets
+  private basinHandleGroup: THREE.Group = new THREE.Group();
+  private bracketGroup: THREE.Group = new THREE.Group();
 
   /**
    * Renders each player-drawn CustomBasin as a real in-world structure:
@@ -724,6 +727,97 @@ export class SceneManager {
       });
       // Basin footprint origin in world space (tile centers at +0.5).
       mesh.position.set(b.x, 0, b.y);
+    }
+    // P4 slice 2: sync 3D wall drag-handles for the lone selected basin,
+    // and grouping brackets for multi-select — mirrors syncUnits discipline.
+    {
+      let solo: { x: number; y: number; w: number; h: number; depthM: number } | null = null;
+      if (selectedId instanceof Set) {
+        if (selectedId.size === 1) solo = basins.find(b => selectedId.has(b.id)) ?? null;
+      } else if (typeof selectedId === 'string' && selectedId) {
+        solo = basins.find(b => b.id === selectedId) ?? null;
+      }
+      this.syncBasinHandles(solo);
+      // Grouping brackets: multi-select draws corner brackets around each selected tile group
+      if (selectedId instanceof Set && selectedId.size > 1) {
+        const selBasins = basins.filter(b => (selectedId as Set<string>).has(b.id));
+        // brackets for selected basins + for selected equipment/utility/baffle counted via canvas highlight —
+        // basin brackets are the primary grouping cue; equipment brackets ride on amber selection glow
+        this.syncSelectionBrackets(selBasins.map(b => ({ x: b.x, y: b.y, w: b.w, h: b.h })));
+      } else {
+        this.syncSelectionBrackets(null);
+      }
+    }
+  }
+
+  /**
+   * In-world basin wall drag-handles (P4 slice 2) — 8 small amber handles at
+   * wall-top edge midpoints and corners when a single basin is selected.
+   * Each handle is a small emissive box so the player sees grip points; the
+   * drag logic itself uses tile-edge hit-testing (forgiving), not raycasts.
+   */
+  public syncBasinHandles(basin: { x: number; y: number; w: number; h: number; depthM: number } | null) {
+    if (!this.basinHandleGroup.parent) this.scene.add(this.basinHandleGroup);
+    // clear
+    for (const c of [...this.basinHandleGroup.children]) {
+      this.basinHandleGroup.remove(c);
+      (c as THREE.Mesh).geometry?.dispose();
+    }
+    if (!basin) return;
+    const depth = Math.max(1, basin.depthM);
+    const yTop = depth + 0.12; // just above wall top
+    const matCorner = new THREE.MeshStandardMaterial({ color: 0xfbbf24, emissive: 0x8a5200, emissiveIntensity: 0.55, roughness: 0.5 });
+    const matEdge = new THREE.MeshStandardMaterial({ color: 0xf59e0b, emissive: 0x78350f, emissiveIntensity: 0.45, roughness: 0.5 });
+    const mkHandle = (lx: number, lz: number, isCorner: boolean) => {
+      const s = isCorner ? 0.34 : 0.30;
+      const m = new THREE.Mesh(new THREE.BoxGeometry(s, 0.18, s), isCorner ? matCorner : matEdge);
+      // world = basin origin + local (basin positioned at (x, y) in xz)
+      m.position.set(basin.x + lx, yTop, basin.y + lz);
+      m.castShadow = true;
+      this.basinHandleGroup.add(m);
+    };
+    const cx = basin.w / 2;
+    const cz = basin.h / 2;
+    const w = basin.w, h = basin.h;
+    // corners
+    mkHandle(0, 0, true); mkHandle(w, 0, true); mkHandle(0, h, true); mkHandle(w, h, true);
+    // edge midpoints (inset by 0 for north/south, but at mid)
+    mkHandle(cx, 0, false); mkHandle(cx, h, false); mkHandle(0, cz, false); mkHandle(w, cz, false);
+  }
+
+  /**
+   * Grouping brackets for multi-select — corner L-brackets around each selected rect.
+   * Lightweight LineSegments so they read as selection grouping, not solid walls.
+   */
+  public syncSelectionBrackets(rects: { x: number; y: number; w: number; h: number }[] | null) {
+    if (!this.bracketGroup.parent) this.scene.add(this.bracketGroup);
+    for (const c of [...this.bracketGroup.children]) {
+      this.bracketGroup.remove(c);
+      const line = c as THREE.LineSegments;
+      (line.geometry as THREE.BufferGeometry)?.dispose();
+    }
+    if (!rects || rects.length === 0) return;
+    for (const r of rects) {
+      // bracket lines: 4 corners each L with 0.9m legs, y just above ground 0.35m
+      const y = 0.35;
+      const leg = 0.9;
+      const pts: THREE.Vector3[] = [];
+      const corners: [number, number][] = [
+        [r.x, r.y], [r.x + r.w, r.y], [r.x, r.y + r.h], [r.x + r.w, r.y + r.h],
+      ];
+      for (const [cx, cz] of corners) {
+        // Each corner emits two leg segments (axis-aligned)
+        const onWest = cx === r.x;
+        const onNorth = cz === r.y;
+        const dx = onWest ? leg : -leg;
+        const dz = onNorth ? leg : -leg;
+        pts.push(new THREE.Vector3(cx, y, cz), new THREE.Vector3(cx + dx, y, cz));
+        pts.push(new THREE.Vector3(cx, y, cz), new THREE.Vector3(cx, y, cz + dz));
+      }
+      const geo = new THREE.BufferGeometry().setFromPoints(pts);
+      const mat = new THREE.LineBasicMaterial({ color: 0xf59e0b, linewidth: 2 });
+      const line = new THREE.LineSegments(geo, mat);
+      this.bracketGroup.add(line);
     }
   }
 
