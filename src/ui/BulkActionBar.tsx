@@ -1,5 +1,5 @@
 import React from 'react';
-import { Trash2, X, Layers, Cpu, Columns3, Cable, BoxSelect } from 'lucide-react';
+import { Trash2, X, Layers, Cpu, Columns3, Cable, BoxSelect, Copy } from 'lucide-react';
 import type { ConstructionSelection } from '../design/ConstructionSelection';
 import { selectionCount, selectionSummaryLine } from '../design/ConstructionSelection';
 import { SoundManager } from '../audio/SoundManager';
@@ -8,10 +8,11 @@ interface BulkActionBarProps {
   selection: ConstructionSelection;
   refundEstimate: number;
   onBulkDemolish: () => void;
+  onDuplicate?: () => void;
   onClear: () => void;
 }
 
-export const BulkActionBar: React.FC<BulkActionBarProps> = ({ selection, refundEstimate, onBulkDemolish, onClear }) => {
+export const BulkActionBar: React.FC<BulkActionBarProps> = ({ selection, refundEstimate, onBulkDemolish, onDuplicate, onClear }) => {
   const count = selectionCount(selection);
   if (count <= 1) return null;
   return (
@@ -32,6 +33,15 @@ export const BulkActionBar: React.FC<BulkActionBarProps> = ({ selection, refundE
       </div>
       <div className="flex items-center gap-1.5 ml-2 shrink-0">
         <span className="text-[11px] font-mono text-emerald-300 hidden lg:inline">+${refundEstimate.toLocaleString()} salvage</span>
+        {onDuplicate && (
+          <button
+            onClick={() => { SoundManager.playClick(); onDuplicate(); }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 text-xs font-bold transition shadow-md"
+            title="Duplicate skid — clone selected basins/machines/baffles with edge-snapped offset (cash-gated, Ctrl+D)"
+          >
+            <Copy size={13} /> Duplicate
+          </button>
+        )}
         <button
           onClick={() => { SoundManager.playDemolish(); onBulkDemolish(); }}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-500 hover:bg-rose-400 text-white text-xs font-bold transition shadow-md"

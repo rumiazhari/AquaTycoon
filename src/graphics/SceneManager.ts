@@ -671,6 +671,10 @@ export class SceneManager {
   private dimensionSpriteMap: Map<string, THREE.Sprite> = new Map();
   // P5: in-world equipment drag handle (grab to move, live ghost polish)
   private equipDragHandleGroup: THREE.Group = new THREE.Group();
+  // ITER 58: edge-snap alignment guides — dashed amber lines at snapped edges
+  private snapGuideGroup: THREE.Group = new THREE.Group();
+  private snapVLine: THREE.Line | null = null;
+  private snapHLine: THREE.Line | null = null;
 
   /**
    * Renders each player-drawn CustomBasin as a real in-world structure:
@@ -833,6 +837,49 @@ export class SceneManager {
     this.equipDragHandleGroup.add(box);
     this.equipDragHandleGroup.add(cone);
   }
+
+  /**
+   * ITER 58: Edge-snap alignment guides — dashed amber lines at the snapped
+   * tile edge(s) while dragging. Map-spanning so alignment is readable.
+   */
+  public setSnapGuides(vGuide: number | null, hGuide: number | null, mapSize: [number, number] = [24, 20]) {
+    const [mapW, mapH] = mapSize;
+    const ensure = () => { if (!this.snapGuideGroup.parent) this.scene.add(this.snapGuideGroup); };
+    const mk = (pts:any) => {
+      const geo = new THREE.BufferGeometry().setFromPoints(pts as any);
+      const mat = new THREE.LineDashedMaterial({ color: 0xfbbf24, transparent: true, opacity: 0.92, linewidth: 2, dashSize: 0.35, gapSize: 0.22 });
+      const line = new THREE.Line(geo, mat as any);
+      (line as any).computeLineDistances();
+      line.frustumCulled = false;
+      (line as any).renderOrder = 950;
+      return line;
+    };
+    if (vGuide !== null && Number.isFinite(vGuide)) {
+      ensure();
+      const pts = [new THREE.Vector3(vGuide, 0.06, 0), new THREE.Vector3(vGuide, 0.06, mapH)];
+      if (!this.snapVLine) { this.snapVLine = mk(pts); this.snapGuideGroup.add(this.snapVLine); }
+      else {
+        const pos = this.snapVLine.geometry.getAttribute("position") as THREE.BufferAttribute;
+        pos.setXYZ(0, vGuide, 0.06, 0); pos.setXYZ(1, vGuide, 0.06, mapH); pos.needsUpdate = true;
+        (this.snapVLine.geometry as THREE.BufferGeometry).computeBoundingSphere();
+        this.snapVLine.computeLineDistances();
+      }
+      this.snapVLine.visible = true;
+    } else if (this.snapVLine) this.snapVLine.visible = false;
+    if (hGuide !== null && Number.isFinite(hGuide)) {
+      ensure();
+      const pts = [new THREE.Vector3(0, 0.06, hGuide), new THREE.Vector3(mapW, 0.06, hGuide)];
+      if (!this.snapHLine) { this.snapHLine = mk(pts); this.snapGuideGroup.add(this.snapHLine); }
+      else {
+        const pos = this.snapHLine.geometry.getAttribute("position") as THREE.BufferAttribute;
+        pos.setXYZ(0, 0, 0.06, hGuide); pos.setXYZ(1, mapW, 0.06, hGuide); pos.needsUpdate = true;
+        this.snapHLine.geometry.computeBoundingSphere();
+        this.snapHLine.computeLineDistances();
+      }
+      this.snapHLine.visible = true;
+    } else if (this.snapHLine) this.snapHLine.visible = false;
+  }
+  public clearSnapGuides() { this.setSnapGuides(null, null); }
 
   /**
    * Grouping brackets for multi-select — corner L-brackets around each selected rect.

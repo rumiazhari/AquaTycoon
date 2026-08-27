@@ -26,6 +26,7 @@ import type { BasinHandleDir } from './design/CustomBasin';
 import { EQUIPMENT_TYPES, validateEquipmentPlacement } from './design/ProcessEquipment';
 import { UTILITY_TYPES, UtilityConnectionType, validateUtilityConnection, utilityRectFor } from './design/UtilityConnection';
 import { poweredEquipmentIds, aeratedDiffuserIds } from './design/ConstructionNetwork';
+import { collectGuides, snapTile, snapHoverForBasin, snapHandleTarget } from './design/SnapGuides';
 import { filtrationLiveSets, chemicalLiveSets } from './design/ConstructionAdapter';
 import { validateBafflePlacement, baffleRectFor } from './design/BasinZone';
 import { emptySelection, selectionCount, toggleSelection, basinIdsSet, equipmentIdsSet, baffleIdsSet, utilityIdsSet, selectionSummaryLine } from './design/ConstructionSelection';
@@ -195,6 +196,7 @@ export const App: React.FC = () => {
   const cancelBasinHandleDrag = useCallback((silent:boolean=false) => {
     basinHandleDragRef.current = null;
     sceneRef.current?.terrainGrid.setGhostPreview(0,0,1,1,true,false);
+    (sceneRef.current as any)?.clearSnapGuides?.();
     if (!silent) setToast('Wall drag cancelled — basin unchanged.');
   }, []);
 
@@ -204,6 +206,7 @@ export const App: React.FC = () => {
   const cancelEquipHandleDrag = useCallback((silent:boolean=false) => {
     equipHandleDragRef.current = null;
     sceneRef.current?.terrainGrid.setGhostPreview(0,0,1,1,true,false);
+    (sceneRef.current as any)?.clearSnapGuides?.();
     if (!silent) setToast('Equipment drag cancelled — machines stay.');
   }, []);
   const syncEquipHandleVisual = useCallback(() => {
@@ -240,6 +243,7 @@ export const App: React.FC = () => {
   const cancelEquipmentMove = useCallback((silent: boolean = false) => {
     setMovingEquipmentId(null);
     sceneRef.current?.terrainGrid.setGhostPreview(0, 0, 1, 1, true, false);
+    (sceneRef.current as any)?.clearSnapGuides?.();
     if (!silent) setToast('Move cancelled — click the equipment again to re-arm.');
   }, []);
 
@@ -549,7 +553,7 @@ export const App: React.FC = () => {
       // P5: active equipment drag — live green/red ghost, utility-gated, mount-aware, blocks pan
       // Slice 2: group drag — Shift-selected block moves preserving offsets; ghost shows collective validity
       if (equipHandleDragRef.current && pointerDown.current) {
-        const tile = sm.getGridTileFromScreen(e.clientX, e.clientY);
+        let tile:any = sm.getGridTileFromScreen(e.clientX, e.clientY);
         const dxP = e.clientX - pointerLast.current.x;
         const dyP = e.clientY - pointerLast.current.y;
         pointerLast.current = { x: e.clientX, y: e.clientY };
@@ -583,7 +587,16 @@ export const App: React.FC = () => {
           return;
         }
         // Group-aware validation — all members vacate simultaneously
-        const ddx = tile.x - anchor.x;
+        // ITER 58 edge-snap: snap anchor destination to nearest guide (exclude group itself)
+        {
+          const [mapW2snap, mapH2snap] = gsRef.current.currentLevel.mapSize as any;
+          const unitRectsSnap:any[] = gsRef.current.units.map((u:any)=>{ const d=(UNIT_DEFINITIONS as any)[u.typeId]; const [uw,ul]=d?d.footprint:[1,1]; return {x:u.gridX,y:u.gridY,w:uw,h:ul}; });
+          for(const e of gsRef.current.processEquipment??[]) if(!(groupIds as any).includes(e.id) && (EQUIPMENT_TYPES as any)[e.typeId]?.mounting==='ground') unitRectsSnap.push({x:e.x,y:e.y,w:1,h:1});
+          const guidesSnap = collectGuides(gsRef.current.customBasins??[], (gsRef.current.processEquipment??[]).filter((e:any)=>!(groupIds as any).includes(e.id)), unitRectsSnap as any);
+          const snapped: any = snapTile(tile as any, guidesSnap as any);
+          if(snapped.snappedX||snapped.snappedY){ (tile as any) = {x:snapped.x,y:snapped.y} as any; (sm as any).setSnapGuides?.(snapped.vGuide,snapped.hGuide,[mapW2snap,mapH2snap] as any); } else (sm as any).clearSnapGuides?.();
+        }
+        const ddx = (tile as any).x - anchor.x;
         const ddy = tile.y - anchor.y;
         const groupSet = new Set(groupIds);
         const [mapW2, mapH2] = gsRef.current.currentLevel.mapSize;
@@ -630,7 +643,7 @@ export const App: React.FC = () => {
 
       // P4 slice 2: active wall drag — show ghost of the resized basin while held
       if (basinHandleDragRef.current && pointerDown.current) {
-        const tile = sm.getGridTileFromScreen(e.clientX, e.clientY);
+        let tile:any = sm.getGridTileFromScreen(e.clientX, e.clientY);
         const dx = e.clientX - pointerLast.current.x;
         const dy = e.clientY - pointerLast.current.y;
         pointerLast.current = { x: e.clientX, y: e.clientY };
@@ -639,8 +652,17 @@ export const App: React.FC = () => {
           sm.terrainGrid.setGhostPreview(basinHandleDragRef.current.startRect.x, basinHandleDragRef.current.startRect.y, basinHandleDragRef.current.startRect.w, basinHandleDragRef.current.startRect.h, false, true);
           return;
         }
-        const drag = basinHandleDragRef.current;
-        const cand = basinRectForHandleDrag(drag.startRect as any, drag.dir, tile);
+        const drag:any = basinHandleDragRef.current;
+        {
+          const [mapWs,mapHs]:any = gsRef.current.currentLevel.mapSize as any;
+          const unitRectsSnap:any[] = gsRef.current.units.map((u:any)=>{ const d=(UNIT_DEFINITIONS as any)[u.typeId]; const [uw,ul]=d?d.footprint:[1,1]; return {x:u.gridX,y:u.gridY,w:uw,h:ul}; });
+          for(const e of gsRef.current.processEquipment??[]) if((EQUIPMENT_TYPES as any)[e.typeId]?.mounting==='ground') unitRectsSnap.push({x:e.x,y:e.y,w:1,h:1});
+          const basinsForGuides = (gsRef.current.customBasins??[]).filter((b:any)=>b.id!==drag.basinId);
+          const guidesSnap:any = collectGuides(basinsForGuides as any, gsRef.current.processEquipment??[], unitRectsSnap as any);
+          const snapped:any = snapHandleTarget(drag.dir as any, tile as any, guidesSnap as any);
+          if(snapped.snappedX||snapped.snappedY){ tile={x:snapped.x,y:snapped.y} as any; (sm as any).setSnapGuides?.(snapped.vGuide,snapped.hGuide,[mapWs,mapHs] as any); } else (sm as any).clearSnapGuides?.();
+        }
+        const cand = basinRectForHandleDrag(drag.startRect as any, drag.dir, tile as any);
         const gs = gsRef.current;
         const unitRects = gs.units.map(u => {
           const d = (UNIT_DEFINITIONS as any)[u.typeId];
@@ -704,6 +726,7 @@ export const App: React.FC = () => {
         if (!tile) {
           sm.terrainGrid.setHoverTile(0, 0, false);
           sm.terrainGrid.setGhostPreview(0, 0, 1, 1, true, false);
+          (sm as any).clearSnapGuides?.();
           return;
         }
         sm.terrainGrid.setHoverTile(tile.x, tile.y, true);
@@ -735,42 +758,53 @@ export const App: React.FC = () => {
           }
           sm.terrainGrid.setGhostPreview(tile.x, tile.y, fw, fl, valid, true);
         } else if (toolModeRef.current === 'draw_basin') {
-          // Live rectangular footprint preview from the anchored first corner.
           const start = drawStartTileRef.current;
           if (start) {
-            const rect = {
-              x: Math.min(start.x, tile.x),
-              y: Math.min(start.y, tile.y),
-              w: Math.abs(tile.x - start.x) + 1,
-              h: Math.abs(tile.y - start.y) + 1,
-            };
             const [mapW, mapH] = gsRef.current.currentLevel.mapSize;
             const unitRects = gsRef.current.units.map(u => {
-              const ud = UNIT_DEFINITIONS[u.typeId];
+              const ud = (UNIT_DEFINITIONS as any)[u.typeId];
               const [uw, ul] = ud ? ud.footprint : [1, 1];
               return { x: u.gridX, y: u.gridY, w: uw, h: ul };
             });
-            const v = validateBasinPlacement(rect, BASIN_DEFAULT_DEPTH_M, [mapW, mapH], gsRef.current.customBasins ?? [], unitRects);
+            for(const e of gsRef.current.processEquipment??[]) if((EQUIPMENT_TYPES as any)[e.typeId]?.mounting==='ground') unitRects.push({x:e.x,y:e.y,w:1,h:1});
+            const guides = collectGuides(gsRef.current.customBasins??[], gsRef.current.processEquipment??[], unitRects as any);
+            const snappedHover = snapHoverForBasin(start, tile, guides);
+            const effTile = (snappedHover.snappedX||snappedHover.snappedY) ? {x:snappedHover.x,y:snappedHover.y} : tile;
+            if(snappedHover.snappedX||snappedHover.snappedY) (sm as any).setSnapGuides?.(snappedHover.vGuide, snappedHover.hGuide, [mapW,mapH] as any);
+            else (sm as any).clearSnapGuides?.();
+            const rect = {
+              x: Math.min(start.x, effTile.x),
+              y: Math.min(start.y, effTile.y),
+              w: Math.abs(effTile.x - start.x) + 1,
+              h: Math.abs(effTile.y - start.y) + 1,
+            };
+            const v = validateBasinPlacement(rect as any, BASIN_DEFAULT_DEPTH_M, [mapW, mapH], gsRef.current.customBasins ?? [], unitRects as any);
             sm.terrainGrid.setGhostPreview(rect.x, rect.y, rect.w, rect.h, v.ok, true);
           } else {
             sm.terrainGrid.setGhostPreview(tile.x, tile.y, 1, 1, true, false);
+            (sm as any).clearSnapGuides?.();
           }
         } else if (toolModeRef.current === 'place_equipment' && selEquipTypeRef.current) {
-          // Phase 2: single-tile ghost colored by mounting-rule validity.
           const [mapW, mapH] = gsRef.current.currentLevel.mapSize;
           const unitRects = gsRef.current.units.map(u => {
-            const ud = UNIT_DEFINITIONS[u.typeId];
+            const ud = (UNIT_DEFINITIONS as any)[u.typeId];
             const [uw, ul] = ud ? ud.footprint : [1, 1];
             return { x: u.gridX, y: u.gridY, w: uw, h: ul };
           });
+          for(const e of gsRef.current.processEquipment??[]) if((EQUIPMENT_TYPES as any)[e.typeId]?.mounting==='ground' && !(e.x===tile.x&&e.y===tile.y)) unitRects.push({x:e.x,y:e.y,w:1,h:1});
+          const guides = collectGuides(gsRef.current.customBasins??[], gsRef.current.processEquipment??[], unitRects as any);
+          const snapped = snapTile(tile, guides);
+          const eff = (snapped.snappedX||snapped.snappedY) ? {x:snapped.x,y:snapped.y} : tile;
+          if(snapped.snappedX||snapped.snappedY) (sm as any).setSnapGuides?.(snapped.vGuide, snapped.hGuide, [mapW,mapH] as any);
+          else (sm as any).clearSnapGuides?.();
           const v = validateEquipmentPlacement(
-            selEquipTypeRef.current, tile.x, tile.y,
+            selEquipTypeRef.current, eff.x, eff.y,
             [mapW, mapH],
             gsRef.current.customBasins ?? [],
             gsRef.current.processEquipment ?? [],
-            unitRects
+            unitRects as any
           );
-          sm.terrainGrid.setGhostPreview(tile.x, tile.y, 1, 1, v.ok, true);
+          sm.terrainGrid.setGhostPreview(eff.x, eff.y, 1, 1, v.ok, true);
         } else if (toolModeRef.current === 'connect_utility') {
           // Phase 3: utility endpoint ghost + line validity
           const src = utilitySourceRef.current;
@@ -940,14 +974,24 @@ export const App: React.FC = () => {
         pointerDown.current = false;
         const sm = sceneRef.current;
         const gs = gsRef.current;
-        const tile = sm ? sm.getGridTileFromScreen(e.clientX, e.clientY) : null;
+        let tile:any = sm ? sm.getGridTileFromScreen(e.clientX, e.clientY) : null;
         if (!tile) {
           sceneRef.current?.terrainGrid.setGhostPreview(0,0,1,1,true,false);
+          (sceneRef.current as any)?.clearSnapGuides?.();
           setToast('Equipment drag cancelled — release over a tile.');
           return;
         }
+        {
+          const groupIdsSnap:any[] = (drag as any).groupIds ?? [drag.anchorId];
+          // map size for guides not needed on commit
+          const unitRectsSnap:any[] = gs.units.map((u:any)=>{ const d=(UNIT_DEFINITIONS as any)[u.typeId]; const [uw,ul]=d?d.footprint:[1,1]; return {x:u.gridX,y:u.gridY,w:uw,h:ul}; });
+          for(const e of gs.processEquipment??[]) if(!groupIdsSnap.includes(e.id) && (EQUIPMENT_TYPES as any)[e.typeId]?.mounting==='ground') unitRectsSnap.push({x:e.x,y:e.y,w:1,h:1});
+          const guidesSnap:any = collectGuides(gs.customBasins??[], (gs.processEquipment??[]).filter((e:any)=>!groupIdsSnap.includes(e.id)), unitRectsSnap as any);
+          const sn:any = snapTile(tile as any, guidesSnap as any);
+          if(sn.snappedX||sn.snappedY) { tile={x:sn.x,y:sn.y} as any; }
+        }
         const groupIds: string[] = (drag as any).groupIds ?? [drag.anchorId];
-        const anchor = gs.processEquipment?.find(en => en.id === drag.anchorId) ?? null;
+        const anchor:any = gs.processEquipment?.find((en:any) => en.id === drag.anchorId) ?? null;
         if (!anchor) { sceneRef.current?.terrainGrid.setGhostPreview(0,0,1,1,true,false); return; }
         if (tile.x === anchor.x && tile.y === anchor.y) {
           sceneRef.current?.terrainGrid.setGhostPreview(0,0,1,1,true,false);
@@ -996,6 +1040,7 @@ export const App: React.FC = () => {
         sceneRef.current?.syncEquipmentDragHandle(moved ? { x: moved.x, y: moved.y, typeId: moved.typeId } : null, res.newState.customBasins ?? []);
         sceneRef.current?.syncSelectionBrackets(bracketRectsForSelection(constructionSelectionRef.current, res.newState.customBasins ?? [], res.newState.customBaffles ?? [], res.newState.utilityConnections ?? [], res.newState.processEquipment ?? []));
         sceneRef.current?.terrainGrid.setGhostPreview(0,0,1,1,true,false);
+        (sceneRef.current as any)?.clearSnapGuides?.();
         SoundManager.playPlace();
         if (groupIds.length > 1) {
           let aggC=0, aggP=0; for (const id of groupIds){ const mm=res.newState.processEquipment?.find(e=>e.id===id); if(mm){ const d=EQUIPMENT_TYPES[mm.typeId]; if(d){ aggC+=d.capexUsd; aggP+=d.powerKw; } } }
@@ -1015,13 +1060,23 @@ export const App: React.FC = () => {
         pointerDown.current = false;
         const sm = sceneRef.current;
         const gs = gsRef.current;
-        const tile = sm ? sm.getGridTileFromScreen(e.clientX, e.clientY) : null;
+        let tile:any = sm ? sm.getGridTileFromScreen(e.clientX, e.clientY) : null;
         if (!tile) {
           sceneRef.current?.terrainGrid.setGhostPreview(0,0,1,1,true,false);
+          (sceneRef.current as any)?.clearSnapGuides?.();
           setToast('Wall drag cancelled — release over a tile.');
           return;
         }
-        const cand = basinRectForHandleDrag(drag.startRect as any, drag.dir, tile);
+        {
+          // map size for guides not needed on commit
+          const unitRectsSnap:any[] = gs.units.map((u:any)=>{ const d=(UNIT_DEFINITIONS as any)[u.typeId]; const [uw,ul]=d?d.footprint:[1,1]; return {x:u.gridX,y:u.gridY,w:uw,h:ul}; });
+          for(const e of gs.processEquipment??[]) if((EQUIPMENT_TYPES as any)[e.typeId]?.mounting==='ground') unitRectsSnap.push({x:e.x,y:e.y,w:1,h:1});
+          const basinsForGuides = (gs.customBasins??[]).filter((b:any)=>b.id!==drag.basinId);
+          const guidesSnap:any = collectGuides(basinsForGuides as any, gs.processEquipment??[], unitRectsSnap as any);
+          const sn:any = snapHandleTarget(drag.dir as any, tile as any, guidesSnap as any);
+          if(sn.snappedX||sn.snappedY) tile={x:sn.x,y:sn.y} as any;
+        }
+        const cand = basinRectForHandleDrag(drag.startRect as any, drag.dir, tile as any);
         // no-op if tile didn't move the wall
         if (cand.x === drag.startRect.x && cand.y === drag.startRect.y && cand.w === drag.startRect.w && cand.h === drag.startRect.h) {
           sceneRef.current?.terrainGrid.setGhostPreview(0,0,1,1,true,false);
@@ -1049,6 +1104,7 @@ export const App: React.FC = () => {
           filtrationLiveSets(res.newState.customBasins ?? [], res.newState.processEquipment ?? [], res.newState.utilityConnections ?? [], res.newState.customBaffles ?? [])
         );
         sceneRef.current?.terrainGrid.setGhostPreview(0,0,1,1,true,false);
+        (sceneRef.current as any)?.clearSnapGuides?.();
         SoundManager.playPlace();
         if (res.charged) setToast(`Wall dragged to ${cand.w}×${cand.h} — charged $${res.charged.toLocaleString()} extra concrete.`);
         else if (res.refunded) setToast(`Wall dragged to ${cand.w}×${cand.h} — refund +$${res.refunded.toLocaleString()} (50% salvage).`);
@@ -1103,6 +1159,7 @@ export const App: React.FC = () => {
       pointerDist.current = 0;
       if (equipHandleDragRef.current) cancelEquipHandleDrag(true);
       if (basinHandleDragRef.current) cancelBasinHandleDrag(true);
+      (sceneRef.current as any)?.clearSnapGuides?.();
     };
 
     const onWheel = (e: WheelEvent) => {
@@ -1257,7 +1314,7 @@ export const App: React.FC = () => {
     const rotation = rotationRef.current;
     const srcId    = pipeSourceRef.current;
 
-    const tile        = sm.getGridTileFromScreen(clientX, clientY);
+    let tile:any        = sm.getGridTileFromScreen(clientX, clientY) as any;
     const clickedUnit = sm.getUnitAtScreen(clientX, clientY, gs.units);
 
     // CONSTRUCTION-BUILDER Phase 1: which player-drawn basin (if any) is under the cursor?
@@ -1745,13 +1802,21 @@ export const App: React.FC = () => {
         return;
       }
       const a = drawStartTileRef.current;
+      {
+        const [mapWm,mapHm]=gs.currentLevel.mapSize as any; void mapWm; void mapHm;
+        const unitRects:any[] = gs.units.map((u:any)=>{ const d=(UNIT_DEFINITIONS as any)[u.typeId]; const [uw,ul]=d?d.footprint:[1,1]; return {x:u.gridX,y:u.gridY,w:uw,h:ul}; });
+        for(const e of gs.processEquipment??[]) if((EQUIPMENT_TYPES as any)[e.typeId]?.mounting==='ground') unitRects.push({x:e.x,y:e.y,w:1,h:1});
+        const guides:any = collectGuides(gs.customBasins??[], gs.processEquipment??[], unitRects as any);
+        const snapped:any = snapHoverForBasin(a as any, tile as any, guides as any);
+        if(snapped.snappedX||snapped.snappedY) tile={x:snapped.x,y:snapped.y} as any;
+      }
       const rect = {
-        x: Math.min(a.x, tile.x),
-        y: Math.min(a.y, tile.y),
-        w: Math.abs(tile.x - a.x) + 1,
-        h: Math.abs(tile.y - a.y) + 1,
+        x: Math.min(a.x, (tile as any).x),
+        y: Math.min(a.y, (tile as any).y),
+        w: Math.abs((tile as any).x - a.x) + 1,
+        h: Math.abs((tile as any).y - a.y) + 1,
       };
-      const result = GameManager.placeCustomBasin(gs, rect);
+      const result = GameManager.placeCustomBasin(gs, rect as any);
       drawStartTileRef.current = null;
       setDrawPreview(null);
       sm.terrainGrid.setGhostPreview(0, 0, 1, 1, true, false);
@@ -1775,8 +1840,15 @@ export const App: React.FC = () => {
       }
 
     } else if (mode === 'place_equipment' && tile && selEquipTypeRef.current) {
-      // ── CONSTRUCTION-BUILDER Phase 2: install one machine ──
-      const result = GameManager.placeProcessEquipment(gs, selEquipTypeRef.current, tile.x, tile.y);
+      {
+        const [mapWm,mapHm]=gs.currentLevel.mapSize as any; void mapWm; void mapHm;
+        const unitRects:any[] = gs.units.map((u:any)=>{ const d=(UNIT_DEFINITIONS as any)[u.typeId]; const [uw,ul]=d?d.footprint:[1,1]; return {x:u.gridX,y:u.gridY,w:uw,h:ul}; });
+        for(const e of gs.processEquipment??[]) if((EQUIPMENT_TYPES as any)[e.typeId]?.mounting==='ground' && !(e.x===tile.x&&e.y===tile.y)) unitRects.push({x:e.x,y:e.y,w:1,h:1});
+        const guides:any = collectGuides(gs.customBasins??[], gs.processEquipment??[], unitRects as any);
+        const snapped:any = snapTile(tile as any, guides as any);
+        if(snapped.snappedX||snapped.snappedY) tile={x:snapped.x,y:snapped.y} as any;
+      }
+      const result = GameManager.placeProcessEquipment(gs, selEquipTypeRef.current, (tile as any).x, (tile as any).y);
       if (result.success) {
         SoundManager.playPlace();
         pushHistory(gs);
@@ -2103,6 +2175,34 @@ export const App: React.FC = () => {
         const k = e.key.toLowerCase();
         if (k === 'z' && !e.shiftKey) { e.preventDefault(); handleUndo(); return; }
         if (k === 'y' || (k === 'z' && e.shiftKey)) { e.preventDefault(); handleRedo(); return; }
+        if (k === 'd' && toolModeRef.current === 'select') {
+          e.preventDefault();
+          const gsD = gsRef.current;
+          const selD = constructionSelectionRef.current;
+          if (selectionCount(selD) === 0) { setToast('Nothing selected — Shift+Click to form a skid, then Ctrl+D to duplicate.'); return; }
+          const resD = (GameManager as any).duplicateConstruction(gsD, selD);
+          if (!resD.success) { SoundManager.playWarning(); setToast(resD.reason ?? 'Cannot duplicate — no room.'); return; }
+          pushHistory(gsD);
+          setGameState(resD.newState);
+          const nsD = resD.newSelection as ConstructionSelection;
+          setConstructionSelection(nsD);
+          setSelectedBasinId(nsD.basins[0] ?? null);
+          setSelectedEquipmentId(nsD.equipment[0] ?? null);
+          setSelectedBaffleId(nsD.baffles[0] ?? null);
+          setSelectedUtilityId(null);
+          sceneRef.current?.syncBasins(resD.newState.customBasins ?? [], new Set(nsD.basins));
+          sceneRef.current?.syncBaffles(resD.newState.customBaffles ?? [], resD.newState.customBasins ?? [], new Set(nsD.baffles));
+          sceneRef.current?.syncUtilityConnections(resD.newState.utilityConnections ?? [], null);
+          sceneRef.current?.syncEquipment(resD.newState.processEquipment ?? [], resD.newState.customBasins ?? [], new Set(nsD.equipment), poweredEquipmentIds(resD.newState.processEquipment ?? [], resD.newState.utilityConnections ?? []), aeratedDiffuserIds(resD.newState.processEquipment ?? [], resD.newState.utilityConnections ?? []), filtrationLiveSets(resD.newState.customBasins ?? [], resD.newState.processEquipment ?? [], resD.newState.utilityConnections ?? [], resD.newState.customBaffles ?? []));
+          sceneRef.current?.syncSelectionBrackets(bracketRectsForSelection(nsD, resD.newState.customBasins ?? [], resD.newState.customBaffles ?? [], resD.newState.utilityConnections ?? [], resD.newState.processEquipment ?? []));
+          sceneRef.current?.syncDimensionLabels(resD.newState.customBasins ?? [], new Set(nsD.basins));
+          (sceneRef.current as any)?.clearSnapGuides?.();
+          SoundManager.playPlace();
+          const ch = resD.charged ?? 0;
+          const pr:any[]=[]; if(nsD.basins.length) pr.push(nsD.basins.length+' basin'+(nsD.basins.length>1?'s':'')); if(nsD.equipment.length) pr.push(nsD.equipment.length+' machine'+(nsD.equipment.length>1?'s':'')); if(nsD.baffles.length) pr.push(nsD.baffles.length+' baffle'+(nsD.baffles.length>1?'s':''));
+          setToast('Duplicated skid (Ctrl+D): '+pr.join(' · ')+(ch? ' — $'+ch.toLocaleString():' — $0 (sandbox)')+' (rewire utilities)');
+          return;
+        }
         if (k === 'a' && toolModeRef.current === 'select') {
           e.preventDefault();
           const gs = gsRef.current;
@@ -2382,6 +2482,40 @@ export const App: React.FC = () => {
     const r = res.removed!;
     const refund = res.refunded ?? 0;
     setToast(`Bulk demolished: ${r.basins} basins · ${r.equipment} machines · ${r.baffles} baffles · ${r.utilities} utilities` + (refund ? ` — salvage $${refund.toLocaleString()}` : '') + ' (Ctrl+Z to undo)');
+  }, [pushHistory]);
+
+  const handleDuplicateSelection = useCallback(() => {
+    const gs = gsRef.current;
+    const sel = constructionSelectionRef.current;
+    if (selectionCount(sel) === 0) { setToast('Nothing selected — Shift+Click basins/machines/baffles to form a skid, then Duplicate.'); return; }
+    if (sel.utilities.length>0) { setToast('Utilities not duplicated — rewire pipes/cables after pasting the skid.'); }
+    const res = (GameManager as any).duplicateConstruction(gs, sel);
+    if (!res.success) { SoundManager.playWarning(); setToast(res.reason ?? 'Cannot duplicate — no room.'); return; }
+    pushHistory(gs);
+    setGameState(res.newState);
+    const ns = res.newSelection as ConstructionSelection;
+    setConstructionSelection(ns);
+    setSelectedBasinId(ns.basins[0] ?? null);
+    setSelectedEquipmentId(ns.equipment[0] ?? null);
+    setSelectedBaffleId(ns.baffles[0] ?? null);
+    setSelectedUtilityId(null);
+    sceneRef.current?.syncBasins(res.newState.customBasins ?? [], new Set(ns.basins));
+    sceneRef.current?.syncBaffles(res.newState.customBaffles ?? [], res.newState.customBasins ?? [], new Set(ns.baffles));
+    sceneRef.current?.syncUtilityConnections(res.newState.utilityConnections ?? [], null);
+    sceneRef.current?.syncEquipment(
+      res.newState.processEquipment ?? [], res.newState.customBasins ?? [], new Set(ns.equipment),
+      poweredEquipmentIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
+      aeratedDiffuserIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
+      filtrationLiveSets(res.newState.customBasins ?? [], res.newState.processEquipment ?? [], res.newState.utilityConnections ?? [], res.newState.customBaffles ?? [])
+    );
+    sceneRef.current?.syncEquipmentDragHandle(ns.equipment[0] ? {x: res.newState.processEquipment.find((e:any)=>e.id===ns.equipment[0])?.x ?? 0, y: res.newState.processEquipment.find((e:any)=>e.id===ns.equipment[0])?.y ?? 0, typeId: res.newState.processEquipment.find((e:any)=>e.id===ns.equipment[0])?.typeId} as any : null, res.newState.customBasins ?? []);
+    sceneRef.current?.syncSelectionBrackets(bracketRectsForSelection(ns, res.newState.customBasins ?? [], res.newState.customBaffles ?? [], res.newState.utilityConnections ?? [], res.newState.processEquipment ?? []));
+    sceneRef.current?.syncDimensionLabels(res.newState.customBasins ?? [], new Set(ns.basins));
+    (sceneRef.current as any)?.clearSnapGuides?.();
+    SoundManager.playPlace();
+    const charged = res.charged ?? 0;
+    const parts:any[]=[]; if(ns.basins.length) parts.push(ns.basins.length+' basin'+(ns.basins.length>1?'s':'')); if(ns.equipment.length) parts.push(ns.equipment.length+' machine'+(ns.equipment.length>1?'s':'')); if(ns.baffles.length) parts.push(ns.baffles.length+' baffle'+(ns.baffles.length>1?'s':''));
+    setToast('Duplicated skid: '+parts.join(' · ')+(charged? ' — $'+charged.toLocaleString():' — $0 (sandbox)')+' (Ctrl+Z to undo — rewire utilities)');
   }, [pushHistory]);
 
   const handleSelectLevel = useCallback((levelIndex: number, isSandbox: boolean) => {
@@ -2679,6 +2813,7 @@ export const App: React.FC = () => {
           return r.refunded ?? 0;
         })()}
         onBulkDemolish={handleBulkDemolish}
+        onDuplicate={handleDuplicateSelection}
         onClear={clearConstructionSelection}
       />
 

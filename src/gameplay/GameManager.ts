@@ -1977,9 +1977,9 @@ export class GameManager {
     state: GameState,
     sel: ConstructionSelection
   ): { newState: GameState; success: boolean; reason?: string; refunded?: number; removed?: { basins:number; equipment:number; baffles:number; utilities:number } } {
-    const basinIds = (sel.basins ?? []).filter(id => (state.customBasins ?? []).some(b => b.id === id));
-    const equipIds = (sel.equipment ?? []).filter(id => (state.processEquipment ?? []).some(e => e.id === id));
-    const baffleIdsAll = (sel.baffles ?? []).filter(id => (state.customBaffles ?? []).some(b => b.id === id));
+    const basinIds = (sel.basins ?? []).filter((id:any) => (state.customBasins ?? []).some((b:any) => b.id === id));
+    const equipIds = (sel.equipment ?? []).filter((id:any) => (state.processEquipment ?? []).some((e:any) => e.id === id));
+    const baffleIdsAll = (sel.baffles ?? []).filter((id:any) => (state.customBaffles ?? []).some((b:any) => b.id === id));
     const utilIdsAll = (sel.utilities ?? []).filter(id => (state.utilityConnections ?? []).some(c => c.id === id));
 
     const totalExplicit = basinIds.length + equipIds.length + baffleIdsAll.length + utilIdsAll.length;
@@ -2079,6 +2079,83 @@ export class GameManager {
     };
 
     return { newState, success: true, refunded: refund, removed };
+  }
+
+    // ── ITER 58: CONSTRUCTION-BUILDER ergonomics — duplicate skid (copy/paste aligned skid) ─────
+  public static duplicateConstruction(state: GameState, sel: ConstructionSelection) {
+    const basinIds = (sel.basins ?? []).filter((id:any) => (state.customBasins ?? []).some((b:any) => b.id === id));
+    const equipIds = (sel.equipment ?? []).filter((id:any) => (state.processEquipment ?? []).some((e:any) => e.id === id));
+    const baffleIds = (sel.baffles ?? []).filter((id:any) => (state.customBaffles ?? []).some((b:any) => b.id === id));
+    const total = basinIds.length + equipIds.length + baffleIds.length;
+    if (total === 0) return { newState: state, success: false, reason: "Nothing selected to duplicate" };
+    const cands=[];
+    for(let r=1;r<=6;r++){ for(let dx=-r;dx<=r;dx++) for(let dy=-r;dy<=r;dy++) if(Math.max(Math.abs(dx),Math.abs(dy))===r) cands.push([dx,dy]); }
+    cands.sort((a,b)=> (Math.abs(a[0])+Math.abs(a[1]))-(Math.abs(b[0])+Math.abs(b[1])) || (a[0]+a[1])-(b[0]+b[1]));
+    const pref=cands.findIndex(c=>c[0]===2&&c[1]===2); if(pref>0){ const v=cands.splice(pref,1)[0]; cands.unshift(v); }
+    const mapSize=state.currentLevel.mapSize;
+    const unitRects=state.units.map((u:any)=>{ const [uw,ul]=resolveFootprint(u); return {x:u.gridX,y:u.gridY,w:uw,h:ul}; });
+    for(const e of (state.processEquipment??[]) as any[]) if((EQUIPMENT_TYPES as any)[e.typeId]?.mounting==="ground") unitRects.push({x:e.x,y:e.y,w:1,h:1});
+    const selBasinSet=new Set(basinIds);
+    const equipHost=new Map();
+    for(const eid of equipIds as any[]){
+      const e=(state.processEquipment??[]).find((x:any)=>x.id===eid)!;
+      if(EQUIPMENT_TYPES[e.typeId]?.mounting==="in_basin"){
+        const host=((state.customBasins??[]) as any[]).find((b:any)=> e.x>=b.x && e.x<b.x+b.w && e.y>=b.y && e.y<b.y+b.h) ?? null;
+        equipHost.set(eid, host?host.id:null);
+      } else equipHost.set(eid,null);
+    }
+    for(const [dx,dy] of cands){
+      const newBasins:any[]=[]; const basinIdMap=new Map(); let ok=true;
+      const existingBasinsForVal=[...(state.customBasins??[])];
+      for(const bid of basinIds as any[]){
+        const old=((state.customBasins??[]) as any[]).find((b:any)=>b.id===bid)!;
+        let nid:any=bid+"_copy"; let i=0; const allIds:any=new Set([...(state.customBasins??[]).map((b:any)=>b.id), ...newBasins.map((b:any)=>b.id)]); while(allIds.has(nid)) nid=bid+"_copy"+(++i);
+        basinIdMap.set(bid,nid);
+        const rect={x:(old as any).x+dx,y:old.y+dy,w:old.w,h:old.h};
+        const v=validateBasinPlacement(rect as any, (old as any).depthM, mapSize, existingBasinsForVal.concat(newBasins), unitRects);
+        if(!v.ok){ ok=false; break; }
+        newBasins.push({...(old as any), id:nid, x:rect.x, y:rect.y, createdAtDay:state.gameTimeDays});
+      }
+      if(!ok) continue;
+      const newEquip:any[]=[]; const allBasinsForEquip=[...(state.customBasins??[]), ...newBasins];
+      const remainingForEquip=(state.processEquipment??[]);
+      for(const eid of equipIds as any[]){
+        const old=(state.processEquipment??[]).find(e=>e.id===eid);
+        const hostId=(equipHost as any).get(eid);
+        if(hostId && !selBasinSet.has(hostId)){
+          const nx=(old as any).x+dx, ny=(old as any).y+dy;
+          const inside=allBasinsForEquip.some(b=> nx>=b.x && nx<b.x+b.w && ny>=b.y && ny<b.y+b.h);
+          if(!inside){ ok=false; break; }
+        }
+        let nid:any=eid+"_copy"; let i=0; const allIds:any=new Set([...(state.processEquipment??[]).map((e:any)=>e.id), ...newEquip.map((e:any)=>e.id)]); while(allIds.has(nid)) nid=eid+"_copy"+(++i);
+        const nx=(old as any).x+dx, ny=(old as any).y+dy;
+        const equipForVal=[...remainingForEquip, ...newEquip];
+        const v=validateEquipmentPlacement((old as any).typeId, nx, ny, mapSize, allBasinsForEquip, equipForVal, unitRects);
+        if(!v.ok){ ok=false; break; }
+        if(newEquip.some(e=>e.x===nx && e.y===ny)){ ok=false; break; }
+        newEquip.push({...old, id:nid, x:nx, y:ny, createdAtDay:state.gameTimeDays});
+      }
+      if(!ok) continue;
+      const newBaffles=[]; const baffleById=new Map(((state.customBaffles??[]) as any[]).map((b:any)=>[b.id,b]));
+      for(const bfId of baffleIds as any[]){
+        const old=baffleById.get(bfId)!;
+        if(!selBasinSet.has((old as any).basinId)){ ok=false; break; }
+        const newBid=(basinIdMap as any).get((old as any).basinId);
+        let nid:any=bfId+"_copy"; let i=0; const allIds:any=new Set([...(state.customBaffles??[]).map((b:any)=>b.id), ...newBaffles.map((b:any)=>b.id)]); while(allIds.has(nid)) nid=bfId+"_copy"+(++i);
+        const v=validateBafflePlacement(allBasinsForEquip.find((b:any)=>b.id===newBid), [...(state.customBaffles??[]), ...newBaffles], old.orientation, old.offsetTiles);
+        if(!v.ok){ ok=false; break; }
+        newBaffles.push({...(old as any), id:nid, basinId:newBid, createdAtDay:state.gameTimeDays});
+      }
+      if(!ok) continue;
+      let cost=0; for(const b of (newBasins as any[])) cost+=estimateBasinCAPEX(b as any); for(const e of newEquip as any[]) cost+=estimateEquipmentCAPEX((e as any).typeId); for(const bf of newBaffles as any[]){ const basin=(allBasinsForEquip as any[]).find((bb:any)=>bb.id===(bf as any).basinId); if(basin) cost+=estimateBaffleCAPEX(basin, bf.orientation); }
+      if(state.gameMode!=="sandbox" && !state.tutorialActive && state.financials.cash < cost) return {newState:state, success:false, reason: "Insufficient funds ($"+cost.toLocaleString()+" required)"};
+      const charged=(state.gameMode==="sandbox"||state.tutorialActive)?0:cost;
+      const newCash=(state.gameMode==="sandbox"||state.tutorialActive)?state.financials.cash:state.financials.cash-cost;
+      const newState={...state, financials:{...state.financials,cash:newCash}, customBasins:[...(state.customBasins??[]), ...newBasins], processEquipment:[...(state.processEquipment??[]), ...newEquip], customBaffles:[...(state.customBaffles??[]), ...newBaffles]};
+      const newSelection={basins:newBasins.map(b=>b.id), equipment:newEquip.map(e=>e.id), baffles:newBaffles.map(b=>b.id), utilities:[]};
+      return {newState, success:true, charged, newSelection};
+    }
+    return {newState:state, success:false, reason:"No room to duplicate — clear space near the selection (tried 2-tile offsets)"};
   }
 
   // ── CONSTRUCTION-BUILDER P1 — BASIN DIRECT EDITING (depth + resize) ─────────
