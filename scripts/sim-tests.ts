@@ -50,7 +50,7 @@ import {
   constructionSummaryLine,
 } from '../src/design/ConstructionNetwork';
 import { EQUIPMENT_TYPES } from '../src/design/ProcessEquipment';
-import { evaluateConstructionEffects, filtrationLiveSets, chemicalReagentOpexPerDay, CHEMICAL_REAGENT_COST_PER_M3_PER_PUMP, brineDisposalOpexPerDay, RO_BRINE_DISPOSAL_COST_PER_M3_HANDLED, RO_BRINE_DISPOSAL_COST_PER_M3_UNHANDLED, reclaimedWaterBonusPerDay, RECLAIMED_BONUS_RATE_PER_SKID, RECLAIMED_BONUS_MAX_RATE, RECLAIMED_BONUS_TSS_THRESHOLD, RECLAIMED_BONUS_PATHOGEN_THRESHOLD } from '../src/design/ConstructionAdapter';
+import { evaluateConstructionEffects, filtrationLiveSets, chemicalReagentOpexPerDay, CHEMICAL_REAGENT_COST_PER_M3_PER_PUMP, brineDisposalOpexPerDay, RO_BRINE_DISPOSAL_COST_PER_M3_HANDLED, RO_BRINE_DISPOSAL_COST_PER_M3_UNHANDLED, reclaimedWaterBonusPerDay, RECLAIMED_BONUS_RATE_PER_SKID, RECLAIMED_BONUS_MAX_RATE, RECLAIMED_BONUS_TSS_THRESHOLD, RECLAIMED_BONUS_PATHOGEN_THRESHOLD, uvPathogensMultiplier, UV_PATHOGENS_MULTIPLIER_PER_CHANNEL, UV_PATHOGENS_FLOOR } from '../src/design/ConstructionAdapter';
 import { seasonalTariffMultiplier, seasonalBonusPerDay, seasonalLabel, SEASONAL_TARIFF_AMPLITUDE } from '../src/design/SeasonalProfile';
 import {
   estimateBaffleCAPEX,
@@ -6015,6 +6015,197 @@ function transformedUpNormal(m: THREE.Matrix4): THREE.Vector3 {
   let afterNoBasin = GameManager.tick(gsNoBasin, 0.5);
   assert(afterNoBasin.overallStats.totalGreenGenerationKw < greenWith - 5, 'CHP10c. no basin -> green drops vs live CHP');
 }
+{
+  // ── UV DISINFECTION — construction-built pathogen barrier (tertiary polishing) ──
+  // UV01: catalog
+  assert(!!EQUIPMENT_TYPES['uv_channel'], 'UV01. uv_channel catalog exists');
+  assert(EQUIPMENT_TYPES['uv_channel'].mounting === 'ground', 'UV01b. UV is ground-mounted (dry-installed)');
+  assert(EQUIPMENT_TYPES['uv_channel'].capexUsd === 21500, 'UV01c. CAPEX $21.5k exact (got $'+EQUIPMENT_TYPES['uv_channel'].capexUsd+')');
+  assert(Math.abs(EQUIPMENT_TYPES['uv_channel'].powerKw - 7.5) < 0.01, 'UV01d. power 7.5 kW (got '+EQUIPMENT_TYPES['uv_channel'].powerKw+')');
+  assert(EQUIPMENT_TYPES['uv_channel'].opexUsdPerDay === 13, 'UV01e. OPEX $13/d');
+}
+{
+  // UV02: mounting — ground only (inside basin rejected)
+  let gs = GameManager.createInitialState(0,true);
+  let rr = GameManager.placeCustomBasin(gs, {x:5,y:5,w:3,h:3}); gs=rr.newState;
+  const inside = GameManager.placeProcessEquipment(gs, 'uv_channel', 6,6);
+  assert(!inside.success, 'UV02. UV inside basin rejected');
+  const outside = GameManager.placeProcessEquipment(gs, 'uv_channel', 12,12);
+  assert(outside.success, 'UV02b. UV on open ground allowed');
+}
+{
+  // UV03: tile exclusivity
+  let gs = GameManager.createInitialState(0,true);
+  let a = GameManager.placeProcessEquipment(gs, 'uv_channel', 10,10); gs=a.newState;
+  assert(a.success, 'UV03. first UV placed');
+  const b = GameManager.placeProcessEquipment(gs, 'uv_channel', 10,10);
+  assert(!b.success, 'UV03b. same tile blocked');
+  const c = GameManager.placeProcessEquipment(gs, 'uv_channel', 11,10);
+  assert(c.success, 'UV03c. distinct tile allowed');
+}
+{
+  // UV04: campaign cost & funding
+  let gs = GameManager.createInitialState(0,false);
+  const cash0 = gs.financials.cash;
+  const capex = EQUIPMENT_TYPES['uv_channel'].capexUsd;
+  let er = GameManager.placeProcessEquipment(gs, 'uv_channel', 10,10); gs=er.newState;
+  assert(er.success && ((er as any).charged ?? 0) === capex, 'UV04. campaign charges exact $'+capex);
+  assert(gs.financials.cash === cash0 - capex, 'UV04b. cash debited');
+  let gsb = GameManager.createInitialState(0,true);
+  let erb = GameManager.placeProcessEquipment(gsb, 'uv_channel', 10,10); gsb=erb.newState;
+  assert(erb.success && ((erb as any).charged ?? 1) === 0, 'UV04c. sandbox charge $0');
+  let broke = GameManager.createInitialState(0,false);
+  broke.financials.cash = 1000;
+  const poor = GameManager.placeProcessEquipment(broke, 'uv_channel', 10,10);
+  assert(!poor.success, 'UV04d. unaffordable UV rejected');
+}
+{
+  // UV05: powered model — needs power_cable on its tile; unpowered draws 0 livePower
+  const mkUv = (id,x,y)=>({ id, typeId:'uv_channel', x, y, createdAtDay:0 });
+  const cable = (ax,ay,bx,by)=>({ type:'power_cable', ax, ay, bx, by });
+  const { constructionStats } = await import('../src/design/ConstructionNetwork.js');
+  const uv = mkUv('uv1',10,10);
+  let stNone = constructionStats([], [uv], []);
+  assert(stNone.livePowerKw === 0, 'UV05. no cable -> livePower 0 (dark)');
+  assert(stNone.poweredUvUnits === 0, 'UV05b. poweredUv 0 when dark');
+  let stLive = constructionStats([], [uv], [cable(10,10,20,5)]);
+  assert(stLive.poweredUvUnits === 1, 'UV05c. cabled -> 1 powered UV');
+  assert(Math.abs(stLive.livePowerKw - 7.5) < 0.01, 'UV05d. livePower +7.5 (got '+stLive.livePowerKw+')');
+  assert(stLive.totalUvUnits === 1, 'UV05e. totalUv 1');
+  assert(stLive.totalUvChannels === 1, 'UV05f. totalUvChannels 1');
+}
+{
+  // UV06: pure ConstructionAdapter — pathogen polish gating & stacking
+  const basin = { id:'b1', x:5, y:5, w:3, h:3, depthM:4 };
+  const uv = { id:'uv1', typeId:'uv_channel', x:10, y:10, createdAtDay:0 };
+  const cable = { type:'power_cable', ax:10, ay:10, bx:20, by:5 };
+  let ceNoBasin = evaluateConstructionEffects([], [uv], [cable], [], 3500, 0.45, null, false);
+  assert(ceNoBasin.liveUvChannels === 0 && ceNoBasin.pathogensMultiplier === 1, 'UV06. no basin -> live 0 (identity)');
+  let ceDark = evaluateConstructionEffects([basin], [uv], [], [], 3500, 0.45, null, false);
+  assert(ceDark.liveUvChannels === 0 && ceDark.pathogensMultiplier === 1, 'UV06b. unpowered -> identity (0 live, 1x pathogens)');
+  assert(ceDark.poweredUvChannels === 0, 'UV06c. powered 0 when dark');
+  let ceLive = evaluateConstructionEffects([basin], [uv], [cable], [], 3500, 0.45, null, false);
+  assert(ceLive.liveUvChannels === 1 && ceLive.poweredUvChannels === 1, 'UV06d. live 1 UV (1/1)');
+  assert(Math.abs(ceLive.pathogensMultiplier - 0.16) < 0.001, 'UV06e. single UV 0.16x pathogens (got '+ceLive.pathogensMultiplier.toFixed(4)+')');
+  assert(ceLive.summary.includes('UV') && ceLive.summary.includes('disinfecting'), 'UV06f. summary has UV disinfecting');
+  const uv2 = { id:'uv2', typeId:'uv_channel', x:11, y:10, createdAtDay:0 };
+  const c2 = { type:'power_cable', ax:11, ay:10, bx:20, by:5 };
+  let ceTwo = evaluateConstructionEffects([basin], [uv, uv2], [cable, c2], [], 3500, 0.45, null, false);
+  assert(ceTwo.liveUvChannels === 2, 'UV06g. 2 live UV');
+  assert(Math.abs(ceTwo.pathogensMultiplier - 0.0256) < 0.0005, 'UV06h. 2 UV 0.0256x (got '+ceTwo.pathogensMultiplier.toFixed(5)+')');
+  const uv3 = { id:'uv3', typeId:'uv_channel', x:12, y:10, createdAtDay:0 };
+  const c3 = { type:'power_cable', ax:12, ay:10, bx:20, by:5 };
+  let ceThree = evaluateConstructionEffects([basin], [uv, uv2, uv3], [cable, c2, c3], [], 3500, 0.45, null, false);
+  assert(ceThree.liveUvChannels === 3, 'UV06i. 3 live UV');
+  assert(Math.abs(ceThree.pathogensMultiplier - 0.004096) < 0.0005, 'UV06j. 3 UV ~0.0041x (got '+ceThree.pathogensMultiplier.toFixed(6)+')');
+  const uv4 = { id:'uv4', typeId:'uv_channel', x:13, y:10, createdAtDay:0 };
+  const c4 = { type:'power_cable', ax:13, ay:10, bx:20, by:5 };
+  let ceFour = evaluateConstructionEffects([basin], [uv, uv2, uv3, uv4], [cable, c2, c3, c4], [], 3500, 0.45, null, false);
+  assert(Math.abs(ceFour.pathogensMultiplier - UV_PATHOGENS_FLOOR) < 0.0001, 'UV06k. 4 UV floor 0.003 (got '+ceFour.pathogensMultiplier+')');
+  assert(Math.abs(uvPathogensMultiplier(1) - UV_PATHOGENS_MULTIPLIER_PER_CHANNEL) < 0.0001, 'UV06l. helper single 0.16');
+  assert(uvPathogensMultiplier(0) === 1, 'UV06m. helper 0 -> 1');
+  assert(Math.abs(uvPathogensMultiplier(3) - 0.004096) < 0.0001, 'UV06n. helper 3 -> 0.004096');
+}
+{
+  // UV07: ProcessRecognition badges — dormant vs live
+  const { recognizeProcess } = await import('../src/design/ProcessRecognition.js');
+  const basin = { id:'b1', x:5, y:5, w:3, h:3, depthM:4 };
+  const cable = { type:'power_cable', ax:10, ay:10, bx:20, by:5 };
+  const uv = { id:'uv1', typeId:'uv_channel', x:10, y:10, createdAtDay:0 };
+  let bdDark = recognizeProcess([basin], [], [uv], []);
+  assert(bdDark.some(b=>b.id==='uv-dormant'), 'UV07. dormant UV badge when unpowered');
+  let bdLive = recognizeProcess([basin], [], [uv], [cable]);
+  assert(bdLive.some(b=>b.id==='uv-live' && b.tone==='violet'), 'UV07b. live UV violet badge when powered');
+  let bdNoBasin = recognizeProcess([], [], [uv], [cable]);
+  assert(bdNoBasin.length === 0, 'UV07c. no basin -> no badge');
+  assert(bdDark.find(b=>b.id==='uv-dormant').tone === 'amber', 'UV07d. dormant tone amber');
+}
+{
+  // UV08: basin integrity — ground UV does NOT block basin demolish (unlike in-basin kit)
+  let gs = GameManager.createInitialState(0,true);
+  let rr = GameManager.placeCustomBasin(gs, {x:5,y:5,w:3,h:3}); gs=rr.newState;
+  const bid = gs.customBasins[0].id;
+  let er = GameManager.placeProcessEquipment(gs, 'uv_channel', 12,12); gs=er.newState;
+  assert(er.success, 'UV08 setup UV far ground');
+  const demOk = GameManager.demolishCustomBasin(gs, bid);
+  assert(demOk.success, 'UV08b. ground UV does not block basin demolish');
+  let gs2 = GameManager.createInitialState(0,true);
+  let rr2 = GameManager.placeCustomBasin(gs2, {x:5,y:5,w:3,h:3}); gs2=rr2.newState;
+  const b2 = gs2.customBasins[0].id;
+  let er2 = GameManager.placeProcessEquipment(gs2, 'fine_bubble_diffuser', 6,6); gs2=er2.newState;
+  const blocked = GameManager.demolishCustomBasin(gs2, b2);
+  assert(!blocked.success, 'UV08c. in-basin diffuser DOES block basin demolish');
+}
+{
+  // UV09: 70% salvage on demolish
+  let gs = GameManager.createInitialState(0,false);
+  let er = GameManager.placeProcessEquipment(gs, 'uv_channel', 10,10); gs=er.newState;
+  const eid = gs.processEquipment[0].id;
+  const capex = EQUIPMENT_TYPES['uv_channel'].capexUsd;
+  const expectedRefund = Math.round(capex * 0.7);
+  const cashBefore = gs.financials.cash;
+  const dr = GameManager.demolishProcessEquipment(gs, eid);
+  assert(dr.success && dr.refunded === expectedRefund, 'UV09. UV salvage 70% '+dr.refunded+' vs '+expectedRefund);
+  assert(dr.newState.financials.cash === cashBefore + expectedRefund, 'UV09b. cash refunded');
+  assert(dr.newState.processEquipment.length === 0, 'UV09c. UV removed');
+}
+{
+  // UV10: tick integrates UV pathogen polish — pathogens reduced, stacking with RO multiplicative
+  let gs = GameManager.createInitialState(0,true);
+  let rr = GameManager.placeCustomBasin(gs, {x:5,y:5,w:3,h:3}); gs=rr.newState;
+  let er = GameManager.placeProcessEquipment(gs, 'uv_channel', 12,12); gs=er.newState;
+  let ur = GameManager.placeUtilityConnection(gs, 'power_cable', 12,12, 6,6); gs=ur.newState;
+  assert(ur.success, 'UV10 setup UV+ cable');
+  const mkU = (id,type,x,y)=>({ instanceId:id, typeId:type, gridX:x, gridY:y, rotation:0, volume:200, customParams:{}, active:true, efficiencyRating:100, lastInletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastOutletQuality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, lastPowerKwActual:0, lastOpexActual:0 });
+  const mkP = (id,from,fp,to,tp,pt='liquid')=>({ id, fromUnitId:from, fromPortId:fp, toUnitId:to, toPortId:tp, pipeType:pt, flowRate:0, quality:{flowRate:0,bod:0,cod:0,tss:0,tn:0,nh4:0,no3:0,tp:0,pathogens:0,do:0,ph:7,temp:20,toxicIndex:0,turbidity:0}, cachedHydraulics:{ headlossM:0, velocityMps:0, condition:'ok' } });
+  const unitsUV = [
+    mkU('inl','influent_inlet',2,10),
+    mkU('scr','bar_screen',5,10),
+    mkU('grt','grit_chamber',8,10),
+    mkU('pri','primary_clarifier_circular',11,9),
+    mkU('cas','activated_sludge_cas',15,9),
+    mkU('clr','secondary_clarifier',17,13),
+    mkU('uv','uv_disinfection',20,10),
+    mkU('outf','effluent_outfall',24,10),
+    mkU('thk','sludge_thickener',30,12),
+  ];
+  const pipesUV = [
+    mkP('p_a','inl','outlet','scr','inlet'),
+    mkP('p_b','scr','outlet','grt','inlet'),
+    mkP('p_c','grt','outlet','pri','inlet'),
+    mkP('p_d','pri','outlet','cas','inlet'),
+    mkP('p_e','cas','outlet','clr','inlet'),
+    mkP('p_f','clr','outlet','uv','inlet'),
+    mkP('p_g','uv','outlet','outf','inlet'),
+    mkP('p_h','clr','was_outlet','thk','inlet','sludge'),
+    mkP('p_r','clr','sludge_outlet','cas','ras_inlet','ras'),
+  ];
+  gs.units = unitsUV; gs.pipes = pipesUV;
+  const baselinePath = (()=>{
+    let g=GameManager.createInitialState(0,true); g.units=unitsUV; g.pipes=pipesUV; g = GameManager.tick(g, 0.5); return g.finalEffluent.pathogens;
+  })();
+  let after = GameManager.tick(gs, 0.5);
+  const withUv = after.finalEffluent.pathogens;
+  assert(withUv < baselinePath * 0.22, 'UV10. tick pathogens '+withUv.toFixed(0)+' < 22% of baseline '+baselinePath.toFixed(0));
+  assert(withUv > baselinePath * 0.08, 'UV10b. not over-polished (one UV ~16%, got '+(withUv/baselinePath).toFixed(3)+'x)');
+  let gsNoBasin = { ...gs, customBasins: [] };
+  let afterNoBasin = GameManager.tick(gsNoBasin, 0.5);
+  assert(Math.abs(afterNoBasin.finalEffluent.pathogens - baselinePath) < baselinePath * 0.02, 'UV10c. no basin -> no UV polish (near baseline)');
+  let gsRo = GameManager.createInitialState(0,true);
+  let rrRo = GameManager.placeCustomBasin(gsRo, {x:5,y:5,w:3,h:3}); gsRo=rrRo.newState;
+  let erRo = GameManager.placeProcessEquipment(gsRo, 'ro_skid', 12,13); gsRo=erRo.newState;
+  let urRo = GameManager.placeUtilityConnection(gsRo, 'power_cable', 12,13, 6,6); gsRo=urRo.newState;
+  gsRo.units = unitsUV; gsRo.pipes = pipesUV;
+  const roOnly = GameManager.tick(gsRo, 0.5).finalEffluent.pathogens;
+  let gsBoth2 = GameManager.createInitialState(0,true);
+  let rrB = GameManager.placeCustomBasin(gsBoth2, {x:5,y:5,w:3,h:3}); gsBoth2=rrB.newState;
+  gsBoth2.processEquipment = [...gsRo.processEquipment, { id:'uvX', typeId:'uv_channel', x:14, y:14, createdAtDay:0 }];
+  gsBoth2.utilityConnections = [...gsRo.utilityConnections, { id:'cUv2', type:'power_cable', ax:14, ay:14, bx:6, by:6 }];
+  gsBoth2.units = unitsUV; gsBoth2.pipes = pipesUV;
+  const bothPath = GameManager.tick(gsBoth2, 0.5).finalEffluent.pathogens;
+  assert(bothPath < Math.min(roOnly, withUv) * 0.95, 'UV10d. UV+RO stacking < either alone ('+bothPath.toFixed(0)+' vs RO '+roOnly.toFixed(0)+' UV '+withUv.toFixed(0)+')');
+}
+
 
 console.log(failures === 0 ? "\nALL TESTS PASSED" : `\n${failures} TEST(S) FAILED`);
 

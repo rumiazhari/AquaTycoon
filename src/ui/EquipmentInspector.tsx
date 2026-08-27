@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, Wind, Trash2, Droplets, Fan, Cog, Waves, AlertTriangle, CheckCircle2, Columns3, ShieldCheck, Hexagon, Gauge, Activity, Ruler, FlaskConical, Beaker, Filter, Cylinder, Move, RotateCw, Flame } from 'lucide-react';
+import { X, Wind, Trash2, Droplets, Fan, Cog, Waves, AlertTriangle, CheckCircle2, Columns3, ShieldCheck, Hexagon, Gauge, Activity, Ruler, FlaskConical, Beaker, Filter, Cylinder, Move, RotateCw, Flame, Sun } from 'lucide-react';
 import { EQUIPMENT_TYPES } from '../design/ProcessEquipment';
 import type { ProcessEquipmentItem } from '../design/ProcessEquipment';
 import type { BasinZone } from '../design/BasinZone';
@@ -20,6 +20,7 @@ const ICONS: Record<string, React.ComponentType<{ size?: number; className?: str
   ro_skid: Filter,
   brine_tank: Cylinder,
   biogas_chp_skid: Flame,
+  uv_channel: Sun,
 };
 
 interface EquipmentInspectorProps {
@@ -231,6 +232,18 @@ export const EquipmentInspector: React.FC<EquipmentInspectorProps> = ({ item, po
                 <>
                   <span className="text-xs font-bold text-amber-300">Dark — needs a Power cable on this ground tile</span>
                   <span className="text-[11px] text-slate-400">Run a Power cable here to export biogas power (red while dark, emerald when live). Ground-installed outside basins.</span>
+                </>
+              )
+            ) : item.typeId === 'uv_channel' ? (
+              powered ? (
+                <>
+                  <span className="text-xs font-bold text-violet-300">UV live — pathogen barrier (violet shimmer)</span>
+                  <span className="text-[11px] text-slate-400">Low-pressure UV lamps disinfecting — ~84% pathogen kill per channel when powered. Stack channels for near-zero pathogens. Needs basin + power.</span>
+                </>
+              ) : (
+                <>
+                  <span className="text-xs font-bold text-amber-300">Dark — needs a Power cable on this ground tile</span>
+                  <span className="text-[11px] text-slate-400">Run a Power cable here to energize the UV lamps (red while dark, violet when disinfecting). Ground-installed outside basins.</span>
                 </>
               )
             ) : needsPower ? (

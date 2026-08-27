@@ -1129,6 +1129,7 @@ export class SceneManager {
       const isRoSkid = it.typeId === 'ro_skid';
       const isBrine = it.typeId === 'brine_tank';
       const isChp = it.typeId === 'biogas_chp_skid';
+      const isUv = it.typeId === 'uv_channel';
       const isPowered = !poweredIds || poweredIds.has(it.id);
       const isAerated = !aeratedIds || !isDiffuser || aeratedIds.has(it.id);
       // Phase 6 slice 2 filtration status for tinting
@@ -1234,6 +1235,15 @@ export class SceneManager {
                 m.emissiveIntensity = 0.52;
               } else {
                 m.emissive.setHex(0x16a34a);
+                m.emissiveIntensity = 0.52;
+              }
+            } else if (isUv) {
+              // UV channel: powered = violet disinfection shimmer, unpowered = dark red
+              if (!isPowered) {
+                m.emissive.setHex(0x5a1a1a);
+                m.emissiveIntensity = 0.52;
+              } else {
+                m.emissive.setHex(0x7c3aed);
                 m.emissiveIntensity = 0.52;
               }
             } else if (isDiffuser) {
@@ -1642,6 +1652,55 @@ export class SceneManager {
         const gasPipe = add(new THREE.Mesh(new THREE.CylinderGeometry(0.10, 0.10, 0.9, 10), yellowMat));
         gasPipe.rotation.z = Math.PI / 2;
         gasPipe.position.set(-1.70, 0.62, -0.15);
+        break;
+      }
+      case 'uv_channel': {
+        // Ground UV disinfection channel — concrete open channel with LP lamp banks.
+        // Distinct violet / stainless palette vs RO vessels and CHP green.
+        const concreteMat = new THREE.MeshStandardMaterial({ color: 0xa8a29e, roughness: 0.85 });
+        const stainlessMat = new THREE.MeshStandardMaterial({ color: 0xd6d3d1, roughness: 0.25, metalness: 0.7 });
+        const violetMat = new THREE.MeshStandardMaterial({ color: 0x7c3aed, roughness: 0.35, metalness: 0.15, emissive: 0x4c1d95, emissiveIntensity: 0.22 });
+        const lampMat = new THREE.MeshStandardMaterial({ color: 0xa78bfa, roughness: 0.2, emissive: 0x7c3aed, emissiveIntensity: 0.35 });
+        (concreteMat as any)._equipBase = true;
+        (violetMat as any)._equipBase = true;
+        (stainlessMat as any)._equipBase = true;
+        // Plinth
+        const base = add(new THREE.Mesh(new THREE.BoxGeometry(3.6, 0.22, 1.9), plinth));
+        base.position.set(0, 0.11, 0);
+        // Open channel trough (U-shape: floor + 2 walls)
+        const floor = add(new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.12, 1.42), concreteMat));
+        floor.position.set(0, 0.28, 0);
+        const leftWall = add(new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.62, 0.12), concreteMat));
+        leftWall.position.set(0, 0.60, -0.65);
+        const rightWall = add(new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.62, 0.12), concreteMat));
+        rightWall.position.set(0, 0.60, 0.65);
+        // Water surface hint inside channel (slightly below wall top)
+        const water = add(new THREE.Mesh(new THREE.BoxGeometry(2.95, 0.04, 1.18), new THREE.MeshStandardMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.38, roughness: 0.1 })));
+        water.position.set(0, 0.52, 0);
+        // UV lamp banks — 3 racks across the channel length, each with 2 parallel lamps
+        for (let rack = 0; rack < 3; rack++) {
+          const rx = -0.9 + rack * 0.9;
+          // Stainless rack frame
+          const frame = add(new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.45, 1.28), stainlessMat));
+          frame.position.set(rx, 0.68, 0);
+          for (let l = 0; l < 2; l++) {
+            const lamp = add(new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 1.05, 12), lampMat));
+            lamp.rotation.z = Math.PI / 2;
+            lamp.position.set(rx, 0.68, -0.28 + l * 0.56);
+          }
+        }
+        // Inlet / outlet pipe stubs (channel ends)
+        const inlet = add(new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.6, 12), stainlessMat));
+        inlet.rotation.z = Math.PI / 2;
+        inlet.position.set(-1.95, 0.42, 0);
+        const outlet = add(new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.6, 12), stainlessMat));
+        outlet.rotation.z = Math.PI / 2;
+        outlet.position.set(1.95, 0.42, 0);
+        // Control cabinet with violet status lamp
+        const cabinet = add(new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.52, 0.30), dark));
+        cabinet.position.set(0, 0.48, 0.95);
+        const lampStat = add(new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 6), new THREE.MeshStandardMaterial({ color: 0xa78bfa, emissive: 0x7c3aed, emissiveIntensity: 0.9 })));
+        lampStat.position.set(0, 0.76, 1.10);
         break;
       }
       default: {

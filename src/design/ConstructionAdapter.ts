@@ -98,6 +98,26 @@ export function chpGreenKw(liveChpSkids: number): number {
   return liveChpSkids * CHP_GREEN_KW_PER_SKID;
 }
 
+/**
+ * UV DISINFECTION — construction-built pathogen barrier (tertiary polishing).
+ * Each powered uv_channel on open ground (needs a power_cable) delivers UV-C
+ * dose that inactivates pathogens. Weaker per-skid than RO (84% vs 92% kill)
+ * but cheaper and lower power (7.5 kW vs 12 kW) — player chooses UV for
+ * pathogen-only polish vs RO for multi-barrier potable reuse.
+ * Stacking: 1× 0.16× (84%), 2× 0.0256× (97.4%), 3× 0.004× (99.6%, potable),
+ * floor 0.003 (mirrors RO pathogen floor) so 3 UV ≈ RO-grade pathogens.
+ * Gated on basins>0 so legacy saves stay exact. No brine, no digester — just flow+basin+power.
+ */
+export const UV_PATHOGENS_MULTIPLIER_PER_CHANNEL = 0.16;
+export const UV_PATHOGENS_FLOOR = 0.003;
+
+export function uvPathogensMultiplier(liveUvChannels: number): number {
+  if (!Number.isFinite(liveUvChannels) || liveUvChannels <= 0) return 1;
+  let m = 1;
+  for (let i = 0; i < liveUvChannels; i++) m *= UV_PATHOGENS_MULTIPLIER_PER_CHANNEL;
+  return Math.max(UV_PATHOGENS_FLOOR, m);
+}
+
 export function brineDisposalOpexPerDay(liveRoSkids: number, poweredBrineTanks: number, flowM3d: number): number {
   if (liveRoSkids <= 0 || flowM3d <= 0) return 0;
   const handled = Math.min(liveRoSkids, Math.max(0, poweredBrineTanks));
@@ -195,6 +215,10 @@ export interface ConstructionTickEffect {
   poweredChpSkids: number;
   liveChpSkids: number;
   extraGreenKw: number;
+  /** UV DISINFECTION — construction-built pathogen barrier (ground, powered). */
+  totalUvChannels: number;
+  poweredUvChannels: number;
+  liveUvChannels: number;
   /** TYCOON DIVIDEND iter 43 — reclaimed water premium (potable reuse). */
   reuseBonusPerDay: number;
   reuseBonusRate: number;
@@ -578,6 +602,26 @@ export function evaluateConstructionEffects(
     poweredBrineTanks = 0;
   }
 
+  // ── UV DISINFECTION — construction-built pathogen barrier (ground, powered) ──
+  // Each powered uv_channel on open ground (needs a power_cable) delivers UV-C;
+  // weaker per-channel than RO (84% vs 92% kill) but cheaper/power-lighter.
+  // Gated on basins>0 so legacy saves stay exact; stacks with RO multiplicatively.
+  let totalUvChannels = eq.filter(e => e.typeId === 'uv_channel').length;
+  let poweredUvChannels = 0;
+  let liveUvChannels = 0;
+  if (totalUvChannels > 0) {
+    const poweredSetUv = poweredEquipmentIds(eq as any, uc as any);
+    poweredUvChannels = eq.filter(e => e.typeId === 'uv_channel' && poweredSetUv.has(e.id)).length;
+    liveUvChannels = (bs.length > 0) ? poweredUvChannels : 0;
+    if (liveUvChannels > 0) {
+      pathogensMul *= uvPathogensMultiplier(liveUvChannels);
+    }
+  } else {
+    totalUvChannels = 0;
+    poweredUvChannels = 0;
+    liveUvChannels = 0;
+  }
+
   // ── Apply septic penalty (zone-aware when baffles exist) ─────────────────
   const septicForPenalty = hasBaffles ? septicZones : septicBasins;
   if (septicForPenalty > 0) {
@@ -691,6 +735,9 @@ export function evaluateConstructionEffects(
   else if (bs.length > 0 && poweredRoSkids > 0) parts.push(`${poweredRoSkids} RO skid${poweredRoSkids>1?'s':''} dormant`);
   if (liveChpSkids > 0) parts.push(`${liveChpSkids} CHP live (${extraGreenKw} kW green)`);
   else if (poweredChpSkids > 0) parts.push(`${poweredChpSkids} CHP dormant${hasDigester ? '' : ' — needs digester'}`);
+  if (bs.length > 0 && liveUvChannels > 0) parts.push(`${liveUvChannels} UV channel${liveUvChannels>1?'s':''} disinfecting`);
+  else if (bs.length > 0 && poweredUvChannels > 0) parts.push(`${poweredUvChannels} UV dormant`);
+  else if (totalUvChannels > 0 && poweredUvChannels === 0) parts.push(`${totalUvChannels} UV dormant — needs power`);
   if (extraPowerKw > 0) parts.push(`${extraPowerKw} kW live`);
   if (reagentOpexPerDay > 0) parts.push(`$${Math.round(reagentOpexPerDay)}/d reagent`);
   if (brineOpexPerDay > 0) {
@@ -746,6 +793,9 @@ export function evaluateConstructionEffects(
     poweredChpSkids,
     liveChpSkids,
     extraGreenKw,
+    totalUvChannels,
+    poweredUvChannels,
+    liveUvChannels,
     reuseBonusPerDay,
     reuseBonusRate,
     bodMultiplier: bodMul,

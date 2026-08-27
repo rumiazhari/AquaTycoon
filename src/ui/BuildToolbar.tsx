@@ -3,7 +3,7 @@ import {
   MousePointer, Cable, Trash2, RotateCw, Filter,
   Layers, Activity, Sparkles, Recycle, ArrowRightLeft,
   Info, Star, Zap, Lock, Droplets, Fan, Wind, Cog, Waves, Columns3, Rows3, ShieldCheck, Hexagon, Gauge, Ruler, FlaskConical, Beaker, Cylinder,
-  HardHat, Hammer, ChevronDown, ChevronUp, Package, Building2, Flame
+  HardHat, Hammer, ChevronDown, ChevronUp, Package, Building2, Flame, Sun
 } from 'lucide-react';
 import { UnitCategory, UnitDefinition, UnitTypeId } from '../types/simulation';
 import { ToolMode } from '../types/graphics';
@@ -32,6 +32,7 @@ const EQUIP_ICONS: Record<string, React.ComponentType<{ size?: number }>> = {
   ro_skid: Filter,
   brine_tank: Cylinder,
   biogas_chp_skid: Flame,
+  uv_channel: Sun,
 };
 
 const UTILITY_ICONS: Record<UtilityConnectionType, React.ComponentType<{ size?: number }>> = {

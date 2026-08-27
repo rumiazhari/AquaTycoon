@@ -165,6 +165,16 @@ export const EQUIPMENT_TYPES: Record<string, EquipmentTypeDef> = {
     powerKw: 1.8, // parasitic controls/parasite — needs a power_cable to be grid-connected; generation is via ConstructionAdapter (green kW)
     blurb: 'Containerized biogas CHP skid. Burns digester biogas to generate ~14 kW green power when grid-connected via power cable and fed by an anaerobic digester.',
   },
+  // ── UV DISINFECTION — construction-built pathogen barrier (tertiary polishing) ───
+  uv_channel: {
+    id: 'uv_channel',
+    name: 'UV Disinfection Channel',
+    mounting: 'ground',
+    capexUsd: 21_500,
+    opexUsdPerDay: 13,
+    powerKw: 7.5, // LP/amalgam lamps + ballasts — needs power_cable to deliver UV dose
+    blurb: 'Ground UV channel with low-pressure lamps. Tertiary pathogen barrier — ~84% pathogen kill per channel when powered; stack channels for potable-grade disinfection.',
+  },
 };
 
 /** One installed machine. Occupies exactly ONE grid tile. */

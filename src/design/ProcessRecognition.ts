@@ -393,6 +393,27 @@ export function recognizeProcess(
     }
   }
 
+  // ── 14. UV DISINFECTION — construction-built pathogen barrier ──
+  {
+    const uvItems = eq.filter(e => e.typeId === 'uv_channel');
+    const poweredUv = uvItems.filter(e => poweredSet.has(e.id)).length;
+    if (poweredUv > 0) {
+      badges.push({
+        id: 'uv-live',
+        label: 'UV disinfection (live)',
+        detail: `${poweredUv} UV channel${poweredUv>1?'s':''} live — ~84% pathogens per channel, stack for potable (violet)`,
+        tone: 'violet',
+      });
+    } else if (uvItems.length > 0) {
+      badges.push({
+        id: 'uv-dormant',
+        label: 'UV (dormant)',
+        detail: `${uvItems.length} UV channel${uvItems.length>1?'s':''} — needs Power cable on tile`,
+        tone: 'amber',
+      });
+    }
+  }
+
   return badges;
 }
 

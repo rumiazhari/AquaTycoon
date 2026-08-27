@@ -155,6 +155,11 @@ export interface ConstructionStats {
   poweredChpUnits: number;
   totalChpSkids: number;
   poweredChpSkids: number;
+  /** UV DISINFECTION — construction-built pathogen barrier (ground, needs grid cable) */
+  totalUvUnits: number;
+  poweredUvUnits: number;
+  totalUvChannels: number;
+  poweredUvChannels: number;
   /** Nameplate power of *powered* machines only (kW) — what the grid actually feeds. */
   livePowerKw: number;
   /** Nameplate power of all installed machines (kW). */
@@ -230,6 +235,10 @@ export function constructionStats(
     poweredChpUnits: equipment.filter(e => e.typeId === 'biogas_chp_skid' && powered.has(e.id)).length,
     totalChpSkids: equipment.filter(e => e.typeId === 'biogas_chp_skid').length,
     poweredChpSkids: equipment.filter(e => e.typeId === 'biogas_chp_skid' && powered.has(e.id)).length,
+    totalUvUnits: equipment.filter(e => e.typeId === 'uv_channel').length,
+    poweredUvUnits: equipment.filter(e => e.typeId === 'uv_channel' && powered.has(e.id)).length,
+    totalUvChannels: equipment.filter(e => e.typeId === 'uv_channel').length,
+    poweredUvChannels: equipment.filter(e => e.typeId === 'uv_channel' && powered.has(e.id)).length,
     livePowerKw,
     installedPowerKw,
     liveOpexPerDay,
@@ -251,6 +260,7 @@ export function constructionSummaryLine(s: ConstructionStats): string {
   if (s.totalChemicalUnits > 0) parts.push(`${s.poweredChemicalUnits}/${s.totalChemicalUnits} dosing live`);
   if (s.totalRoUnits > 0) parts.push(`${s.poweredRoUnits}/${s.totalRoUnits} RO live`);
   if (s.totalChpUnits > 0) parts.push(`${s.poweredChpUnits}/${s.totalChpUnits} CHP live`);
+  if (s.totalUvUnits > 0) parts.push(`${s.poweredUvUnits}/${s.totalUvUnits} UV live`);
   if (s.totalUtilityConnections > 0) parts.push(`${s.totalUtilityConnections} utility line${s.totalUtilityConnections > 1 ? 's' : ''}`);
   if (parts.length === 0) return 'No custom construction yet — draw a basin to start.';
   return parts.join(' · ');
