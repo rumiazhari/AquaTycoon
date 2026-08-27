@@ -24,10 +24,10 @@ import { TUTORIAL_STEPS, TUTORIAL_PIPE_CHAIN } from './gameplay/TutorialSteps';
 import { BASIN_DEFAULT_DEPTH_M, validateBasinPlacement, validateBasinEdit, basinHandleDirForTile, basinRectForHandleDrag } from './design/CustomBasin';
 import type { BasinHandleDir } from './design/CustomBasin';
 import { EQUIPMENT_TYPES, validateEquipmentPlacement } from './design/ProcessEquipment';
-import { UTILITY_TYPES, UtilityConnectionType, validateUtilityConnection } from './design/UtilityConnection';
+import { UTILITY_TYPES, UtilityConnectionType, validateUtilityConnection, utilityRectFor } from './design/UtilityConnection';
 import { poweredEquipmentIds, aeratedDiffuserIds } from './design/ConstructionNetwork';
 import { filtrationLiveSets, chemicalLiveSets } from './design/ConstructionAdapter';
-import { validateBafflePlacement } from './design/BasinZone';
+import { validateBafflePlacement, baffleRectFor } from './design/BasinZone';
 import { emptySelection, selectionCount, toggleSelection, basinIdsSet, equipmentIdsSet, baffleIdsSet, utilityIdsSet, selectionSummaryLine } from './design/ConstructionSelection';
 import type { ConstructionSelection } from './design/ConstructionSelection';
 
@@ -91,6 +91,43 @@ function unitName(u: PlacedUnit | undefined): string {
   return u ? UNIT_DEFINITIONS[u.typeId]?.name ?? u.typeId : '?';
 }
 
+/**
+ * P4 slice 3 — bracket rects for multi-select grouping visuals.
+ * Basins get exact footprint; equipment is 1x1 tiles; baffles are thin
+ * 0.8 m strips via baffleRectFor; utilities are bounding boxes via utilityRectFor.
+ * Returns null when selectionCount<=1 (grouping cue only for >=2).
+ */
+function bracketRectsForSelection(
+  sel: ConstructionSelection,
+  basins: { id: string; x: number; y: number; w: number; h: number }[],
+  baffles: { id: string; basinId: string; orientation: string; offsetTiles: number }[],
+  utilities: { id: string; ax: number; ay: number; bx: number; by: number }[],
+  equipment: { id: string; x: number; y: number }[],
+): { x: number; y: number; w: number; h: number }[] | null {
+  if (selectionCount(sel) <= 1) return null;
+  const out: { x: number; y: number; w: number; h: number }[] = [];
+  for (const id of sel.basins) {
+    const b = basins.find(x => x.id === id);
+    if (b) out.push({ x: b.x, y: b.y, w: b.w, h: b.h });
+  }
+  for (const id of sel.equipment) {
+    const e = equipment.find(x => x.id === id);
+    if (e) out.push({ x: e.x, y: e.y, w: 1, h: 1 });
+  }
+  for (const id of sel.baffles) {
+    const bf = baffles.find(x => x.id === id);
+    if (!bf) continue;
+    const basin = basins.find(b => b.id === bf.basinId);
+    if (!basin) continue;
+    const r = baffleRectFor(bf as any, basin as any);
+    if (r) out.push(r);
+  }
+  for (const id of sel.utilities) {
+    const u = utilities.find(x => x.id === id);
+    if (u) out.push(utilityRectFor(u));
+  }
+  return out.length ? out : null;
+}
 
 export const App: React.FC = () => {
   // ── Container & Scene ────────────────────────────────────────────────────────
@@ -218,6 +255,8 @@ export const App: React.FC = () => {
     if (sm) {
       const gs = gsRef.current;
       sm.syncBasins(gs.customBasins ?? [], null);
+      sm.syncSelectionBrackets(null);
+      sm.syncDimensionLabels(gs.customBasins ?? [], null);
       sm.syncBaffles(gs.customBaffles ?? [], gs.customBasins ?? [], null);
       sm.syncUtilityConnections(gs.utilityConnections ?? [], null);
       sm.syncEquipment(
@@ -398,6 +437,7 @@ export const App: React.FC = () => {
     sm.syncUnits(initState.units);
     sm.syncPipes(initState.pipes);
     sm.syncBasins(initState.customBasins ?? [], selectedBasinId);
+    sm.syncDimensionLabels(initState.customBasins ?? [], selectedBasinId);
     sm.syncEquipment(
       initState.processEquipment ?? [], initState.customBasins ?? [], null,
       poweredEquipmentIds(initState.processEquipment ?? [], initState.utilityConnections ?? []),
@@ -771,6 +811,7 @@ export const App: React.FC = () => {
         setGameState(res.newState);
         // keep the same basin selected with its new footprint
         sceneRef.current?.syncBasins(res.newState.customBasins ?? [], new Set([drag.basinId]));
+        sceneRef.current?.syncDimensionLabels(res.newState.customBasins ?? [], new Set([drag.basinId]));
         sceneRef.current?.syncBaffles(res.newState.customBaffles ?? [], res.newState.customBasins ?? [], null);
         sceneRef.current?.syncUtilityConnections(res.newState.utilityConnections ?? [], null);
         sceneRef.current?.syncEquipment(
@@ -1088,6 +1129,8 @@ export const App: React.FC = () => {
           aeratedDiffuserIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
           filtrationLiveSets(gs.customBasins ?? [], gs.processEquipment ?? [], gs.utilityConnections ?? [], gs.customBaffles ?? [])
         );
+        sm.syncSelectionBrackets(bracketRectsForSelection(next, gs.customBasins ?? [], gs.customBaffles ?? [], gs.utilityConnections ?? [], gs.processEquipment ?? []));
+        sm.syncDimensionLabels(gs.customBasins ?? [], basinIdsSet(next));
         const cnt = selectionCount(next);
         if (cnt > 1) setToast(`${cnt} selected — ${selectionSummaryLine(next)} — Bulk Demolish in top bar or press Delete.`);
         else if (clickedEquipment) setToast(`${EQUIPMENT_TYPES[clickedEquipment.typeId]?.name ?? 'Equipment'} — Shift+Click to add more.`);
@@ -1120,6 +1163,8 @@ export const App: React.FC = () => {
         sm.syncUtilityConnections(gs.utilityConnections ?? [], null);
         sm.syncBaffles(gs.customBaffles ?? [], gs.customBasins ?? [], null);
         sm.syncBasins(gs.customBasins ?? [], null);
+        sm.syncSelectionBrackets(bracketRectsForSelection(next, gs.customBasins ?? [], gs.customBaffles ?? [], gs.utilityConnections ?? [], gs.processEquipment ?? []));
+        sm.syncDimensionLabels(gs.customBasins ?? [], basinIdsSet(next));
         const eq = EQUIPMENT_TYPES[clickedEquipment.typeId];
         if (eq) {
           // Phase 4: include live status in the toast
@@ -1144,6 +1189,8 @@ export const App: React.FC = () => {
         setGameState(prev => ({ ...prev, selectedUnitId: null }));
         sm.syncBaffles(gs.customBaffles ?? [], gs.customBasins ?? [], new Set([clickedBaffle.id]));
         sm.syncBasins(gs.customBasins ?? [], null);
+        sm.syncSelectionBrackets(bracketRectsForSelection(next, gs.customBasins ?? [], gs.customBaffles ?? [], gs.utilityConnections ?? [], gs.processEquipment ?? []));
+        sm.syncDimensionLabels(gs.customBasins ?? [], basinIdsSet(next));
         sm.syncEquipment(
           gs.processEquipment ?? [], gs.customBasins ?? [], null,
           poweredEquipmentIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
@@ -1172,6 +1219,8 @@ export const App: React.FC = () => {
           filtrationLiveSets(gs.customBasins ?? [], gs.processEquipment ?? [], gs.utilityConnections ?? [], gs.customBaffles ?? [])
         );
         sm.syncUtilityConnections(gs.utilityConnections ?? [], new Set([clickedUtility.id]));
+        sm.syncSelectionBrackets(bracketRectsForSelection(next, gs.customBasins ?? [], gs.customBaffles ?? [], gs.utilityConnections ?? [], gs.processEquipment ?? []));
+        sm.syncDimensionLabels(gs.customBasins ?? [], basinIdsSet(next));
         const util = UTILITY_TYPES[clickedUtility.type];
         setToast(`${util.name}: (${clickedUtility.ax},${clickedUtility.ay}) → (${clickedUtility.bx},${clickedUtility.by}) · ${util.blurb} Shift+Click to add more.`);
       } else if (clickedBasin) {
@@ -1192,6 +1241,8 @@ export const App: React.FC = () => {
           filtrationLiveSets(gs.customBasins ?? [], gs.processEquipment ?? [], gs.utilityConnections ?? [], gs.customBaffles ?? [])
         );
         sm.syncUtilityConnections(gs.utilityConnections ?? [], null);
+        sm.syncSelectionBrackets(bracketRectsForSelection(next, gs.customBasins ?? [], gs.customBaffles ?? [], gs.utilityConnections ?? [], gs.processEquipment ?? []));
+        sm.syncDimensionLabels(gs.customBasins ?? [], basinIdsSet(next));
         const area = clickedBasin.w * clickedBasin.h;
         const vol = area * clickedBasin.depthM;
         const zones = GameManager.zonesForBasin(gs, clickedBasin.id);
@@ -1224,6 +1275,8 @@ export const App: React.FC = () => {
           aeratedDiffuserIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
           filtrationLiveSets(gs.customBasins ?? [], gs.processEquipment ?? [], gs.utilityConnections ?? [], gs.customBaffles ?? [])
         );
+        sm.syncSelectionBrackets(null);
+        sm.syncDimensionLabels(gs.customBasins ?? [], null);
       } else {
         setConstructionSelection(emptySelection());
         setSelectedBasinId(null);
@@ -1473,6 +1526,7 @@ export const App: React.FC = () => {
         SoundManager.playPlace();
         pushHistory(gs);
         sm.syncBasins(result.newState.customBasins, selectedBasinId);
+        sm.syncDimensionLabels(result.newState.customBasins, selectedBasinId);
         const b = result.newState.customBasins[result.newState.customBasins.length - 1];
         const area = b.w * b.h;
         const vol = area * b.depthM;
@@ -1835,6 +1889,8 @@ export const App: React.FC = () => {
           sceneRef.current?.syncBasins(gs.customBasins ?? [], basinIdsSet(all));
           sceneRef.current?.syncBaffles(gs.customBaffles ?? [], gs.customBasins ?? [], baffleIdsSet(all));
           sceneRef.current?.syncUtilityConnections(gs.utilityConnections ?? [], utilityIdsSet(all));
+          sceneRef.current?.syncSelectionBrackets(bracketRectsForSelection(all, gs.customBasins ?? [], gs.customBaffles ?? [], gs.utilityConnections ?? [], gs.processEquipment ?? []));
+          sceneRef.current?.syncDimensionLabels(gs.customBasins ?? [], basinIdsSet(all));
           sceneRef.current?.syncEquipment(gs.processEquipment ?? [], gs.customBasins ?? [], equipmentIdsSet(all),
             poweredEquipmentIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
             aeratedDiffuserIds(gs.processEquipment ?? [], gs.utilityConnections ?? []),
@@ -1934,6 +1990,8 @@ export const App: React.FC = () => {
             sceneRef.current?.syncBasins(res.newState.customBasins ?? [], null);
             sceneRef.current?.syncBaffles(res.newState.customBaffles ?? [], res.newState.customBasins ?? [], null);
             sceneRef.current?.syncUtilityConnections(res.newState.utilityConnections ?? [], null);
+            sceneRef.current?.syncSelectionBrackets(null);
+            sceneRef.current?.syncDimensionLabels(res.newState.customBasins ?? [], null);
             sceneRef.current?.syncEquipment(
               res.newState.processEquipment ?? [], res.newState.customBasins ?? [], null,
               poweredEquipmentIds(res.newState.processEquipment ?? [], res.newState.utilityConnections ?? []),
@@ -2132,6 +2190,8 @@ export const App: React.FC = () => {
       );
       sceneRef.current.syncUtilityConnections(next.utilityConnections ?? [], null);
       sceneRef.current.syncBaffles(next.customBaffles ?? [], next.customBasins ?? [], null);
+      sceneRef.current.syncSelectionBrackets(null);
+      sceneRef.current.syncDimensionLabels(next.customBasins ?? [], null);
       // Clear any stale hover/ghost placement preview from the old level.
       sceneRef.current.terrainGrid.setGhostPreview(0, 0, 1, 1, true, false);
       sceneRef.current.terrainGrid.setHoverTile(0, 0, false);
@@ -2447,6 +2507,7 @@ export const App: React.FC = () => {
               }
               setGameState(res.newState);
               sceneRef.current?.syncBasins(res.newState.customBasins ?? [], id);
+              sceneRef.current?.syncDimensionLabels(res.newState.customBasins ?? [], id);
               sceneRef.current?.syncBaffles(res.newState.customBaffles ?? [], res.newState.customBasins ?? [], null);
               sceneRef.current?.syncEquipment(
                 res.newState.processEquipment ?? [], res.newState.customBasins ?? [], null,
@@ -2469,6 +2530,7 @@ export const App: React.FC = () => {
               }
               setGameState(res.newState);
               sceneRef.current?.syncBasins(res.newState.customBasins ?? [], id);
+              sceneRef.current?.syncDimensionLabels(res.newState.customBasins ?? [], id);
               sceneRef.current?.syncBaffles(res.newState.customBaffles ?? [], res.newState.customBasins ?? [], null);
               sceneRef.current?.syncUtilityConnections(res.newState.utilityConnections ?? [], null);
               sceneRef.current?.syncEquipment(

@@ -185,3 +185,19 @@ export function pointNearUtility(
   const projX = ax + t * vx, projZ = ay + t * vz;
   return Math.hypot(px - projX, pz - projZ) <= thresholdTiles;
 }
+
+/**
+ * P4 slice 3 — Bounding rect for a utility line for grouping brackets.
+ * Bounding box over its two endpoints, bracket-friendly (min 1×1 so
+ * thin horizontal/vertical lines still get visible L-legs). Pure.
+ */
+export function utilityRectFor(
+  c: Pick<UtilityConnection, 'ax'|'ay'|'bx'|'by'>,
+): { x: number; y: number; w: number; h: number } {
+  const minX = Math.min(c.ax, c.bx);
+  const minY = Math.min(c.ay, c.by);
+  const w = Math.abs(c.bx - c.ax) + 1;
+  const h = Math.abs(c.by - c.ay) + 1;
+  // Ensure non-degenerate so brackets have 4 distinct corners
+  return { x: minX, y: minY, w: Math.max(1, w), h: Math.max(1, h) };
+}

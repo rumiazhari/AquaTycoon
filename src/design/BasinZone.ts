@@ -245,3 +245,20 @@ export function baffleSummaryLine(stats: BasinZoneStats): string {
   if (stats.totalBaffles === 0) return `${stats.totalBasins} basin${stats.totalBasins>1?'s':''} · ${stats.totalZones} zone${stats.totalZones>1?'s':''} · no baffles yet`;
   return `${stats.totalBasins} basin${stats.totalBasins>1?'s':''} · ${stats.totalZones} zones · ${stats.totalBaffles} baffle${stats.totalBaffles>1?'s':''}`;
 }
+
+/**
+ * P4 slice 3 — Bounding rect for a baffle wall for grouping brackets.
+ * Vertical wall: thin 0.8 m strip at the tile boundary running full basin height.
+ * Horizontal wall: thin strip running full width. Returned rect is bracket-friendly
+ * (non-degenerate width/height so L-legs render). Returns null if basin mismatch.
+ */
+export function baffleRectFor(
+  baffle: Pick<BaffleWall, 'basinId' | 'orientation' | 'offsetTiles'>,
+  basin: Pick<CustomBasin, 'id' | 'x' | 'y' | 'w' | 'h'>,
+): { x: number; y: number; w: number; h: number } | null {
+  if (baffle.basinId !== basin.id) return null;
+  if (baffle.orientation === 'vertical') {
+    return { x: basin.x + baffle.offsetTiles - 0.4, y: basin.y, w: 0.8, h: basin.h };
+  }
+  return { x: basin.x, y: basin.y + baffle.offsetTiles - 0.4, w: basin.w, h: 0.8 };
+}

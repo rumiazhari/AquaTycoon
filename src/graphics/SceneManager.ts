@@ -666,6 +666,9 @@ export class SceneManager {
   // P4 slice 2: in-world basin wall drag-handles + grouping brackets
   private basinHandleGroup: THREE.Group = new THREE.Group();
   private bracketGroup: THREE.Group = new THREE.Group();
+  // P4 slice 3: floating in-world dimension labels for selected basins
+  private dimensionLabelGroup: THREE.Group = new THREE.Group();
+  private dimensionSpriteMap: Map<string, THREE.Sprite> = new Map();
 
   /**
    * Renders each player-drawn CustomBasin as a real in-world structure:
@@ -795,12 +798,14 @@ export class SceneManager {
       this.bracketGroup.remove(c);
       const line = c as THREE.LineSegments;
       (line.geometry as THREE.BufferGeometry)?.dispose();
+      (line.material as THREE.Material)?.dispose();
     }
     if (!rects || rects.length === 0) return;
     for (const r of rects) {
       // bracket lines: 4 corners each L with 0.9m legs, y just above ground 0.35m
+      // Clamp leg so very small rects (baffles/equipment 1×1) don't overlap
       const y = 0.35;
-      const leg = 0.9;
+      const leg = Math.min(0.9, Math.min(r.w, r.h) * 0.45 + 0.15);
       const pts: THREE.Vector3[] = [];
       const corners: [number, number][] = [
         [r.x, r.y], [r.x + r.w, r.y], [r.x, r.y + r.h], [r.x + r.w, r.y + r.h],
@@ -815,10 +820,106 @@ export class SceneManager {
         pts.push(new THREE.Vector3(cx, y, cz), new THREE.Vector3(cx, y, cz + dz));
       }
       const geo = new THREE.BufferGeometry().setFromPoints(pts);
-      const mat = new THREE.LineBasicMaterial({ color: 0xf59e0b, linewidth: 2 });
+      const mat = new THREE.LineBasicMaterial({ color: 0xf59e0b, linewidth: 2, transparent: true, opacity: 0.95 });
       const line = new THREE.LineSegments(geo, mat);
       this.bracketGroup.add(line);
     }
+  }
+
+  /**
+   * P4 slice 3 — Floating in-world dimension labels for selected basins.
+   * Each selected basin gets a canvas-texture Sprite hovering above its centre
+   * (e.g. "18×12 m · 4.0 m deep · 864 m³"). Mirrors syncUnits discipline:
+   * add/remove/dispose; also disposes textures on removal.
+   */
+  public syncDimensionLabels(
+    basins: { id: string; x: number; y: number; w: number; h: number; depthM: number }[],
+    selectedIds: Set<string> | string | null,
+  ) {
+    if (!this.dimensionLabelGroup.parent) this.scene.add(this.dimensionLabelGroup);
+    const wanted = new Set<string>();
+    if (selectedIds instanceof Set) {
+      for (const id of selectedIds) wanted.add(id);
+    } else if (typeof selectedIds === 'string' && selectedIds) {
+      wanted.add(selectedIds);
+    }
+    // Remove sprites for basins no longer selected or demolished
+    for (const [id, sprite] of this.dimensionSpriteMap.entries()) {
+      if (!wanted.has(id) || !basins.some(b => b.id === id)) {
+        this.dimensionLabelGroup.remove(sprite);
+        const mat = sprite.material as THREE.SpriteMaterial;
+        (mat.map as THREE.Texture | null)?.dispose();
+        mat.dispose();
+        this.dimensionSpriteMap.delete(id);
+      }
+    }
+    if (wanted.size === 0) return;
+    // Headless guard — no DOM in node tests
+    if (typeof document === 'undefined') return;
+    for (const b of basins) {
+      if (!wanted.has(b.id)) continue;
+      const label = this.basinLabelText(b);
+      const existing = this.dimensionSpriteMap.get(b.id);
+      if (existing && (existing as any)._labelText === label && Math.abs((existing as any)._depthM - b.depthM) < 0.01) {
+        // Update position if basin moved/resized (depth influences y)
+        existing.position.set(b.x + b.w / 2, Math.max(1, b.depthM) + 1.55, b.y + b.h / 2);
+        continue;
+      }
+      // Recreate if text/depth changed
+      if (existing) {
+        this.dimensionLabelGroup.remove(existing);
+        const mat = existing.material as THREE.SpriteMaterial;
+        (mat.map as THREE.Texture | null)?.dispose();
+        mat.dispose();
+        this.dimensionSpriteMap.delete(b.id);
+      }
+      const sprite = this.makeDimensionSprite(label);
+      sprite.position.set(b.x + b.w / 2, Math.max(1, b.depthM) + 1.55, b.y + b.h / 2);
+      (sprite as any)._labelText = label;
+      (sprite as any)._depthM = b.depthM;
+      this.dimensionLabelGroup.add(sprite);
+      this.dimensionSpriteMap.set(b.id, sprite);
+    }
+  }
+
+  private basinLabelText(b: { w: number; h: number; depthM: number }): string {
+    const lenM = b.w * 6;
+    const widM = b.h * 6;
+    const vol = b.w * 6 * b.h * 6 * Math.max(1, b.depthM);
+    return `${lenM}×${widM} m · ${b.depthM.toFixed(1)} m deep · ${Math.round(vol).toLocaleString()} m³`;
+  }
+
+  private makeDimensionSprite(text: string): THREE.Sprite {
+    const canvas = document.createElement('canvas');
+    const w = 560; const h = 64;
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext('2d')!;
+    // Background pill
+    ctx.fillStyle = 'rgba(15,23,42,0.88)';
+    const r = 12;
+    ctx.beginPath();
+    ctx.moveTo(r, 0); ctx.lineTo(w - r, 0); ctx.quadraticCurveTo(w, 0, w, r);
+    ctx.lineTo(w, h - r); ctx.quadraticCurveTo(w, h, w - r, h);
+    ctx.lineTo(r, h); ctx.quadraticCurveTo(0, h, 0, h - r);
+    ctx.lineTo(0, r); ctx.quadraticCurveTo(0, 0, r, 0);
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = 'rgba(245,158,11,0.55)';
+    ctx.lineWidth = 2; ctx.stroke();
+    // Text
+    ctx.fillStyle = '#fde68a';
+    ctx.font = 'bold 20px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, w / 2, h / 2 + 1);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.minFilter = THREE.LinearFilter;
+    tex.needsUpdate = true;
+    const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false });
+    const sprite = new THREE.Sprite(mat);
+    sprite.scale.set(5.2, 0.62, 1);
+    sprite.renderOrder = 900;
+    sprite.frustumCulled = false;
+    return sprite;
   }
 
   private buildBasinMesh(b: { w: number; h: number; depthM: number }): THREE.Group {
